@@ -266,7 +266,12 @@ class IndexTestCase(unittest.TestCase):
             (first.lock, first.work), ("INPLACE, LOCK=SHARED", Work.REWRITE)
         )
         more = table("ALTER TABLE ft ADD FULLTEXT INDEX f2 (body)", "ft")
-        self.assertEqual(more.work, Work.INDEX_BUILD)
+        self.assertEqual(
+            (more.lock, more.work), ("INPLACE, LOCK=SHARED", Work.INDEX_BUILD)
+        )
+        # MariaDB builds a second one without rebuilding the table.
+        more = table("ALTER TABLE ft ADD FULLTEXT INDEX f2 (body)", "ft", MARIADB)
+        self.assertEqual(more.lock, "NOCOPY, LOCK=SHARED")
         unread = impact(
             "CREATE FULLTEXT INDEX f ON t (name)", MYSQL._replace(tables={})
         )

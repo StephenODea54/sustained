@@ -37,6 +37,10 @@ TABLES, and anything in another engine's syntax.
 MySQL commits each DDL statement on its own, so every statement is a
 transaction window of its own.
 
+`trace` probes each ALTER TABLE, CREATE INDEX, and DROP INDEX of a
+traced rehearsal on a scratch database for the ALGORITHM and LOCK the
+server accepts; `sustained.impact.rules.mysql.trace` describes it.
+
 `context_plan()` reads what the rules use: `VERSION()`, which also names
 the server MySQL or MariaDB, `foreign_key_checks` and
 `lock_wait_timeout`, each table's size, row format, and FULLTEXT indexes
@@ -46,7 +50,7 @@ versions each table has used from `INNODB_TABLES.TOTAL_ROW_VERSIONS`.
 
 from __future__ import annotations
 
-from sustained.impact.rules import Facts, Outcome, Profile, common
+from sustained.impact.rules import Facts, Outcome, Profile, Trace, common
 from sustained.impact.rules.mysql.catalog import (
     FIXTURE_SCHEMA,
     MARIADB_DOCS,
@@ -80,6 +84,12 @@ from sustained.impact.rules.mysql.online import assertion
 from sustained.impact.rules.mysql.statements import (
     STATEMENTS,
 )
+from sustained.impact.rules.mysql.trace import (
+    attempts,
+    refused,
+    tables_plan,
+    with_observations,
+)
 
 
 def effects(facts: Facts) -> Outcome:
@@ -110,6 +120,7 @@ def _profile(name: str) -> Profile:
         queues=queues,
         bounded=bounded,
         local_scope=False,
+        trace=Trace(tables_plan, with_observations, attempts=attempts, refused=refused),
     )
 
 

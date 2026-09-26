@@ -373,7 +373,9 @@ def _display(names: Mapping[str, int], oid: int) -> str:
 
 
 def _mismatch(message: str) -> Finding:
-    return Finding("impact.mismatch", Severity.WARN, message)
+    from sustained.impact.rules.common import mismatch
+
+    return mismatch(message)
 
 
 Observations = Mapping[Tuple[Optional[str], int], Tuple[Sighting, Sighting]]
@@ -395,28 +397,11 @@ def with_observations(
     from them. The report's evidence is `observed` when any statement
     was observed.
     """
-    migrations: List[MigrationImpact] = []
-    for migration in report.migrations:
-        statements = []
-        for index, statement in enumerate(migration.statements):
-            pair = observations.get((migration.migration_id, index))
-            if pair is not None:
-                statement = observe(statement, pair[0], pair[1], existing, profile)
-            statements.append(statement)
-        spans = migration.transactional and profile.transactional_ddl
-        locks, windows, findings = aggregate(statements, spans)
-        migrations.append(
-            migration._replace(
-                statements=tuple(statements),
-                locks=locks,
-                windows=windows,
-                findings=findings,
-            )
-        )
-    observed = any(
-        s.evidence is Evidence.OBSERVED for m in migrations for s in m.statements
-    )
-    return report._replace(
-        migrations=tuple(migrations),
-        evidence=Evidence.OBSERVED if observed else report.evidence,
+    from sustained.impact.rules import common
+
+    return common.with_observations(
+        report,
+        observations,
+        profile,
+        lambda statement, pair: observe(statement, pair[0], pair[1], existing, profile),
     )

@@ -1,19 +1,26 @@
 """
 The impact analysis on MySQL and MariaDB, run against every server whose
 support.json row claims the `impact` cover and runs InnoDB: the server
-facts read_context() reads, Migrator.impact() on a live connection, and
-the parent-table metadata locks the rules predict for foreign keys,
-checked by holding a read on the parent in a second session.
+facts read_context() reads, Migrator.impact() on a live connection, the
+parent-table metadata locks the rules predict for foreign keys, checked
+by holding a read on the parent in a second session,
+rehearse(scratch=True, trace=True), and the ground truth for every rule:
+each rule fixture runs under the algorithm probe, and the clause the
+server accepts must match what the rule predicted for that server's
+version and settings.
 
 The tests run in the scratch database, since MySQL schema changes do not
-roll back.
+roll back. The rule fixtures run in a database of their own, created
+again for each fixture.
 """
 
 import unittest
 
 from sustained.dialects import Dialects
 from sustained.impact import Evidence, Work, analyze, read_context
-from sustained.impact.rules import mysql
+from sustained.impact.rules import Probe, mysql, profile_for
+from sustained.impact.rules.mysql.trace import attempts, observe, refused, tables_plan
+from sustained.introspect.runner import run_plan
 from sustained.migrations import Migration, Migrator
 
 from . import harness
@@ -29,6 +36,9 @@ TABLES = (
 
 # MySQL's error for a lock wait that ran out of lock_wait_timeout.
 LOCK_WAIT_TIMEOUT = 1205
+
+# The database the rule fixtures run in.
+FIXTURE_DATABASE = "it_impact_fixtures"
 
 
 class InnodbImpactCase(unittest.TestCase):
@@ -47,11 +57,15 @@ class InnodbImpactCase(unittest.TestCase):
         if not cls.NAME:
             raise unittest.SkipTest("base class")
         cls.connection = harness.connect_scratch(cls.NAME)
+        cursor = cls.connection.cursor()
+        cursor.execute("SELECT DATABASE()")
+        ((cls.database,),) = cursor.fetchall()
 
     @classmethod
     def tearDownClass(cls):
         connection = getattr(cls, "connection", None)
         if connection is not None:
+            connection.cursor().execute(f"DROP DATABASE IF EXISTS {FIXTURE_DATABASE}")
             connection.close()
 
     def setUp(self):
@@ -62,6 +76,7 @@ class InnodbImpactCase(unittest.TestCase):
 
     def drop(self):
         self.connection.rollback()
+        self.execute(f"USE `{self.database}`")
         self.execute("SET SESSION lock_wait_timeout = DEFAULT")
         self.execute("SET SESSION foreign_key_checks = 0")
         for table in TABLES:
@@ -236,3 +251,118 @@ class InnodbImpactCase(unittest.TestCase):
             reader.rollback()
             reader.close()
             self.execute("SET SESSION lock_wait_timeout = DEFAULT")
+
+    def test_a_traced_rehearsal_probes_each_statement(self):
+        self.orders()
+        self.execute(
+            "CREATE TABLE it_impact_texts (id int PRIMARY KEY, body text, "
+            "FULLTEXT KEY it_impact_body (body))",
+        )
+        migrator = Migrator(
+            self.connection,
+            [
+                Migration(
+                    "001_traced",
+                    up=[
+                        "ALTER TABLE it_impact_orders ADD COLUMN extra int",
+                        "ALTER TABLE it_impact_texts ADD COLUMN extra int",
+                        "CREATE INDEX it_impact_note_ix ON it_impact_orders (note)",
+                        "UPDATE it_impact_orders SET extra = 1",
+                    ],
+                    down=[
+                        "DROP INDEX it_impact_note_ix ON it_impact_orders",
+                        "ALTER TABLE it_impact_texts DROP COLUMN extra",
+                        "ALTER TABLE it_impact_orders DROP COLUMN extra",
+                    ],
+                )
+            ],
+            dialect=self.DIALECT,
+            table="it_impact_migrations",
+        )
+        results = migrator.rehearse(scratch=True, trace=True)
+        self.assertTrue(results.ok, results)
+        report = results.impact
+        self.assertIs(report.evidence, Evidence.OBSERVED)
+        added, texts, index, update = report.statements
+        self.assertIs(added.evidence, Evidence.OBSERVED)
+        self.assertEqual(added.tables[0].lock, "INSTANT")
+        # InnoDB changes a table with a FULLTEXT index in place at best.
+        self.assertNotEqual(texts.tables[0].lock, "INSTANT")
+        expected = (
+            "NOCOPY, LOCK=NONE" if self.PROFILE == "mariadb" else "INPLACE, LOCK=NONE"
+        )
+        self.assertEqual(index.tables[0].lock, expected)
+        self.assertIsNot(update.evidence, Evidence.OBSERVED)
+        self.assertNotIn("impact.mismatch", [f.rule for f in report.findings])
+        # The down sweep put the table back.
+        columns = self.fetch(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'it_impact_orders'"
+        )
+        self.assertEqual(sorted(c for (c,) in columns), ["id", "note"])
+
+    def test_each_rule_fixture_does_what_its_rule_predicts(self):
+        profile = profile_for(self.DIALECT, self.PROFILE)
+        self.fixture_schema(profile)
+        context = self.context()
+        fixtures = [(rule, f) for rule in profile.rules for f in rule.fixtures]
+        for rule, fixture in fixtures:
+            with self.subTest(rule=rule.id, fixture=fixture):
+                self.fixture_schema(profile)
+                statement = self.observe_fixture(fixture, context, profile)
+                reached = {t.rule for t in statement.tables}
+                reached |= {f.rule for f in statement.findings}
+                self.assertIn(rule.id, reached)
+                mismatches = [
+                    f.message for f in statement.findings if f.rule == "impact.mismatch"
+                ]
+                self.assertEqual(mismatches, [])
+
+    def fixture_schema(self, profile):
+        """Creates the fixture database again, with the fixtures' objects."""
+        self.execute(
+            f"DROP DATABASE IF EXISTS {FIXTURE_DATABASE}",
+            f"CREATE DATABASE {FIXTURE_DATABASE}",
+            f"USE {FIXTURE_DATABASE}",
+            *profile.fixture_schema,
+        )
+
+    def observe_fixture(self, fixture, context, profile):
+        """
+        The fixture's predicted impact with the clause the server
+        accepted in its place. A fixture the probe does not try runs as
+        written: one the rules say the server refuses must fail with a
+        refusal, and any other must run.
+        """
+        (predicted,) = analyze([fixture], self.DIALECT, context).statements
+        existing = run_plan(self.connection, self.DIALECT, tables_plan())
+        tried = attempts(predicted, profile)
+        if not tried:
+            refusal = f"{profile.prefix}.refused" in {
+                f.rule for f in predicted.findings
+            }
+            try:
+                self.execute(fixture)
+            except Exception as error:
+                if not refusal or refused(error) is None:
+                    raise
+            else:
+                self.assertFalse(
+                    refusal, "the server ran a statement predicted refused"
+                )
+            return predicted
+        refusals = []
+        for sql, clause in tried:
+            try:
+                self.execute(sql)
+            except Exception as error:
+                reason = refused(error)
+                if reason is None:
+                    raise
+                refusals.append((clause, reason))
+            else:
+                probe = Probe(clause, tuple(refusals))
+                observed = observe(predicted, probe, existing, profile)
+                self.assertIs(observed.evidence, Evidence.OBSERVED)
+                return observed
+        self.fail(f"the server refused every clause: {refusals}")

@@ -1584,7 +1584,7 @@ class ImpactCliTestCase(CliBase):
     def test_rehearse_trace_on_a_dialect_it_cannot_observe_exits_one(self):
         code, _, err = self.run_cli("rehearse", "--trace")
         self.assertEqual(code, 1)
-        self.assertIn("POSTGRES only", err)
+        self.assertIn("POSTGRES and MYSQL only", err)
 
     def test_rehearse_trace_prints_the_report(self):
         self._postgres_rules()

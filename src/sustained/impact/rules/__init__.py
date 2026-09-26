@@ -47,11 +47,15 @@ from sustained.impact.state import RunState, sets_a_timeout
 
 if TYPE_CHECKING:
     from sustained.dialects import Dialects
-    from sustained.impact.model import ImpactReport
+    from sustained.impact.model import ImpactReport, StatementImpact
 
 
 def _every_version(version: Tuple[int, ...]) -> bool:
     return True
+
+
+def _no_refusal(error: BaseException) -> Optional[str]:
+    return None
 
 
 class Rule(NamedTuple):
@@ -120,20 +124,45 @@ class Outcome(NamedTuple):
     confidence: Confidence = Confidence.KNOWN
 
 
+class Probe(NamedTuple):
+    """
+    What a probe saw of one statement: the clause the server accepted,
+    and each clause it refused before that one, with the reason the
+    server gave.
+    """
+
+    accepted: Any
+    refused: Tuple[Tuple[Any, str], ...] = ()
+
+
 class Trace(NamedTuple):
     """
     How a traced rehearsal observes a profile's statements. `tables()`
     is a read plan for the tables that exist before the run.
-    `sighting(tables)` is a read plan for what the server shows about
-    the named tables, which the rehearsal runs before and after each
-    statement. `report(predicted, sightings, existing, profile)` puts
-    what the sightings show in place of the prediction; `sightings` maps
-    each statement's migration id and position to its two sightings.
+    `report(predicted, observations, existing, profile)` puts what the
+    observations show in place of the prediction; `observations` maps
+    each statement's migration id and position to what was seen of it.
+
+    A trace observes a statement in one of two ways. `sighting(tables)`
+    is a read plan for what the server shows about the named tables,
+    which the rehearsal runs before and after the statement; the
+    observation is the two sightings. `attempts(impact, profile)` is
+    the statement written with each clause to try, in order, beside the
+    clause each spells; the rehearsal runs each until the server accepts
+    one, and the observation is a `Probe`. `refused(error)` is the
+    server's reason when an error says it refused the clause, and None
+    for any other error, which ends the attempts. A statement with no
+    attempts runs as written and has no observation, and so does one
+    whose attempts all failed.
     """
 
-    tables: Callable[[], Generator[str, Rows, Optional[FrozenSet[int]]]]
-    sighting: Callable[[Sequence[str]], Generator[str, Rows, Any]]
+    tables: Callable[[], Generator[str, Rows, Optional[FrozenSet[Any]]]]
     report: Callable[..., "ImpactReport"]
+    sighting: Optional[Callable[[Sequence[str]], Generator[str, Rows, Any]]] = None
+    attempts: Optional[
+        Callable[["StatementImpact", "Profile"], Sequence[Tuple[str, Any]]]
+    ] = None
+    refused: Callable[[BaseException], Optional[str]] = _no_refusal
 
 
 class Profile(NamedTuple):

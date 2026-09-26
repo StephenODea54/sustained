@@ -1,17 +1,23 @@
 """
-A traced rehearsal: each statement of each up step runs on its own,
-between two reads of the locks the transaction holds and the files of
-the tables it names, and the impact report the rehearsal returns puts
-what the server did in place of what the rules predicted.
+A traced rehearsal: each statement of each up step runs on its own, and
+the impact report the rehearsal returns puts what the server did in
+place of what the rules predicted.
 
-The reads and the comparison are the profile's `Trace`, such as the one
-in sustained.impact.rules.postgres.trace. This module runs them inside
-the rehearsal.
+On Postgres a statement runs between two reads of the locks the
+transaction has taken and the files of the tables it names. On MySQL and
+MariaDB, which rehearse on a scratch database, an ALTER TABLE, CREATE
+INDEX, or DROP INDEX runs with each ALGORITHM and LOCK clause in turn
+until the server accepts one.
+
+The reads, the clauses, and the comparison are the profile's `Trace`,
+such as the ones in sustained.impact.rules.postgres.trace and
+sustained.impact.rules.mysql.trace. This module runs them inside the
+rehearsal.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, FrozenSet, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 from sustained.migrations.core.base import MigratorBase
 from sustained.migrations.core.requests import (
@@ -29,8 +35,8 @@ from sustained.migrations.migration import (
 
 if TYPE_CHECKING:
     from sustained.analysis import MigrationStatement
-    from sustained.impact import EngineContext, ImpactReport
-    from sustained.impact.rules import Trace
+    from sustained.impact import EngineContext, ImpactReport, StatementImpact
+    from sustained.impact.rules import Profile, Trace
 
 
 def _trace(m: MigratorBase) -> Optional["Trace"]:
@@ -46,8 +52,8 @@ def check_traceable(m: MigratorBase) -> None:
 
     if _trace(m) is None:
         raise DialectError(
-            f"rehearse(trace=True) reads the locks each statement takes, which "
-            f"it can do on POSTGRES only, not {m._dialect.name}."
+            f"rehearse(trace=True) observes the locks each statement takes, "
+            f"which it can do on POSTGRES and MYSQL only, not {m._dialect.name}."
         )
 
 
@@ -55,9 +61,9 @@ class Tracer:
     """
     What a traced rehearsal has seen so far. `start()` reads the server
     facts and the tables that exist before the run; `run_step()` runs an
-    up step one statement at a time between two sightings. `ran` lists
-    the statements observed so far, which the analysis of the next one
-    reads first, so a statement sees the run state before it.
+    up step one statement at a time, observing each. `ran` lists the
+    statements observed so far, which the analysis of the next one reads
+    first, so a statement sees the run state before it.
     """
 
     def __init__(self, m: MigratorBase) -> None:
@@ -66,9 +72,18 @@ class Tracer:
         self.m = m
         self.trace = trace
         self.context: Optional["EngineContext"] = None
-        self.existing: Optional[FrozenSet[int]] = None
+        self.existing: Optional[FrozenSet[Any]] = None
         self.ran: List["MigrationStatement"] = []
-        self.sightings: Dict[Tuple[Optional[str], int], Tuple[object, object]] = {}
+        self.observations: Dict[Tuple[Optional[str], int], object] = {}
+
+    @property
+    def profile(self) -> "Profile":
+        """The rule profile the server facts name."""
+        from sustained.impact.rules import profile_for
+
+        profile = profile_for(self.m._dialect, getattr(self.context, "profile", None))
+        assert profile is not None
+        return profile
 
     def start(self) -> Core[None]:
         self.context = yield ReadContext()
@@ -87,32 +102,73 @@ class Tracer:
             return
         for index, sql in enumerate(_render_elements(elements, self.m._compiler)):
             statement = MigrationStatement(sql, migration.id, migration.transactional)
-            tables = self.tables(statement)
-            before = yield ReadCatalog(self.trace.sighting(tables))
-            yield Execute(str(sql), pinned=True)
-            after = yield ReadCatalog(self.trace.sighting(tables))
-            self.sightings[(migration.id, index)] = (before, after)
+            observation = yield from self.observe(statement)
+            if observation is not None:
+                self.observations[(migration.id, index)] = observation
             self.ran.append(statement)
 
-    def tables(self, statement: "MigrationStatement") -> List[str]:
+    def observe(self, statement: "MigrationStatement") -> Core[object]:
         """
-        The tables the rules predict the statement touches, read after
-        the statements the rehearsal already ran.
+        Runs the statement, and returns what was seen of it, or None
+        when nothing was.
+        """
+        predicted = self.predicted(statement)
+        if self.trace.sighting is None:
+            return (yield from self.attempt(statement, predicted))
+        tables = [t.table for t in predicted.tables]
+        before = yield ReadCatalog(self.trace.sighting(tables))
+        yield Execute(str(statement), pinned=True)
+        after = yield ReadCatalog(self.trace.sighting(tables))
+        return (before, after)
+
+    def attempt(
+        self, statement: "MigrationStatement", predicted: "StatementImpact"
+    ) -> Core[object]:
+        """
+        Runs the statement with each of the trace's clauses until the
+        server accepts one, and returns the `Probe`. An error that is
+        not a refusal, or a refusal of every clause, runs the statement
+        as written and returns None.
+        """
+        from sustained.impact.rules import Probe
+
+        assert self.trace.attempts is not None
+        refusals: List[Tuple[object, str]] = []
+        for sql, clause in self.trace.attempts(predicted, self.profile):
+            try:
+                yield Execute(sql, pinned=True)
+            except Exception as error:
+                reason = self.trace.refused(error)
+                if reason is None:
+                    break
+                refusals.append((clause, reason))
+            else:
+                return Probe(clause, tuple(refusals))
+        yield Execute(str(statement), pinned=True)
+        return None
+
+    def predicted(self, statement: "MigrationStatement") -> "StatementImpact":
+        """
+        The statement's impact as the rules predict it, read after the
+        statements the rehearsal already ran.
         """
         from sustained.impact import analyze
 
         report = analyze(self.ran + [statement], self.m._dialect, self.context)
-        return [t.table for t in report.statements[-1].tables]
+        return report.statements[-1]
+
+    def tables(self, statement: "MigrationStatement") -> List[str]:
+        """The tables the rules predict the statement touches."""
+        return [t.table for t in self.predicted(statement).tables]
 
     def report(self, run: Sequence[Migration]) -> "ImpactReport":
         """The run's impact, with each observed statement's facts."""
         from sustained.impact import analyze
-        from sustained.impact.rules import profile_for
         from sustained.migrations.checks import run_statements
 
-        profile = profile_for(self.m._dialect, getattr(self.context, "profile", None))
-        assert profile is not None
         predicted = analyze(
             run_statements(run, self.m._compiler), self.m._dialect, self.context
         )
-        return self.trace.report(predicted, self.sightings, self.existing, profile)
+        return self.trace.report(
+            predicted, self.observations, self.existing, self.profile
+        )

@@ -267,7 +267,9 @@ danger: pg.create_index  CREATE INDEX ix_orders_customer ON orders (customer_id)
 
 ## Observed impact
 
-`sustained rehearse --trace` runs the rehearsal and records what the server did for each statement, and prints the impact report with those facts in place of the prediction. `Migrator.rehearse(trace=True)` puts the report on the result's `impact` attribute, and `await AsyncMigrator.rehearse(trace=True)` does the same.
+`sustained rehearse --trace` runs the rehearsal and records what the server did for each statement, and prints the impact report with those facts in place of the prediction. `Migrator.rehearse(trace=True)` puts the report on the result's `impact` attribute, and `await AsyncMigrator.rehearse(trace=True)` does the same. Tracing works on PostgreSQL, MySQL, and MariaDB.
+
+### On PostgreSQL
 
 The rehearsal runs each statement of each up step on its own. Before and after each statement it reads two things inside the rehearsal transaction:
 
@@ -293,7 +295,28 @@ What the observation can and cannot show:
 - A migration with `transactional=False` is left out of every rehearsal, so a `CONCURRENTLY` statement keeps its prediction. So does a callable step, whose statements are not known.
 - Each read runs inside a savepoint. A read that fails leaves its statement's facts as predicted, and the rehearsal goes on.
 
-A mismatch does not change the exit code of `rehearse`. `--trace` needs PostgreSQL, and `rehearse(trace=True)` raises `DialectError` on any other dialect.
+### On MySQL and MariaDB
+
+MySQL and MariaDB rehearse on a scratch database, so a traced rehearsal needs `rehearse(scratch=True, trace=True)`, or a `get_rehearsal_connection()` in the config module for `sustained rehearse --trace`. The rehearsal runs each ALTER TABLE, CREATE INDEX, and DROP INDEX with each ALGORITHM and LOCK clause in turn, in the order the server picks one: `INSTANT`, then MariaDB's `NOCOPY`, then `INPLACE`, then `COPY`, and for each algorithm `LOCK=NONE`, then `SHARED`, then `EXCLUSIVE`. The server refuses a clause it cannot run before it does any work, with error 1845 or 1846, or on MySQL 4092 when the table has used every instant row version. The first clause the server accepts is the observed lock, and that run is the rehearsal's run of the statement. The statements run on the scratch tables themselves, so their foreign keys, rows, row format, and instant row versions are the ones the server reads.
+
+The accepted clause replaces the predicted lock on the table the statement names. `INSTANT` shows that the statement copied nothing, and `COPY` that it copied the table; after `NOCOPY` or `INPLACE` the predicted work stands, since either can rebuild the table in place or build an index. Each difference is an `impact.mismatch` finding, and a mismatch quotes the reason the server gave for refusing the predicted clause:
+
+```console
+  ALTER TABLE orders ADD COLUMN extra int
+    orders  INPLACE, LOCK=NONE  blocks ddl  catalog  brief  8.0 KB  [mysql.add_column.instant]
+    warn    the rules predicted INSTANT on orders, and the server ran it with INPLACE, LOCK=NONE; it refused INSTANT: ALGORITHM=INSTANT is not supported. Reason: InnoDB presently supports one FULLTEXT index creation at a time. Try ALGORITHM=COPY/INPLACE.
+```
+
+What the probe can and cannot show:
+
+- A statement that spells `ALGORITHM` or `LOCK` runs as written and keeps its prediction. So does every other kind of statement, such as `UPDATE` or `DROP TABLE`.
+- An error that is not a refusal, such as a duplicate column, ends the attempts, and the statement runs as written, so the rehearsal fails with the server's own error.
+- The metadata lock on a foreign key's parent table keeps its prediction, and so does a table the run created earlier.
+- The probe reads the scratch tables. A scratch table without the real table's rows, FULLTEXT indexes, or instant row versions can accept a clause the real table would refuse.
+
+### Mismatches
+
+A mismatch does not change the exit code of `rehearse`. `--trace` needs PostgreSQL, MySQL, or MariaDB, and `rehearse(trace=True)` raises `DialectError` on any other dialect.
 
 ## PostgreSQL
 
@@ -437,7 +460,7 @@ The rules follow the MySQL 8.0 reference manual's [online DDL operations](https:
 | `RENAME TO`; `RENAME TABLE` | `INSTANT`; `MDL EXCLUSIVE` | `INSTANT`; `MDL EXCLUSIVE` | catalog | `rename` |
 | `RENAME INDEX` | `INPLACE, LOCK=NONE` | `INSTANT` | catalog | `rename_index` |
 | `CREATE INDEX`, `ADD INDEX`, `ADD UNIQUE` | `INPLACE, LOCK=NONE` | `NOCOPY, LOCK=NONE` | index build | `add_index` |
-| A FULLTEXT index | `INPLACE, LOCK=SHARED` | `INPLACE, LOCK=SHARED` | rewrite for the table's first, which adds a hidden `FTS_DOC_ID` column; index build after | `add_fulltext` |
+| A FULLTEXT index | `INPLACE, LOCK=SHARED` | `INPLACE, LOCK=SHARED` for the table's first, `NOCOPY, LOCK=SHARED` after | rewrite for the table's first, which adds a hidden `FTS_DOC_ID` column; index build after | `add_fulltext` |
 | `DROP INDEX` | `INPLACE, LOCK=NONE` | `NOCOPY, LOCK=NONE` | catalog | `drop_index` |
 | `ADD PRIMARY KEY`, or `DROP PRIMARY KEY` with `ADD PRIMARY KEY` | `INPLACE, LOCK=NONE` | `INPLACE, LOCK=NONE` | rewrite | `add_primary_key` |
 | `DROP PRIMARY KEY` alone | `COPY, LOCK=SHARED` | `COPY` | rewrite | `drop_primary_key` |
@@ -482,4 +505,4 @@ A statement that spells `ALGORITHM` or `LOCK` is read with them. A heavier algor
 
 A statement that copies the table while writes wait names an online schema change tool, such as gh-ost or pt-online-schema-change, which copies the table without blocking writes.
 
-The integration suite checks the rules against MySQL 8.4 and 26.7 and MariaDB 11.4 and 12.3. It checks the facts `read_context()` reads, and the parent-table locks, by running each foreign key statement while a second session reads the parent.
+The integration suite checks the rules against MySQL 8.4 and 26.7 and MariaDB 11.4 and 12.3. It checks the facts `read_context()` reads, and the parent-table locks, by running each foreign key statement while a second session reads the parent. It creates the tables the rules' fixture statements name in a database of their own, runs each fixture alone under the probe of `rehearse --trace`, and fails on any `impact.mismatch`. It creates the database again for each fixture, since MySQL schema changes do not roll back. A fixture that spells its own clause must run, or be refused when the rules predict a refusal.

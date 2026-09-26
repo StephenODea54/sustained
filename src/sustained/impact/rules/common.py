@@ -8,15 +8,27 @@ The handler helpers every rule profile uses.
 - `row_write_message()` words the finding for an UPDATE or DELETE.
 - `add_stats()` keys a table's stats by `schema.table`, and by the bare
   name when an unqualified name finds the table.
+- `with_observations()` puts a traced rehearsal's observations in place
+  of a report's predictions, and `mismatch()` is the finding for a
+  difference between the two.
 """
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Mapping
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from sustained.impact.context import TableStats
-from sustained.impact.model import Confidence, Finding, Severity
-from sustained.impact.rules import Facts, Outcome, title
+from sustained.impact.model import (
+    Confidence,
+    Evidence,
+    Finding,
+    ImpactReport,
+    MigrationImpact,
+    Severity,
+    StatementImpact,
+)
+from sustained.impact.rules import Facts, Outcome, Profile, title
+from sustained.impact.window import aggregate
 
 UNNAMED_TABLE = "(unnamed table)"
 
@@ -97,3 +109,49 @@ def add_stats(
     if bare:
         found[name.lower()] = stats
     return key
+
+
+def mismatch(message: str) -> Finding:
+    """The finding for a difference between a prediction and an observation."""
+    return Finding("impact.mismatch", Severity.WARN, message)
+
+
+def with_observations(
+    report: ImpactReport,
+    observations: Mapping[Tuple[Optional[str], int], Any],
+    profile: Profile,
+    observe: Callable[[StatementImpact, Any], StatementImpact],
+) -> ImpactReport:
+    """
+    The report with each observed statement's facts in place of the
+    predicted ones, and each migration's locks and windows read again
+    from them. `observations` is keyed by each statement's migration id
+    and its position in that migration, counting from 0, and
+    `observe(statement, observation)` returns the observed impact. The
+    report's evidence is `observed` when any statement was observed.
+    """
+    migrations: List[MigrationImpact] = []
+    for migration in report.migrations:
+        statements = []
+        for index, statement in enumerate(migration.statements):
+            key = (migration.migration_id, index)
+            if key in observations:
+                statement = observe(statement, observations[key])
+            statements.append(statement)
+        spans = migration.transactional and profile.transactional_ddl
+        locks, windows, findings = aggregate(statements, spans)
+        migrations.append(
+            migration._replace(
+                statements=tuple(statements),
+                locks=locks,
+                windows=windows,
+                findings=findings,
+            )
+        )
+    observed = any(
+        s.evidence is Evidence.OBSERVED for m in migrations for s in m.statements
+    )
+    return report._replace(
+        migrations=tuple(migrations),
+        evidence=Evidence.OBSERVED if observed else report.evidence,
+    )

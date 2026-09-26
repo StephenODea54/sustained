@@ -195,7 +195,7 @@ PROFILE = Profile(
     timeout_source=DOCS + "runtime-config-client.html#GUC-LOCK-TIMEOUT",
     context_plan=context_plan,
     fixture_schema=FIXTURE_SCHEMA,
-    trace=Trace(tables_plan, sighting_plan, with_observations),
+    trace=Trace(tables_plan, with_observations, sighting=sighting_plan),
 )
 
 __all__ = [

@@ -594,17 +594,20 @@ class Migrator(MigratorBase):
         it without proof. What such a migration does can only be seen by
         running it.
 
-        With trace=True, each statement of each up step runs on its own,
-        and the locks the transaction holds and the files of the tables
-        the statement names are read before and after it. The result's
-        `impact` is then the run's impact report with what the server did
-        in place of what the rules predicted: the lock each table was
-        seen to take, and whether a table was rewritten or an index built.
-        Each difference from the prediction is an `impact.mismatch`
-        finding. A read that fails leaves its statement's facts as
-        predicted. A migration the rehearsal leaves out, and a callable
-        step, keep their predicted facts. Tracing reads pg_locks, so it
-        raises DialectError on any dialect other than POSTGRES.
+        With trace=True, each statement of each up step runs on its own.
+        On Postgres, the locks the transaction has taken and the files of
+        the tables the statement names are read before and after it. On
+        MySQL and MariaDB, which need scratch=True, an ALTER TABLE, CREATE
+        INDEX, or DROP INDEX runs with each ALGORITHM and LOCK clause in
+        turn until the server accepts one. The result's `impact` is then
+        the run's impact report with what the server did in place of what
+        the rules predicted: the lock each table was seen to take, and
+        whether a table was rewritten or an index built. Each difference
+        from the prediction is an `impact.mismatch` finding. A read that
+        fails leaves its statement's facts as predicted. A migration the
+        rehearsal leaves out, and a callable step, keep their predicted
+        facts. Tracing raises DialectError on any dialect other than
+        POSTGRES and MYSQL.
         """
         return self._drive(
             rehearsing.rehearse(

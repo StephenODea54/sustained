@@ -88,8 +88,10 @@ def index_change(facts: Facts, fulltext: bool) -> Change:
     table = common.table(facts)
     existing = table_stats(facts, table).fulltext
     if existing:
+        # The table has its FTS_DOC_ID column already, so MariaDB builds
+        # the index without touching the table's rows.
         return Change(
-            Online("INPLACE", "SHARED"),
+            Online("NOCOPY" if is_mariadb(facts) else "INPLACE", "SHARED"),
             Work.INDEX_BUILD,
             "add_fulltext",
             "a FULLTEXT index is built while writes wait",

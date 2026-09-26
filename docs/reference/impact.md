@@ -77,9 +77,11 @@ await AsyncMigrator.rehearse(..., trace=True) -> Rehearsal
 ```
 {: .sig #rehearse-trace}
 
-Rehearses the run with each statement observed; see [Observed impact](/impact#observed-impact). The result's `impact` is the run's `ImpactReport`, with the context read at the start of the rehearsal and each observed statement's lock and work in place of the prediction. It covers every migration the up sweep reached, in run order, including the ones the rehearsal left out, which keep their prediction. `impact` is `None` for a rehearsal without `trace`, and for one with nothing pending. `trace=True` raises `DialectError` on any dialect other than `POSTGRES`, before any statement runs.
+Rehearses the run with each statement observed; see [Observed impact](/impact#observed-impact). The result's `impact` is the run's `ImpactReport`, with the context read at the start of the rehearsal and each observed statement's lock and work in place of the prediction. It covers every migration the up sweep reached, in run order, including the ones the rehearsal left out, which keep their prediction. `impact` is `None` for a rehearsal without `trace`, and for one with nothing pending. `trace=True` raises `DialectError` on any dialect other than `POSTGRES` and `MYSQL`, before any statement runs. On `MYSQL` it needs `scratch=True`, as every rehearsal there does.
 
-The profile's `trace` attribute names how a rehearsal observes its statements, and is `None` for a profile the rehearsal cannot observe. The Postgres names live in `sustained.impact.rules.postgres.trace`:
+The profile's `trace` attribute names how a rehearsal observes its statements, and is `None` for a profile the rehearsal cannot observe. It is a `Trace(tables, report, sighting=None, attempts=None, refused=...)`: `tables()` reads the tables that exist before the run, and `report(predicted, observations, existing, profile)` puts the observations in place of the prediction. A trace with `sighting` reads it before and after each statement, as on Postgres. A trace with `attempts` runs the statement with each clause `attempts(impact, profile)` returns, in order, until one runs without an error that `refused(error)` reads as a refusal, as on MySQL and MariaDB; the observation is a `Probe(accepted, refused)`, the accepted clause and each refused one with the server's reason.
+
+The Postgres names live in `sustained.impact.rules.postgres.trace`:
 
 ```python
 sighting_plan(tables) -> Sighting
@@ -98,6 +100,26 @@ with_observations(report, observations, existing, profile) -> ImpactReport
 {: .sig #observe}
 
 `observe()` returns one statement's impact with the facts its two sightings show, and an `impact.mismatch` finding for each difference. `existing` holds the oids of the tables that existed before the run, or `None` to compare every table. It returns the impact unchanged when the locks were not read both times. `with_observations()` applies `observe()` across a report, keyed by migration id and the statement's position in its migration, counting from 0, and reads each migration's locks and windows again.
+
+The MySQL and MariaDB names live in `sustained.impact.rules.mysql.trace`:
+
+```python
+tables_plan() -> frozenset[str] | None
+candidates(mariadb) -> tuple[Online, ...]
+attempts(impact, profile) -> list[tuple[str, Online]]
+refused(error) -> str | None
+```
+{: .sig #mysql-trace}
+
+`tables_plan()` reads the names of every table that exists, lower case, as `schema.table` and as the bare name in the connection's own database. `candidates()` lists the clauses a probe tries, in the order the server picks one. `attempts()` writes the statement with each of them through `assertion()`, and is empty for a statement that is not an ALTER TABLE, CREATE INDEX, or DROP INDEX, or that spells its own `ALGORITHM` or `LOCK`. `refused()` returns the server's message for errors 1845, 1846, and 4092, read from `errno` and `msg` or from `args`, and `None` for any other error.
+
+```python
+observe(impact, probe, existing, profile) -> StatementImpact
+with_observations(report, observations, existing, profile) -> ImpactReport
+```
+{: .sig #mysql-observe}
+
+`observe()` returns one statement's impact with the accepted clause as the lock on the table the statement names, `catalog` work after `INSTANT` and `rewrite` after `COPY`, and an `impact.mismatch` finding for each difference. `existing` lists the names `tables_plan()` read, or `None` to compare the named table whatever it is. `with_observations()` applies `observe()` across a report, as the Postgres form does.
 
 ## `ImpactReport`
 
@@ -156,7 +178,7 @@ The analysis itself raises these findings:
 | --- | --- | --- |
 | `impact.unknown` | `info` | The recognizer could not read the statement. The message gives the reason. |
 | `impact.intent_mismatch` | `warn` | A generated statement's text reads as something other than its intent. The analysis follows the text. |
-| `impact.mismatch` | `warn` | A traced rehearsal saw the server take another lock than the rules predicted, copy a file the rules did not predict, or copy none where they predicted a rewrite or an index build. |
+| `impact.mismatch` | `warn` | A traced rehearsal saw the server take another lock than the rules predicted, copy a file the rules did not predict, or copy none where they predicted a rewrite or an index build. On MySQL and MariaDB: the server accepted another clause than the rules predicted, or its clause copied the table where they predicted none, or nothing where they predicted a copy. |
 | `impact.assumed_profile` | `info` | No context was given on a dialect with more than one profile, so the first was assumed. |
 | `pg.lock_timeout` | `warn` | A lock that blocks writes or more waits with no `lock_timeout` in scope, from a `SET` earlier in the run or from the connection's settings. |
 | `mysql.lock_timeout`, `mariadb.lock_timeout` | `warn` | A statement that takes the exclusive metadata lock runs with no `lock_wait_timeout` below a day in scope. |

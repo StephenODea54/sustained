@@ -42,8 +42,9 @@ statements whose impact merits a look in an `impact` section. When no
 guard reads impact, `migrate` prints each `danger` finding on stderr, as
 `Migrator.up()` does.
 `script --annotate` prints each statement's impact above it as SQL
-comments. `rehearse --trace` observes each statement on Postgres and prints the
-impact report with what the server did in place of the prediction.
+comments. `rehearse --trace` observes each statement on Postgres, MySQL,
+and MariaDB, and prints the impact report with what the server did in
+place of the prediction.
 
 `status`, `validate`, `plan`, `impact`, and `rehearse` take `--json`, which prints
 one JSON object instead of the plain lines. A failure prints the object
@@ -133,7 +134,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rehearse.add_argument(
         "--trace",
         action="store_true",
-        help="Observe the locks and rewrites of each statement (Postgres).",
+        help="Observe the locks and rewrites of each statement (Postgres, MySQL, MariaDB).",
     )
 
     migrate = command("migrate", "Apply pending migrations in order.")
