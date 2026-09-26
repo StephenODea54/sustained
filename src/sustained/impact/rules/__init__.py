@@ -22,15 +22,19 @@ from __future__ import annotations
 
 from typing import (
     TYPE_CHECKING,
+    Any,
     Callable,
+    FrozenSet,
+    Generator,
     List,
     Mapping,
     NamedTuple,
     Optional,
+    Sequence,
     Tuple,
 )
 
-from sustained.impact.context import ContextPlan, EngineContext
+from sustained.impact.context import ContextPlan, EngineContext, Rows
 from sustained.impact.model import (
     Blocks,
     Confidence,
@@ -43,6 +47,7 @@ from sustained.impact.state import RunState, sets_a_timeout
 
 if TYPE_CHECKING:
     from sustained.dialects import Dialects
+    from sustained.impact.model import ImpactReport
 
 
 def _every_version(version: Tuple[int, ...]) -> bool:
@@ -115,6 +120,22 @@ class Outcome(NamedTuple):
     confidence: Confidence = Confidence.KNOWN
 
 
+class Trace(NamedTuple):
+    """
+    How a traced rehearsal observes a profile's statements. `tables()`
+    is a read plan for the tables that exist before the run.
+    `sighting(tables)` is a read plan for what the server shows about
+    the named tables, which the rehearsal runs before and after each
+    statement. `report(predicted, sightings, existing, profile)` puts
+    what the sightings show in place of the prediction; `sightings` maps
+    each statement's migration id and position to its two sightings.
+    """
+
+    tables: Callable[[], Generator[str, Rows, Optional[FrozenSet[int]]]]
+    sighting: Callable[[Sequence[str]], Generator[str, Rows, Any]]
+    report: Callable[..., "ImpactReport"]
+
+
 class Profile(NamedTuple):
     """
     One engine's rules. `blocks()` maps the engine's lock name to what
@@ -135,7 +156,9 @@ class Profile(NamedTuple):
     default a lock that blocks writes or more does. `bounded()` says
     whether a value of the timeout setting bounds the wait.
     `local_scope` says whether `SET LOCAL` ends with the transaction, as
-    on Postgres, or means the session, as on MySQL.
+    on Postgres, or means the session, as on MySQL. `trace` is how a
+    traced rehearsal observes the statements, or None on an engine the
+    rehearsal cannot observe.
     """
 
     name: str
@@ -154,6 +177,7 @@ class Profile(NamedTuple):
     queues: Optional[Callable[[Optional[str]], bool]] = None
     bounded: Callable[[str], bool] = sets_a_timeout
     local_scope: bool = True
+    trace: Optional[Trace] = None
 
     def waits_in_queue(self, lock: Optional[str]) -> bool:
         """Whether waiting for the lock queues other sessions behind it."""

@@ -20,7 +20,7 @@ from sustained.impact import (
     read_context,
 )
 from sustained.impact.rules import profile_for
-from sustained.impact.trace import observe, sighting_plan, tables_plan
+from sustained.impact.rules.postgres.trace import observe, sighting_plan, tables_plan
 from sustained.introspect.runner import run_plan
 from sustained.migrations import Migration, Migrator
 

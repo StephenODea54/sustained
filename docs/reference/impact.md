@@ -79,7 +79,7 @@ await AsyncMigrator.rehearse(..., trace=True) -> Rehearsal
 
 Rehearses the run with each statement observed; see [Observed impact](/impact#observed-impact). The result's `impact` is the run's `ImpactReport`, with the context read at the start of the rehearsal and each observed statement's lock and work in place of the prediction. It covers every migration the up sweep reached, in run order, including the ones the rehearsal left out, which keep their prediction. `impact` is `None` for a rehearsal without `trace`, and for one with nothing pending. `trace=True` raises `DialectError` on any dialect other than `POSTGRES`, before any statement runs.
 
-These names live in `sustained.impact.trace`:
+The profile's `trace` attribute names how a rehearsal observes its statements, and is `None` for a profile the rehearsal cannot observe. The Postgres names live in `sustained.impact.rules.postgres.trace`:
 
 ```python
 sighting_plan(tables) -> Sighting

@@ -9,22 +9,24 @@ import unittest
 from types import MappingProxyType
 from unittest import mock
 
+from sustained.analysis import MigrationStatement
 from sustained.dialects import Dialects
 from sustained.exceptions import DialectError
 from sustained.impact import Blocks, Evidence, Hold, TableImpact, Work, analyze
 from sustained.impact.model import Severity
+from sustained.impact.rules import profile_for
 from sustained.impact.rules.postgres import PROFILE
-from sustained.impact.trace import (
+from sustained.impact.rules.postgres.trace import (
     File,
     Sighting,
     lock_name,
     observe,
     sighting_plan,
     tables_plan,
-    traces,
     with_observations,
 )
 from sustained.migrations import Migration, Migrator
+from sustained.migrations.core.tracing import Tracer
 from tests.test_impact_context import drive
 
 PG = Dialects.POSTGRES
@@ -71,8 +73,8 @@ class LockNameTestCase(unittest.TestCase):
         self.assertEqual(lock_name("RowExclusiveLock"), "ROW EXCLUSIVE")
 
     def test_only_postgres_traces(self):
-        self.assertTrue(traces(PG))
-        self.assertFalse(traces(Dialects.MYSQL))
+        self.assertIsNotNone(profile_for(PG).trace)
+        self.assertIsNone(profile_for(Dialects.MYSQL).trace)
 
 
 class PlanTestCase(unittest.TestCase):
@@ -317,11 +319,18 @@ class RehearseTraceTestCase(unittest.TestCase):
                 "sustained.impact.rules._profiles",
                 return_value={"DEFAULT": (PROFILE,)},
             ),
-            mock.patch("sustained.impact.trace.traces", return_value=True),
         ]
         for patcher in patches:
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def test_each_statement_is_read_after_the_ones_before_it(self):
+        self.stand_in()
+        migrator = self.migrator(sqlite3.connect(":memory:"), [])
+        tracer = Tracer(migrator)
+        tracer.ran.append(MigrationStatement("CREATE INDEX ix ON orders (c)", "001"))
+        dropped = MigrationStatement("DROP INDEX ix", "002")
+        self.assertEqual(tracer.tables(dropped), ["orders"])
 
     def test_refuses_a_dialect_it_cannot_observe(self):
         connection = sqlite3.connect(":memory:")

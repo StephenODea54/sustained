@@ -1,10 +1,9 @@
 """
-Observed impact: what a statement did on a live server, read before and
+Observed impact on PostgreSQL: what a statement did on a live server, read before and
 after it runs inside a transaction, and set against what the rules
 predicted.
 
-On PostgreSQL an observation (`Sighting`) reads two things for our own
-backend:
+An observation (`Sighting`) reads two things for our own backend:
 
 - `pg_locks`: every table lock the transaction holds, by mode. Locks are
   held until the commit, so a lock the statement took is one held after
@@ -135,11 +134,6 @@ class Sighting(NamedTuple):
     names: Mapping[str, int] = MappingProxyType({})
     storage: Mapping[int, Mapping[int, File]] = MappingProxyType({})
     read: FrozenSet[str] = frozenset()
-
-
-def traces(dialect: "Dialects") -> bool:
-    """Whether a rehearsal can observe the statements it runs on a dialect."""
-    return dialect.name == "POSTGRES"
 
 
 def lock_name(mode: str) -> str:

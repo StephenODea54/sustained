@@ -1581,11 +1581,6 @@ class ImpactCliTestCase(CliBase):
         self.assertIsNone(payload["migrations"])
         self.assertIn("does not cover", payload["error"])
 
-    def _trace_stand_in(self):
-        patcher = mock.patch("sustained.impact.trace.traces", return_value=True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
     def test_rehearse_trace_on_a_dialect_it_cannot_observe_exits_one(self):
         code, _, err = self.run_cli("rehearse", "--trace")
         self.assertEqual(code, 1)
@@ -1593,7 +1588,6 @@ class ImpactCliTestCase(CliBase):
 
     def test_rehearse_trace_prints_the_report(self):
         self._postgres_rules()
-        self._trace_stand_in()
         self.run_cli("migrate")
         self._add_index()
         code, out, _ = self.run_cli("rehearse", "--trace")
@@ -1605,7 +1599,6 @@ class ImpactCliTestCase(CliBase):
 
     def test_rehearse_trace_json_carries_the_report(self):
         self._postgres_rules()
-        self._trace_stand_in()
         self.run_cli("migrate")
         self._add_index()
         code, out, _ = self.run_cli("rehearse", "--trace", "--json")

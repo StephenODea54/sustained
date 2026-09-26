@@ -14,9 +14,10 @@ The pieces:
 - `sustained.impact.model`: the report and its vocabulary
 - `sustained.impact.context`: the server facts the rules read
 - `sustained.impact.state`: what a run carries between statements
-- `sustained.impact.rules`: the rule profiles, one per engine
+- `sustained.impact.rules`: the rule profiles, one package per engine,
+  each with the catalog read and, on Postgres, the traced rehearsal's
+  reads
 - `sustained.impact.window`: locks held across a migration
-- `sustained.impact.trace`: what a traced rehearsal saw the server do
 """
 
 from sustained.impact.analyzer import analyze, attach_impact
