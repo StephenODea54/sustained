@@ -4,14 +4,17 @@ the impact report the rehearsal returns puts what the server did in
 place of what the rules predicted.
 
 On Postgres a statement runs between two reads of the locks the
-transaction has taken and the files of the tables it names. On MySQL and
-MariaDB, which rehearse on a scratch database, an ALTER TABLE, CREATE
-INDEX, or DROP INDEX runs with each ALGORITHM and LOCK clause in turn
-until the server accepts one.
+transaction has taken and the files of the tables it names. On SQL
+Server, which rehearses on a scratch database, it runs between two reads
+of the locks, the partitions of the tables it names, and the log the
+transaction has written. On MySQL and MariaDB, which rehearse on a
+scratch database, an ALTER TABLE, CREATE INDEX, or DROP INDEX runs with
+each ALGORITHM and LOCK clause in turn until the server accepts one.
 
 The reads, the clauses, and the comparison are the profile's `Trace`,
-such as the ones in sustained.impact.rules.postgres.trace and
-sustained.impact.rules.mysql.trace. This module runs them inside the
+such as the ones in sustained.impact.rules.postgres.trace,
+sustained.impact.rules.mysql.trace, and
+sustained.impact.rules.mssql.trace. This module runs them inside the
 rehearsal.
 """
 
@@ -53,7 +56,8 @@ def check_traceable(m: MigratorBase) -> None:
     if _trace(m) is None:
         raise DialectError(
             f"rehearse(trace=True) observes the locks each statement takes, "
-            f"which it can do on POSTGRES and MYSQL only, not {m._dialect.name}."
+            f"which it can do on POSTGRES, MYSQL, and MSSQL only, not "
+            f"{m._dialect.name}."
         )
 
 

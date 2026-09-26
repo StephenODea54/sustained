@@ -87,6 +87,10 @@ class Effect(NamedTuple):
     statement whose row locks block more than its table lock, such as an
     UPDATE. `waits` is False for a lock the statement refuses to queue
     for, such as `LOCK TABLE ... NOWAIT`, which needs no lock timeout.
+    `at_end` is True for a lock the statement takes once its work is
+    done, such as the one a SQL Server online index build takes at its
+    end, so the work blocks nothing and its finding is `info` whatever
+    the table's size.
     """
 
     rule: Rule
@@ -99,6 +103,7 @@ class Effect(NamedTuple):
     notes: Tuple[Finding, ...] = ()
     blocks: Optional[Blocks] = None
     waits: bool = True
+    at_end: bool = False
 
 
 class Facts(NamedTuple):
@@ -192,7 +197,9 @@ class Profile(NamedTuple):
     traced rehearsal observes the statements, or None on an engine the
     rehearsal cannot observe. `locks_database` says whether a write
     locks the whole database, as on SQLite, so a migration's locks make
-    one transaction window.
+    one transaction window. `release` names a version as people know it,
+    such as SQL Server's `2022 (16.0.4135.4)`, where the version number
+    alone does not.
     """
 
     name: str
@@ -213,6 +220,7 @@ class Profile(NamedTuple):
     local_scope: bool = True
     trace: Optional[Trace] = None
     locks_database: bool = False
+    release: Optional[Callable[[Tuple[int, ...]], str]] = None
 
     def waits_in_queue(self, lock: Optional[str]) -> bool:
         """Whether waiting for the lock queues other sessions behind it."""
@@ -223,11 +231,12 @@ class Profile(NamedTuple):
 
 def _profiles() -> Mapping[str, Tuple[Profile, ...]]:
     """Each dialect's profiles, the one assumed without a server first."""
-    from sustained.impact.rules import duckdb, mysql, postgres, sqlite
+    from sustained.impact.rules import duckdb, mssql, mysql, postgres, sqlite
 
     return {
         "POSTGRES": (postgres.PROFILE,),
         "MYSQL": (mysql.MYSQL, mysql.MARIADB),
+        "MSSQL": (mssql.PROFILE,),
         "DEFAULT": (sqlite.PROFILE,),
         "DUCKDB": (duckdb.PROFILE,),
     }
@@ -259,6 +268,17 @@ def title(name: str) -> str:
             if profile.name == name:
                 return profile.title
     return name
+
+
+def release(name: str, version: Tuple[int, ...]) -> str:
+    """A version of the engine a profile name stands for, as people write it."""
+    from sustained.impact.context import version_text
+
+    for profiles in _profiles().values():
+        for profile in profiles:
+            if profile.name == name and profile.release is not None:
+                return profile.release(version)
+    return version_text(version)
 
 
 def supported(dialect: "Dialects") -> bool:

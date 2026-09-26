@@ -22,8 +22,13 @@ The statement kinds, and the options each one sets:
 
 - `create_index`: name, unique, concurrently, if_not_exists, only,
   using, partial, columns, with (a dict of the WITH (...) options),
-  algorithm, lock, fulltext
-- `drop_index`: name, names, concurrently, if_exists, algorithm, lock
+  algorithm, lock, fulltext, and on SQL Server clustered when the
+  statement spells CLUSTERED or NONCLUSTERED
+- `drop_index`: name, names, concurrently, if_exists, algorithm, lock,
+  with
+- `alter_index` (SQL Server): name (None for ALL), operation, such as
+  `rebuild` or `reorganize`, partition, with
+- `update_statistics` (SQL Server): fullscan
 - `alter_table`: actions, plus if_exists, only, algorithm, lock, and
   nocheck (SQL Server WITH NOCHECK)
 - `create_table`: if_not_exists, temporary, references, partition_of,
@@ -102,6 +107,8 @@ STATEMENT_KINDS = frozenset(
         "drop_type",
         "alter_type_add_value",
         "alter_type_rename_value",
+        "alter_index",
+        "update_statistics",
         "create_view",
         "drop_view",
         "create_object",
@@ -151,6 +158,8 @@ ACTION_KINDS = frozenset(
         "engine",
         "convert_charset",
         "force",
+        "rebuild",
+        "switch",
         "table_option",
     }
 )

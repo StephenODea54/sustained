@@ -36,6 +36,7 @@ from typing import (
 
 from sustained.impact.context import EngineContext, assumed
 from sustained.impact.model import (
+    Action,
     Blocks,
     Confidence,
     Evidence,
@@ -214,6 +215,29 @@ def intent_agrees(intent: Intent, parsed: ParsedStatement) -> bool:
     return kind_matches and _same_table(intent.table, parsed.table)
 
 
+def parsed_from_intent(intent: Intent) -> Optional[ParsedStatement]:
+    """
+    What a generated statement the recognizer cannot read does, from its
+    intent alone: the one statement kind, and ALTER TABLE action, the
+    intent reads as. None for an intent that reads as more than one.
+    """
+    forms = _INTENT_FORMS.get(intent.kind)
+    if forms is None or len(forms) != 1 or intent.table is None:
+        return None
+    ((kind, action),) = forms
+    actions = () if action is None else (Action(action, intent.column),)
+    return ParsedStatement(kind, intent.table, actions)
+
+
+def _from_intent(intent: Intent) -> Finding:
+    return Finding(
+        "impact.from_intent",
+        Severity.INFO,
+        f"the statement text is not read, so the analysis follows the intent it "
+        f"was generated with: {intent.kind} on {intent.table}",
+    )
+
+
 def _same_table(intended: Optional[str], parsed: Optional[str]) -> bool:
     if intended is None or parsed is None:
         return True
@@ -279,6 +303,11 @@ class _Run:
         if intent is not None and parsed.known and not intent_agrees(intent, parsed):
             findings.append(_mismatch(intent, parsed))
             intent = None
+        if not parsed.known and intent is not None:
+            from_intent = parsed_from_intent(intent)
+            if from_intent is not None:
+                findings.append(_from_intent(intent))
+                parsed = from_intent
         if not parsed.known:
             findings.append(
                 Finding(
@@ -369,7 +398,7 @@ class _Run:
         blocked = self.blocks(effect)
         if blocked < Blocks.WRITES:
             return found
-        if effect.work > Work.CATALOG:
+        if effect.work > Work.CATALOG and not effect.at_end:
             severity, size_note = self.rate(impact)
             message = effect.message or self.default_message(effect, blocked)
             found.insert(

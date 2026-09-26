@@ -251,7 +251,7 @@ rehearse(scratch=False, models=None, ..., trace=False) -> Rehearsal
 
 `rehearse()` reads the schema before the run and again after the down sweep, so it reports a down step that runs without taking its change back. The comparison covers tables and columns, but not indexes, constraints, or column defaults.
 
-With `trace=True`, each statement of each up step runs on its own between two reads of the locks the transaction holds and the files of the tables it names, and the result's `impact` holds the run's impact report with what the server did in place of what the rules predicted. See [Observed impact](/impact#observed-impact). `trace=True` raises `DialectError` on any dialect other than Postgres.
+With `trace=True`, each statement of each up step runs on its own. On Postgres it runs between two reads of the locks granted to the transaction and the files of the tables it names. On SQL Server it runs between two reads of the locks, the partitions of the tables it names, and the log the transaction has written. On MySQL and MariaDB, an ALTER TABLE, CREATE INDEX, or DROP INDEX runs with each ALGORITHM and LOCK clause in turn until the server accepts one. The result's `impact` is the run's impact report with what the server did in place of what the rules predicted. See [Observed impact](/impact#observed-impact). `trace=True` raises `DialectError` on any dialect other than Postgres, MySQL, and SQL Server, and needs `scratch=True` on MySQL and SQL Server.
 
 `rehearse()` raises `ValueError` when:
 

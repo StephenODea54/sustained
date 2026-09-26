@@ -81,8 +81,13 @@ class Definitions(Cursor):
         return Action("add_constraint", None, frozen(options))
 
     def key_columns(self, options: Options) -> None:
-        """The column list of a key, or Postgres's USING INDEX form."""
-        self.accept_any("CLUSTERED", "NONCLUSTERED")
+        """
+        The column list of a key, or Postgres's USING INDEX form. SQL
+        Server's CLUSTERED or NONCLUSTERED sets `clustered`.
+        """
+        clustered = self.accept_any("CLUSTERED", "NONCLUSTERED")
+        if clustered is not None:
+            options["clustered"] = clustered == "CLUSTERED"
         if self.accept("NULLS"):
             self.accept("NOT")
             self.expect("DISTINCT")
@@ -169,12 +174,14 @@ class Definitions(Cursor):
         default_function, default_certain, generated (`stored`,
         `virtual`, or `identity`), identity, references, unique,
         primary_key, check, position (MySQL FIRST or AFTER), and comment
-        when the definition gives one.
+        when the definition gives one. A SQL Server computed column,
+        `name AS (expression) [PERSISTED]`, has no type, and type is None.
         """
-        type_tokens = self.column_type()
+        computed = self.mssql and self.is_word("AS")
+        type_tokens = [] if computed else self.column_type()
         options: Options = {
-            "type": self.text(type_tokens),
-            "serial": type_tokens[0].is_word(*SERIAL_TYPES),
+            "type": self.text(type_tokens) if type_tokens else None,
+            "serial": bool(type_tokens) and type_tokens[0].is_word(*SERIAL_TYPES),
             "not_null": None,
             "default": None,
             "generated": None,

@@ -10,7 +10,9 @@ The handler helpers every rule profile uses.
   name when an unqualified name finds the table.
 - `with_observations()` puts a traced rehearsal's observations in place
   of a report's predictions, and `mismatch()` is the finding for a
-  difference between the two.
+  difference between the two. `settled_work()` picks the work to report
+  from a prediction and an observation, and `work_mismatch()` words the
+  difference.
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ from sustained.impact.model import (
     MigrationImpact,
     Severity,
     StatementImpact,
+    TableImpact,
+    Work,
 )
 from sustained.impact.rules import Facts, Outcome, Profile, title
 from sustained.impact.window import aggregate
@@ -114,6 +118,40 @@ def add_stats(
 def mismatch(message: str) -> Finding:
     """The finding for a difference between a prediction and an observation."""
     return Finding("impact.mismatch", Severity.WARN, message)
+
+
+def settled_work(predicted: Work, observed: Optional[Work]) -> Optional[Work]:
+    """
+    The work to report, or None to keep the prediction. A copy that was
+    seen stands. With no copy seen, a predicted scan, row write, or
+    catalog change stands, since an observation cannot tell them apart,
+    and a predicted copy falls to a scan, the heaviest work that copies
+    nothing.
+    """
+    if observed is None or observed is Work.UNKNOWN:
+        return None
+    if observed in (Work.REWRITE, Work.INDEX_BUILD):
+        return observed
+    if predicted in (Work.REWRITE, Work.INDEX_BUILD):
+        return Work.SCAN
+    return None
+
+
+def work_mismatch(table: TableImpact, observed: Optional[Work], nothing: str) -> str:
+    """
+    The mismatch message for observed work that differs from the
+    prediction; `nothing` says what the server did when it copied
+    nothing, such as `copied no file`.
+    """
+    if observed is Work.REWRITE:
+        return f"the rules predicted {table.work} on {table.table}, and the server rewrote it"
+    if observed is Work.INDEX_BUILD:
+        return (
+            f"the rules predicted {table.work} on {table.table}, and the server "
+            "built an index on it"
+        )
+    what = "a rewrite" if table.work is Work.REWRITE else "an index build"
+    return f"the rules predicted {what} on {table.table}, and the server {nothing}"
 
 
 def with_observations(

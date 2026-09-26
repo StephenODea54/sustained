@@ -47,7 +47,7 @@ Guide: [Schema and Migrations](/schema#command-line).
 
 `rehearse` exits 1 when an up step or a down step failed, when the models did not land, or when the schema did not come back. A migration with no down step is not a failure, so `rehearse` exits 0 for it.
 
-`rehearse --trace` observes the locks each statement takes and the tables it rewrites, and prints the impact report after the rehearsal's lines, with the observed facts in place of the prediction; see [Observed impact](/impact#observed-impact). An `impact.mismatch` finding in the report does not change the exit code. On MySQL and MariaDB it runs each ALTER TABLE, CREATE INDEX, and DROP INDEX on the scratch database with each ALGORITHM and LOCK clause until the server accepts one. `--trace` needs PostgreSQL, MySQL, or MariaDB, and exits 1 on any other dialect.
+`rehearse --trace` observes the locks each statement takes and the tables it rewrites, and prints the impact report after the rehearsal's lines, with the observed facts in place of the prediction; see [Observed impact](/impact#observed-impact). An `impact.mismatch` finding in the report does not change the exit code. On MySQL and MariaDB it runs each ALTER TABLE, CREATE INDEX, and DROP INDEX on the scratch database with each ALGORITHM and LOCK clause until the server accepts one. On SQL Server it reads the locks, the partitions of the tables each statement names, and the log the transaction writes, on the scratch database. `--trace` needs PostgreSQL, MySQL, MariaDB, or SQL Server, and exits 1 on any other dialect.
 
 `migrate` exits 4 when the run would remove data and no passing rehearsal covers those statements. The message names the statements and both ways forward, and repeats `--target` when the run had one.
 

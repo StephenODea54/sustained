@@ -276,6 +276,21 @@ class Cursor:
             raise Unrecognized(f"expected an expression {self.where()}")
         return self.tokens[start : self.pos]
 
+    def up_to_word(self, *words: str) -> List[Token]:
+        """The tokens up to one of the words outside parentheses, consumed."""
+        start = self.pos
+        depth = 0
+        while not self.at_end():
+            token = self.tokens[self.pos]
+            if token.kind == PUNCT and token.text == "(":
+                depth += 1
+            elif token.kind == PUNCT and token.text == ")":
+                depth -= 1
+            elif depth == 0 and token.kind == WORD and token.value in words:
+                break
+            self.pos += 1
+        return self.tokens[start : self.pos]
+
     def text(self, tokens: Sequence[Token]) -> str:
         """The source text the tokens span, as the statement spells it."""
         if not tokens:

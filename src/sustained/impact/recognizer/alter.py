@@ -34,7 +34,37 @@ class AlterTable(Definitions):
             return self.alter_table()
         if self.accept("TYPE"):
             return self.alter_type()
+        if self.mssql and self.accept("INDEX"):
+            return self.alter_index()
         raise Unrecognized(f"no rule reads ALTER {self.where()}")
+
+    def alter_index(self) -> ParsedStatement:
+        """
+        SQL Server's `ALTER INDEX { name | ALL } ON table operation`, where
+        the operation is REBUILD, REORGANIZE, DISABLE, SET, RESUME, PAUSE,
+        or ABORT, with its PARTITION and WITH options.
+        """
+        name = None if self.accept("ALL") else self.name()
+        self.expect("ON")
+        table = self.target()
+        operation = self.expect_one_of_words(
+            "REBUILD", "REORGANIZE", "DISABLE", "SET", "RESUME", "PAUSE", "ABORT"
+        )
+        options: Options = {"name": name, "operation": operation.lower()}
+        options["partition"] = False
+        options["with"] = {}
+        if operation == "SET":
+            options["with"] = self.with_options()
+        while not self.at_end():
+            if self.accept("PARTITION"):
+                self.accept_op("=")
+                self.value()
+                options["partition"] = True
+            elif self.accept("WITH"):
+                options["with"] = self.with_options()
+            else:
+                raise Unrecognized(f"unread text {self.where()}")
+        return ParsedStatement("alter_index", table, options=frozen(options))
 
     def alter_type(self) -> ParsedStatement:
         self.name()
@@ -328,6 +358,37 @@ class AlterTable(Definitions):
     def action_force(self) -> Action:
         return Action("force", None, frozen({}))
 
+    def action_rebuild(self) -> Action:
+        """SQL Server's `REBUILD [PARTITION = n] [WITH (...)]`."""
+        if not self.mssql:
+            raise Unrecognized(f"no rule reads REBUILD {self.where()}")
+        options: Options = {"partition": False, "with": {}}
+        if self.accept("PARTITION"):
+            self.accept_op("=")
+            self.value()
+            options["partition"] = True
+        if self.accept("WITH"):
+            options["with"] = self.with_options()
+        return Action("rebuild", None, frozen(options))
+
+    def action_switch(self) -> Action:
+        """
+        SQL Server's `SWITCH [PARTITION n] TO target [PARTITION n]
+        [WITH (...)]`: `target` is the table the rows move to.
+        """
+        if not self.mssql:
+            raise Unrecognized(f"no rule reads SWITCH {self.where()}")
+        if self.accept("PARTITION"):
+            self.value()
+        self.expect("TO")
+        target = self.name()
+        if self.accept("PARTITION"):
+            self.value()
+        options: Options = {"target": target, "with": {}}
+        if self.accept("WITH"):
+            options["with"] = self.with_options()
+        return Action("switch", None, frozen(options))
+
     def action_table_option(self) -> Action:
         """
         A MySQL table option, such as COMMENT = 'text' or AUTO_INCREMENT
@@ -364,4 +425,6 @@ _ACTIONS: Dict[str, _ActionHandler] = {
     "ROW_FORMAT": AlterTable.action_table_option,
     "KEY_BLOCK_SIZE": AlterTable.action_table_option,
     "FORCE": AlterTable.action_force,
+    "REBUILD": AlterTable.action_rebuild,
+    "SWITCH": AlterTable.action_switch,
 }

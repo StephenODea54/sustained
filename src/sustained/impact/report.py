@@ -29,7 +29,7 @@ from sustained.impact.model import (
     StatementImpact,
     TableImpact,
 )
-from sustained.impact.rules import title
+from sustained.impact.rules import release, title
 from sustained.impact.window import DATABASE
 
 JsonValue = Union[
@@ -251,7 +251,7 @@ def summary(report: ImpactReport) -> str:
     if unknown:
         parts.append(f"{unknown} unknown")
     engine = title(report.profile)
-    version = version_text(report.version)
+    version = release(report.profile, report.version)
     assumed = "" if "version" in report.read else "assumed "
     basis = f"{report.evidence} ({assumed}{engine} {version})"
     return f"{', '.join(parts)}. Evidence: {basis}"

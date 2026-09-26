@@ -36,7 +36,11 @@ class CreateDrop(Cursor):
         clustered = self.accept_any("CLUSTERED", "NONCLUSTERED")
         fulltext = self.accept_any("FULLTEXT", "SPATIAL")
         if self.accept("INDEX"):
-            return self.create_index(unique, fulltext is not None)
+            parsed = self.create_index(unique, fulltext is not None)
+            if clustered is None:
+                return parsed
+            options = {**parsed.options, "clustered": clustered == "CLUSTERED"}
+            return parsed._replace(options=frozen(options))
         if unique or clustered or fulltext:
             raise Unrecognized(f"expected INDEX {self.where()}")
         temporary = bool(self.accept_any("TEMP", "TEMPORARY", "UNLOGGED"))
@@ -98,7 +102,11 @@ class CreateDrop(Cursor):
             elif self.accept("TABLESPACE"):
                 self.name()
             elif self.accept("WHERE"):
-                self.rest()
+                if self.mssql:
+                    # SQL Server's WITH and ON may follow the predicate.
+                    self.up_to_word("WITH", "ON")
+                else:
+                    self.rest()
                 options["partial"] = True
             elif self.is_word("ALGORITHM"):
                 options["algorithm"] = self.mysql_option("ALGORITHM")
@@ -232,7 +240,9 @@ class CreateDrop(Cursor):
         options["names"] = tuple(".".join(n) for n in names)
         self.accept_any("CASCADE", "RESTRICT")
         while not self.at_end():
-            if self.is_word("ALGORITHM"):
+            if self.mssql and self.accept("WITH"):
+                options["with"] = self.with_options()
+            elif self.is_word("ALGORITHM"):
                 options["algorithm"] = self.mysql_option("ALGORITHM")
             elif self.is_word("LOCK"):
                 options["lock"] = self.mysql_option("LOCK")

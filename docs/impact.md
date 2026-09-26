@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Statement impact
-description: "Read what each migration statement does to a live PostgreSQL, MySQL, MariaDB, SQLite, or DuckDB database while it runs: the locks it takes, what they block, whether it rewrites the table, and the safer form."
+description: "Read what each migration statement does to a live PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, or DuckDB database while it runs: the locks it takes, what they block, whether it rewrites the table, and the safer form."
 ---
 
 A migration can be valid, reversible, and free of drops, and still take the application down while it runs. A `CREATE INDEX` on a large table stops every write to it until the build finishes. An `ALTER TABLE` that needs `ACCESS EXCLUSIVE` waits behind the longest open transaction, and every query on the table waits behind the `ALTER TABLE`.
@@ -13,7 +13,7 @@ The impact analysis reads the statements a run would apply and reports, for each
 - how long it holds each lock: a moment, the whole statement, or until the migration commits
 - a safer form of the statement, when the engine has one
 
-The analysis covers PostgreSQL 12 and later, InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later, SQLite 3.35 and later, and DuckDB 1.0 and later. It reads the statement text, the intent Sustained attaches to the statements it generates, and, when it has a connection, the server's version, settings, and table sizes.
+The analysis covers PostgreSQL 12 and later, InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later, SQL Server 2012 and later, SQLite 3.35 and later, and DuckDB 1.0 and later. It reads the statement text, the intent Sustained attaches to the statements it generates, and, when it has a connection, the server's version, settings, and table sizes.
 
 ## Running it
 
@@ -37,7 +37,7 @@ $ sustained impact
 2 statements, 1 danger, 2 warn. Evidence: catalog (PostgreSQL 16.4)
 ```
 
-On MySQL and MariaDB the same report names the algorithm and lock level the server runs each ALTER TABLE with; see [MySQL and MariaDB](#mysql-and-mariadb). On SQLite it names the lock every write takes on the whole database; see [SQLite](#sqlite). On DuckDB, which takes no locks, it names the conflict each statement opens with other transactions; see [DuckDB](#duckdb).
+On MySQL and MariaDB the same report names the algorithm and lock level the server runs each ALTER TABLE with; see [MySQL and MariaDB](#mysql-and-mariadb). On SQL Server it names the table lock mode, and what the edition runs online; see [SQL Server](#sql-server). On SQLite it names the lock every write takes on the whole database; see [SQLite](#sqlite). On DuckDB, which takes no locks, it names the conflict each statement opens with other transactions; see [DuckDB](#duckdb).
 
 `sustained impact` exits 0 when it prints the report and 1 on a failure, including a dialect the analysis does not cover. It never blocks a run. `--json` prints the report as one object; see [JSON output](/reference/cli#json-output).
 
@@ -89,7 +89,7 @@ The last line counts the statements and findings and says what the answer rests 
 | `writes` | INSERT, UPDATE, and DELETE wait. Reads proceed. |
 | `reads_and_writes` | Every query on the table waits. |
 
-**Lock** is the engine's own name for the lock. On PostgreSQL it is the mode `pg_locks.mode` reports, without the `Lock` suffix, such as `ACCESS EXCLUSIVE`, `SHARE`, or `SHARE UPDATE EXCLUSIVE`. On MySQL and MariaDB it is the `ALGORITHM` and `LOCK` clause the server accepts for the statement, such as `INSTANT` or `INPLACE, LOCK=NONE`, or `MDL EXCLUSIVE` and `IX` for statements that take no such clause. On SQLite it is `database write lock`, which every write takes on the whole database file. DuckDB takes no locks, so there it is the conflict a statement opens on the table, `altered table`, `changed rows`, or `catalog entry`, and another transaction that conflicts with it aborts instead of waiting.
+**Lock** is the engine's own name for the lock. On PostgreSQL it is the mode `pg_locks.mode` reports, without the `Lock` suffix, such as `ACCESS EXCLUSIVE`, `SHARE`, or `SHARE UPDATE EXCLUSIVE`. On MySQL and MariaDB it is the `ALGORITHM` and `LOCK` clause the server accepts for the statement, such as `INSTANT` or `INPLACE, LOCK=NONE`, or `MDL EXCLUSIVE` and `IX` for statements that take no such clause. On SQL Server it is the table lock mode `sys.dm_tran_locks.request_mode` reports, such as `Sch-M`, `S`, or `X`. On SQLite it is `database write lock`, which every write takes on the whole database file. DuckDB takes no locks, so there it is the conflict a statement opens on the table, `altered table`, `changed rows`, or `catalog entry`, and another transaction that conflicts with it aborts instead of waiting.
 
 **Work**, ordered from lightest to heaviest:
 
@@ -120,7 +120,7 @@ Work that blocks writes, or reads and writes, is rated against the table's size:
 
 A static report reads no sizes, so blocking work is `warn`. `analyze()` takes a `Thresholds(rows, bytes)` to move the limits.
 
-On PostgreSQL, a lock that blocks writes or more, with no lock timeout in scope, draws a `pg.lock_timeout` finding whatever the table's size. The statement waits for its lock behind the longest open transaction on the table, and every query that conflicts with the lock waits behind the statement. The remedy is `SET LOCAL lock_timeout` inside a transaction, or `SET lock_timeout` outside one. A `LOCK TABLE ... NOWAIT` never waits, so it draws no timeout finding. A `lock_timeout` the connection already has, from the role, the database, or the connection string, covers the whole run. MySQL and MariaDB draw the same finding, as `mysql.lock_timeout` or `mariadb.lock_timeout`, for every statement that takes the exclusive metadata lock; see [Lock timeouts on MySQL and MariaDB](#lock-timeouts-on-mysql-and-mariadb). SQLite draws none, because a write waiting for the lock does not make other connections queue behind it. DuckDB draws none either, because a conflicting transaction aborts instead of waiting.
+On PostgreSQL, a lock that blocks writes or more, with no lock timeout in scope, draws a `pg.lock_timeout` finding whatever the table's size. The statement waits for its lock behind the longest open transaction on the table, and every query that conflicts with the lock waits behind the statement. The remedy is `SET LOCAL lock_timeout` inside a transaction, or `SET lock_timeout` outside one. A `LOCK TABLE ... NOWAIT` never waits, so it draws no timeout finding. A `lock_timeout` the connection already has, from the role, the database, or the connection string, covers the whole run. MySQL and MariaDB draw the same finding, as `mysql.lock_timeout` or `mariadb.lock_timeout`, for every statement that takes the exclusive metadata lock; see [Lock timeouts on MySQL and MariaDB](#lock-timeouts-on-mysql-and-mariadb). SQL Server draws it as `mssql.lock_timeout` for every table lock of `S` or stronger, with `SET LOCK_TIMEOUT 5000` as the remedy; see [Lock timeouts on SQL Server](#lock-timeouts-on-sql-server). SQLite draws none, because a write waiting for the lock does not make other connections queue behind it. DuckDB draws none either, because a conflicting transaction aborts instead of waiting.
 
 ## Server facts
 
@@ -146,6 +146,18 @@ On MySQL and MariaDB the read is this:
 | Instant row versions | `information_schema.INNODB_TABLES.TOTAL_ROW_VERSIONS`, MySQL 8.0.29 and later | Whether the table has instant changes left |
 | Schema | the schema read `plan()` uses | A column's current definition, which columns are indexed, and the table at the other end of a foreign key |
 
+On SQL Server the read is this:
+
+| Fact | Read from | Used for |
+| --- | --- | --- |
+| Version | `SERVERPROPERTY('ProductVersion')` | Rules that depend on the version, such as `ALTER COLUMN ... WITH (ONLINE = ON)` on 2016 and later, and the release the report names, such as `2022 (16.0.4135.4)` |
+| Edition | `SERVERPROPERTY('EngineEdition')` and `SERVERPROPERTY('Edition')` | Whether `ONLINE = ON` runs, and whether a NOT NULL column with a default changes only the catalog |
+| `LOCK_TIMEOUT` | `@@LOCK_TIMEOUT` | Whether a timeout covers the run before any `SET LOCK_TIMEOUT` |
+| `READ_COMMITTED_SNAPSHOT` | `sys.databases.is_read_committed_snapshot_on` | Whether reads wait for an `X` lock |
+| Table rows and sizes | `sys.partitions` and `sys.allocation_units` | The severity of blocking work |
+| Clustered index | `sys.indexes` | Whether the table is a heap, and whether an index a statement drops or rebuilds is the clustered one |
+| Schema | the schema read `plan()` uses | A column's current type and nullability, and the table an index to drop is on |
+
 On SQLite the read is this:
 
 | Fact | Read from | Used for |
@@ -165,7 +177,7 @@ On DuckDB the read is this:
 | Table rows | `duckdb_tables().estimated_size` | The severity of blocking work |
 | Schema | the schema read `plan()` uses | The table an index to drop is on |
 
-The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. On MySQL and MariaDB it is InnoDB's estimate, which `ANALYZE TABLE` refreshes, and which InnoDB also refreshes on its own after a tenth of the rows change. On SQLite it is the count `ANALYZE` recorded, which nothing refreshes until `ANALYZE` runs again. `ANALYZE` records no count for a table that was empty when it ran, or created after it, and the read counts no rows itself unless `exact_counts=True` asks it to count those tables. Each count reads every page of the table. `read_context()`, `async_read_context()`, `impact()`, `up()`, and `script()` on either migrator take `exact_counts`; on the command line, `plan`, `impact`, `migrate`, and `script` take `--exact-counts`, or the config module sets `exact_counts = True`. On DuckDB it is the row count DuckDB keeps for each table, and DuckDB reports no size in bytes for a single table. The other engines read the estimates the server keeps either way. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
+The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. On MySQL and MariaDB it is InnoDB's estimate, which `ANALYZE TABLE` refreshes, and which InnoDB also refreshes on its own after a tenth of the rows change. On SQL Server it is the approximate count `sys.partitions` keeps for the heap or clustered index, and the size is the table's used pages across all its indexes. On SQLite it is the count `ANALYZE` recorded, which nothing refreshes until `ANALYZE` runs again. `ANALYZE` records no count for a table that was empty when it ran, or created after it, and the read counts no rows itself unless `exact_counts=True` asks it to count those tables. Each count reads every page of the table. `read_context()`, `async_read_context()`, `impact()`, `up()`, and `script()` on either migrator take `exact_counts`; on the command line, `plan`, `impact`, `migrate`, and `script` take `--exact-counts`, or the config module sets `exact_counts = True`. On DuckDB it is the row count DuckDB keeps for each table, and DuckDB reports no size in bytes for a single table. The other engines read the estimates the server keeps either way. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
 
 A statement that fails, for example for lack of a privilege, leaves its facts out, and the rules fall back to the support floor or the worst case for them. Each statement runs inside a savepoint, so a failure does not abort the connection's open transaction. The report's `read` lists the facts that came from the server, and the last line of the text report says `assumed` before the version when the version was not read.
 
@@ -201,7 +213,7 @@ The NOT NULL flow the diff generates is one such case: it adds the column, backf
   warn    orders stays blocked for reads_and_writes from statement 1 until the migration commits, across the rows work of statement 2; move that work to a migration of its own
 ```
 
-A migration with `transactional=False` releases each lock when its statement ends, so each statement is a window of its own and the report prints no `window` line. MySQL and MariaDB commit each DDL statement on its own, so there every statement is a window of its own too. On SQLite a write locks the whole database, so a migration inside a transaction is one window, named `(database)`, whatever tables it writes; see [SQLite](#sqlite). DuckDB DDL is transactional, so there a conflict lasts until the migration commits, as a lock does on PostgreSQL. `MigrationImpact.held_to_commit`, and the `held_to_commit` key in the JSON output, say whether a migration's locks last until its commit.
+A migration with `transactional=False` releases each lock when its statement ends, so each statement is a window of its own and the report prints no `window` line. MySQL and MariaDB commit each DDL statement on its own, so there every statement is a window of its own too. On SQLite a write locks the whole database, so a migration inside a transaction is one window, named `(database)`, whatever tables it writes; see [SQLite](#sqlite). SQL Server DDL is transactional, so there every lock is held until the migration commits, as on PostgreSQL. DuckDB DDL is transactional, so there a conflict lasts until the migration commits, as a lock does on PostgreSQL. `MigrationImpact.held_to_commit`, and the `held_to_commit` key in the JSON output, say whether a migration's locks last until its commit.
 
 ## What the analysis carries through a run
 
@@ -210,12 +222,12 @@ The analysis reads the run in order, and each statement changes what it knows ab
 - **A table the run created is empty.** No other session can see it yet, so work on it blocks nothing and draws no findings. A plain `CREATE INDEX` on a table created earlier in the run is not flagged.
 - **A renamed table keeps its identity.** A later statement that names the new name reads the size of the original table.
 - **An index the run created is known.** A `DROP INDEX` names the table the run created the index on. For an index that already exists, the schema read names its table.
-- **A lock timeout stays in scope** for as long as PostgreSQL keeps it: `SET LOCAL` until the migration commits, and `SET` for the rest of the session. A timeout the connection already has is in scope from the first statement. `no_lock_without_timeout()` reads the same scope from the statements alone. On MySQL and MariaDB, `SET`, `SET SESSION`, and `SET LOCAL` all set the session's value for the rest of the run.
+- **A lock timeout stays in scope** for as long as PostgreSQL keeps it: `SET LOCAL` until the migration commits, and `SET` for the rest of the session. A timeout the connection already has is in scope from the first statement. `no_lock_without_timeout()` reads the same scope from the statements alone. On MySQL and MariaDB, `SET`, `SET SESSION`, and `SET LOCAL` all set the session's value for the rest of the run. On SQL Server, `SET LOCK_TIMEOUT` sets it for the rest of the session, inside a transaction or not.
 - **Session settings change later statements.** After `SET foreign_key_checks = 0`, a MySQL or MariaDB `ADD FOREIGN KEY` is read as the in-place form that checks no rows. `SET GLOBAL` and `SET PERSIST` leave the session's own value unchanged, so they change nothing the analysis reads.
 
 ## Generated statements
 
-A statement the diff or a `DdlStep` generated carries an intent: what the statement is meant to do, the table and column, and facts only the generator knew, such as the column's type before a type change. The analysis reads the intent first, and reads the text to check that the two agree. When they disagree, the text wins and an `impact.intent_mismatch` finding reports it.
+A statement the diff or a `DdlStep` generated has an intent: what the statement is meant to do, the table and column, and facts only the generator knew, such as the column's type before a type change. The analysis reads the intent first, and reads the text to check that the two agree. When they disagree, the text wins and an `impact.intent_mismatch` finding reports it. When the text cannot be read, as with the batch the SQL Server diff generates to drop a column default whose constraint name it looks up at run time, the analysis follows the intent alone and adds an `impact.from_intent` finding.
 
 ## Statements the analysis does not read
 
@@ -286,7 +298,7 @@ danger: pg.create_index  CREATE INDEX ix_orders_customer ON orders (customer_id)
 
 ## Observed impact
 
-`sustained rehearse --trace` runs the rehearsal and records what the server did for each statement, and prints the impact report with those facts in place of the prediction. `Migrator.rehearse(trace=True)` puts the report on the result's `impact` attribute, and `await AsyncMigrator.rehearse(trace=True)` does the same. Tracing works on PostgreSQL, MySQL, and MariaDB.
+`sustained rehearse --trace` runs the rehearsal and records what the server did for each statement, and prints the impact report with those facts in place of the prediction. `Migrator.rehearse(trace=True)` puts the report on the result's `impact` attribute, and `await AsyncMigrator.rehearse(trace=True)` does the same. Tracing works on PostgreSQL, MySQL, MariaDB, and SQL Server.
 
 ### On PostgreSQL
 
@@ -333,9 +345,19 @@ What the probe can and cannot show:
 - The metadata lock on a foreign key's parent table keeps its prediction, and so does a table the run created earlier.
 - The probe reads the scratch tables. A scratch table without the real table's rows, FULLTEXT indexes, or instant row versions can accept a clause the real table would refuse.
 
+### On SQL Server
+
+SQL Server rehearses on a scratch database, so a traced rehearsal needs `rehearse(scratch=True, trace=True)`, or a `get_rehearsal_connection()` in the config module for `sustained rehearse --trace`. The rehearsal runs each statement of each up step on its own inside the rehearsal transaction, and before and after each statement reads three things for its own session:
+
+- the table locks granted to the transaction, from `sys.dm_tran_locks`. Locks are held until the rollback, so a lock the statement took is one held after it and not before. A lock held only while the statement runs, such as the `Sch-S` of `UPDATE STATISTICS`, is gone by the second read, so a predicted lock that was not seen is not a mismatch.
+- the partitions of each table the statement names, and of each of its indexes, with their used pages, from `sys.partitions` and `sys.allocation_units`. A heap or clustered index whose partition changed and still has pages was copied. An index whose partition is new or changed was built. A partition that moved from another named table, as `SWITCH` moves it, is no copy.
+- the log the transaction has written, from `sys.dm_tran_database_transactions`. An `ALTER COLUMN` that updates every row in place keeps the table's partitions, so a statement that writes at least twice as much log as the table's heap or clustered index takes up, and at least 64 KB, counts as a rewrite. A write of rows logs every row it changes, so its log does not count as a copy.
+
+The observed lock and work replace the predicted ones, and each difference is an `impact.mismatch` finding, as on PostgreSQL. A lock of `S` or stronger on a table no rule named is a mismatch too. The observation cannot tell a scan from a catalog change, so a predicted scan stands unless a copy was seen, and a predicted copy that copied nothing falls to `scan`. A table the run created earlier is left as predicted, and so is a migration the rehearsal leaves out, or a callable step. A read that fails leaves its statement's facts as predicted, and the rehearsal goes on.
+
 ### Mismatches
 
-A mismatch does not change the exit code of `rehearse`. `--trace` needs PostgreSQL, MySQL, or MariaDB, and `rehearse(trace=True)` raises `DialectError` on any other dialect.
+A mismatch does not change the exit code of `rehearse`. `--trace` needs PostgreSQL, MySQL, MariaDB, or SQL Server, and `rehearse(trace=True)` raises `DialectError` on any other dialect.
 
 ## PostgreSQL
 
@@ -540,6 +562,99 @@ A statement that spells `ALGORITHM` or `LOCK` is read with them. A heavier algor
 A statement that copies the table while writes wait names an online schema change tool, such as gh-ost or pt-online-schema-change, which copies the table without blocking writes.
 
 The integration suite checks the rules against MySQL 8.4 and 26.7 and MariaDB 11.4 and 12.3. It checks the facts `read_context()` reads, and the parent-table locks, by running each foreign key statement while a second session reads the parent. It creates the tables the rules' fixture statements name in a database of their own, runs each fixture alone under the probe of `rehearse --trace`, and fails on any `impact.mismatch`. It creates the database again for each fixture, since MySQL schema changes do not roll back. A fixture that spells its own clause must run, or be refused when the rules predict a refusal.
+
+## SQL Server
+
+The rules follow the SQL Server documentation for 2012 and later. Rule ids start with `mssql.`.
+
+### Lock modes
+
+Each table line names the table lock mode the statement has when it ends, as `sys.dm_tran_locks` reports it. What each mode blocks follows the lock compatibility matrix under the default locking READ COMMITTED isolation:
+
+| Lock | Taken by | Blocks |
+| --- | --- | --- |
+| `Sch-S` | `UPDATE STATISTICS`, and an online index operation or `ALTER COLUMN` while it runs | `ddl` |
+| `IX` | `INSERT`, `UPDATE`, and `DELETE`, with an `X` lock on each row they change | `ddl` on the table. The table line reports `reads_and_writes` for the rows they change, or `writes` when the database reads with `READ_COMMITTED_SNAPSHOT` on |
+| `S` | `CREATE INDEX` of a nonclustered index | `writes` |
+| `X` | a write whose row locks escalate to the table, and `ALTER INDEX ... REORGANIZE` inside a transaction | `reads_and_writes`, or `writes` when the database reads with `READ_COMMITTED_SNAPSHOT` on |
+| `Sch-M` | every `ALTER TABLE`, `CREATE CLUSTERED INDEX`, `DROP INDEX`, `ALTER INDEX ... REBUILD` and `DISABLE`, `sp_rename`, `TRUNCATE TABLE`, `DROP TABLE`, and triggers | `reads_and_writes` |
+
+With `READ_COMMITTED_SNAPSHOT` on, readers read the last committed version of each row and take only `Sch-S`, so an `X` lock no longer blocks them, and `Sch-M` still does. Without a read of the setting, the rules assume it is off.
+
+SQL Server DDL is transactional, so inside a migration's transaction every lock is held until the commit. A foreign key that a statement adds, drops, checks, or disables takes `Sch-M` on the table it points at as well, and so does `DROP TABLE` of a table whose foreign keys point at others.
+
+SQL Server escalates the row locks of one statement to `X` on the whole table once the statement has 5,000 locks on it. An `UPDATE` or `DELETE` with no `WHERE` and no `TOP`, on a table of 5,000 rows or more, reports `X` under `mssql.lock_escalation`. Without the table's row count it reports `X` with confidence `likely`. Any other `UPDATE` or `DELETE` reports `IX`, and one without `TOP` gets an `info` finding that a write of 5,000 rows or more escalates.
+
+### Editions
+
+The Enterprise, Developer, and Evaluation editions, Azure SQL Database, and Azure SQL Managed Instance run index operations and `ALTER COLUMN` with `ONLINE = ON`, and add a NOT NULL column with a runtime constant default as a catalog change. The Standard, Web, and Express editions write the default into every row, and refuse `ONLINE = ON`. The rules read `SERVERPROPERTY('EngineEdition')`, and without it assume an edition without these features:
+
+- `ADD` of a NOT NULL column with a constant default, or of a default `WITH VALUES`, is a `rewrite` with confidence `likely`, and the finding names both cases
+- a statement with `ONLINE = ON` gets an `info` finding that it fails on the other editions; on an edition that was read to lack it, the finding is `danger`
+- the remedy offers `ONLINE = ON` unless the edition was read to lack it
+
+An operation with `ONLINE = ON` runs holding `Sch-S`, so reads and writes go on, and takes `S`, or `Sch-M` for a clustered index, a key, a rebuild, or `ALTER COLUMN`, on the table when it ends. Inside a transaction, that lock is held until the migration commits, so the table line names it with the work, and the finding is `info` whatever the table's size. The finding says to run the statement in a migration with `transactional=False`, or last in its migration. In a migration with `transactional=False`, the table line names `Sch-S`.
+
+### Lock timeouts on SQL Server
+
+A statement waiting for a lock queues every later lock request on the table that conflicts with it, so every statement whose table lock is `S`, `SIX`, `X`, or `Sch-M` draws an `mssql.lock_timeout` finding without a `LOCK_TIMEOUT` of 0 or more in scope. The `IX` of a write draws none. The remedy is `SET LOCK_TIMEOUT 5000`, in milliseconds. `SET LOCK_TIMEOUT` lasts for the rest of the session, inside a transaction or not. A `LOCK_TIMEOUT` the connection already has, read from `@@LOCK_TIMEOUT`, covers the whole run; the default, -1, waits without a limit. A statement that runs out of time fails with error 1222.
+
+### Rules
+
+| Statement | Lock | Work | Rule |
+| --- | --- | --- | --- |
+| `ADD` a nullable column, with or without a default, or a computed column | `Sch-M` | catalog | `mssql.add_column` |
+| `ADD` a NOT NULL column with a runtime constant default, or a default `WITH VALUES` | `Sch-M` | catalog on the editions above, and rewrite on the others | `mssql.add_column.default` |
+| `ADD` a column with a per-row default such as `NEWID()`, an identity, or a `PERSISTED` computed column | `Sch-M` | rewrite | `mssql.add_column.rewrite` |
+| `DROP COLUMN`, with a note that the space stays in each row until the table is rebuilt | `Sch-M` | catalog | `mssql.drop_column` |
+| `ALTER COLUMN` to a longer length of the same variable-length type, to the same type, or to NULL | `Sch-M` | catalog | `mssql.alter_column.metadata` |
+| `ALTER COLUMN ... NOT NULL` on a nullable column: a scan of a fixed-length column, and an update of every row of a variable-length one | `Sch-M` | scan or rewrite | `mssql.set_not_null` |
+| Any other `ALTER COLUMN`, which updates every row | `Sch-M` | rewrite | `mssql.alter_column` |
+| `ALTER COLUMN ... WITH (ONLINE = ON)`, 2016 and later | `Sch-M` when it ends | rewrite | `mssql.alter_column.online` |
+| `ADD CONSTRAINT ... CHECK` | `Sch-M` | scan | `mssql.add_check` |
+| `WITH NOCHECK ADD CONSTRAINT ... CHECK` | `Sch-M` | catalog | `mssql.add_check.nocheck` |
+| `ADD CONSTRAINT ... FOREIGN KEY`, on both tables | `Sch-M` | scan | `mssql.add_foreign_key` |
+| `WITH NOCHECK ADD CONSTRAINT ... FOREIGN KEY`, on both tables | `Sch-M` | catalog | `mssql.add_foreign_key.nocheck` |
+| `WITH CHECK CHECK CONSTRAINT` | `Sch-M` | scan | `mssql.check_constraint` |
+| `CHECK CONSTRAINT` and `NOCHECK CONSTRAINT` without `WITH CHECK` | `Sch-M` | catalog | `mssql.constraint_state` |
+| `ADD CONSTRAINT ... PRIMARY KEY` or `UNIQUE`: an index build, or a rewrite for a clustered key on a heap. A primary key is clustered unless it says `NONCLUSTERED` or the table has a clustered index | `Sch-M` | index build or rewrite | `mssql.add_key` |
+| The same `WITH (ONLINE = ON)` | `Sch-M` when it ends | index build or rewrite | `mssql.add_key.online` |
+| `DROP CONSTRAINT`: a rewrite into a heap for the key behind the clustered index | `Sch-M` | catalog or rewrite | `mssql.drop_constraint` |
+| `ADD DEFAULT ... FOR`, and the diff's default drop | `Sch-M` | catalog | `mssql.default` |
+| `CREATE INDEX` of a nonclustered index | `S` | index build | `mssql.create_index` |
+| `CREATE INDEX ... WITH (ONLINE = ON)` | `S` when it ends | index build | `mssql.create_index.online` |
+| `CREATE CLUSTERED INDEX`, which copies a heap into the index | `Sch-M` | rewrite | `mssql.create_index.clustered` |
+| `DROP INDEX` | `Sch-M` | catalog | `mssql.drop_index` |
+| `DROP INDEX` of the clustered index, which copies the table into a heap | `Sch-M` | rewrite | `mssql.drop_index.clustered` |
+| `ALTER INDEX ... REBUILD`: a rewrite for the clustered index or `ALL`, and an index build otherwise; `ALTER TABLE ... REBUILD` | `Sch-M` | index build or rewrite | `mssql.rebuild` |
+| `ALTER INDEX ... REORGANIZE`: a scan of a nonclustered index, and a rewrite with confidence `likely` of the clustered index or `ALL`, which moves rows in proportion to the fragmentation | `X` inside a transaction, `IX` outside one | scan or rewrite | `mssql.reorganize` |
+| `ALTER INDEX ... DISABLE`, with a `danger` finding for the clustered index, which makes the table unreadable until it is rebuilt | `Sch-M` | catalog | `mssql.disable_index` |
+| `ALTER TABLE ... SWITCH`, on both tables | `Sch-M` | catalog | `mssql.switch` |
+| `sp_rename` of a table, column, or index, with a note that running code naming the old name fails | `Sch-M` | catalog | `mssql.rename` |
+| `TRUNCATE TABLE` | `Sch-M` | catalog | `mssql.truncate` |
+| `DROP TABLE` | `Sch-M` | catalog | `mssql.drop_table` |
+| `CREATE TRIGGER`, `DROP TRIGGER`, `ENABLE TRIGGER`, `DISABLE TRIGGER` | `Sch-M` | catalog | `mssql.trigger` |
+| `CREATE TABLE`, reported with each table its foreign keys reference; creating or dropping a view | `Sch-M` | catalog | `mssql.schema_change` |
+| `INSERT`, `UPDATE`, `DELETE` | `IX` | rows | `mssql.write_rows` |
+| `UPDATE` or `DELETE` of every row of a table of 5,000 rows or more | `X` | rows | `mssql.lock_escalation` |
+| `UPDATE STATISTICS` | `Sch-S` | scan | `mssql.update_statistics` |
+
+The rules read the column's current type and nullability from the intent the diff attaches, or from the schema read. Without either, an `ALTER COLUMN` is a rewrite with confidence `likely`, and the finding says the current type was not read. A change of precision or scale within one type is a rewrite with confidence `likely`, since the new values may fit the same storage.
+
+### Remedies
+
+| Pattern | Remedy |
+| --- | --- |
+| `CREATE INDEX`, `ADD CONSTRAINT ... PRIMARY KEY` or `UNIQUE`, `ALTER TABLE ... REBUILD` | The statement `WITH (ONLINE = ON)`, and for `CREATE INDEX` in a migration with `transactional=False` on 2019 and later, `RESUMABLE = ON` as well |
+| `ALTER INDEX ... REBUILD` | `WITH (ONLINE = ON (WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 MINUTES, ABORT_AFTER_WAIT = SELF)))` on 2014 and later, with `RESUMABLE = ON` in a migration with `transactional=False` on 2017 and later |
+| `ALTER COLUMN` that updates every row | The statement `WITH (ONLINE = ON)`, on 2016 and later |
+| `ALTER TABLE ... SWITCH` | `WITH (WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 MINUTES, ABORT_AFTER_WAIT = SELF))`, on 2014 and later |
+| `ADD CONSTRAINT` of a CHECK or FOREIGN KEY | `WITH NOCHECK ADD CONSTRAINT`, with a note that the constraint stays untrusted, and the optimizer does not rely on it, until `WITH CHECK CHECK CONSTRAINT` checks every row later |
+| `ADD` a NOT NULL column that writes every row | Add the column as NULL without a default, backfill it in batches, then add the default and make it NOT NULL |
+
+A remedy that needs `ONLINE = ON` is left out on an edition that was read to lack it.
+
+The integration suite checks the rules against SQL Server 2022 and 2025, on the Developer edition, which has the Enterprise features, so the rules for the other editions are checked by the unit tests alone. It checks the facts `read_context()` reads. It creates the tables the rules' fixture statements name on a scratch database, runs each fixture inside a transaction between two reads of the locks granted to the session, the partitions of the tables it names, and the log the transaction has written, rolls it back, and fails on any `impact.mismatch`. It also runs a traced rehearsal of an index build and a size-of-data `ALTER COLUMN`, and checks the observed lock and work of each.
 
 ## SQLite
 

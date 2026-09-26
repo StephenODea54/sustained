@@ -51,6 +51,7 @@ FLOORS: Mapping[str, Tuple[int, ...]] = MappingProxyType(
         "mariadb": (10, 6),
         "sqlite": (3, 35),
         "duckdb": (1, 0),
+        "mssql": (11,),
     }
 )
 
@@ -62,7 +63,8 @@ class TableStats(NamedTuple):
     row format in upper case, such as `DYNAMIC` or `COMPRESSED`.
     `row_versions` counts the instant column changes MySQL has recorded
     since the table was last rebuilt, and `fulltext` says whether the
-    table has a FULLTEXT index.
+    table has a FULLTEXT index. On SQL Server, `heap` says whether the
+    table has no clustered index, and `clustered` names the one it has.
     """
 
     rows: Optional[int] = None
@@ -70,6 +72,8 @@ class TableStats(NamedTuple):
     row_format: Optional[str] = None
     row_versions: Optional[int] = None
     fulltext: Optional[bool] = None
+    heap: Optional[bool] = None
+    clustered: Optional[str] = None
 
 
 class EngineContext(NamedTuple):

@@ -255,10 +255,93 @@ class MssqlRenameTestCase(RecognizerTestCase):
         self.assertEqual((parsed.kind, parsed.table), ("rename_table", "dbo.t"))
         self.assertEqual(parsed.options["new"], "u")
 
+    def test_index_rename(self):
+        parsed = recognize("EXEC sp_rename 'dbo.t.ix', 'iy', 'INDEX'", MSSQL)
+        self.assertEqual((parsed.kind, parsed.table), ("alter_table", "dbo.t"))
+        (action,) = parsed.actions
+        self.assertEqual(action.kind, "rename_index")
+        self.assertEqual((action.options["old"], action.options["new"]), ("ix", "iy"))
+
     def test_other_procedures_and_kinds_are_unknown(self):
         self.assertUnknown("EXEC sp_who", MSSQL)
-        self.assertUnknown("EXEC sp_rename 't.ix', 'iy', 'INDEX'", MSSQL)
+        self.assertUnknown("EXEC sp_rename 't.ix', 'iy', 'USERDATATYPE'", MSSQL)
+        self.assertUnknown("EXEC sp_rename 'ix', 'iy', 'INDEX'", MSSQL)
         self.assertUnknown("EXEC sp_rename 't'", MSSQL)
+
+
+class MssqlStatementsTestCase(RecognizerTestCase):
+    def test_clustered_indexes(self):
+        clustered = recognize("CREATE UNIQUE CLUSTERED INDEX cx ON t (a)", MSSQL)
+        self.assertTrue(clustered.options["clustered"])
+        self.assertTrue(clustered.options["unique"])
+        plain = recognize("CREATE NONCLUSTERED INDEX ix ON t (a)", MSSQL)
+        self.assertFalse(plain.options["clustered"])
+        self.assertNotIn("clustered", recognize("CREATE INDEX ix ON t (a)").options)
+        (key,) = recognize(
+            "ALTER TABLE t ADD CONSTRAINT pk PRIMARY KEY NONCLUSTERED (id)", MSSQL
+        ).actions
+        self.assertFalse(key.options["clustered"])
+
+    def test_a_filtered_index_reads_the_with_after_its_predicate(self):
+        parsed = recognize(
+            "CREATE INDEX ix ON t (a) INCLUDE (b) WHERE a > 0 AND b IN (1, 2) "
+            "WITH (ONLINE = ON, RESUMABLE = ON) ON [PRIMARY]",
+            MSSQL,
+        )
+        self.assertTrue(parsed.options["partial"])
+        self.assertEqual(
+            dict(parsed.options["with"]), {"ONLINE": "ON", "RESUMABLE": "ON"}
+        )
+
+    def test_drop_index_with_options(self):
+        parsed = recognize("DROP INDEX ix ON t WITH (ONLINE = ON)", MSSQL)
+        self.assertEqual(parsed.table, "t")
+        self.assertEqual(dict(parsed.options["with"]), {"ONLINE": "ON"})
+        self.assertUnknown("DROP INDEX ix ON t WITH (ONLINE = ON)", table="t")
+
+    def test_alter_index(self):
+        parsed = recognize(
+            "ALTER INDEX ALL ON dbo.t REBUILD PARTITION = 2 WITH (ONLINE = ON "
+            "(WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 MINUTES, ABORT_AFTER_WAIT = SELF)))",
+            MSSQL,
+        )
+        self.assertEqual((parsed.kind, parsed.table), ("alter_index", "dbo.t"))
+        self.assertIsNone(parsed.options["name"])
+        self.assertEqual(parsed.options["operation"], "rebuild")
+        self.assertTrue(parsed.options["partition"])
+        self.assertTrue(parsed.options["with"]["ONLINE"].startswith("ON (WAIT_AT"))
+        reorganize = recognize("ALTER INDEX ix ON t REORGANIZE", MSSQL)
+        self.assertEqual(reorganize.options["name"], "ix")
+        self.assertEqual(reorganize.options["operation"], "reorganize")
+        settings = recognize("ALTER INDEX ix ON t SET (ALLOW_PAGE_LOCKS = OFF)", MSSQL)
+        self.assertEqual(dict(settings.options["with"]), {"ALLOW_PAGE_LOCKS": "OFF"})
+        self.assertUnknown("ALTER INDEX ix ON t REBUILD EXTRA", MSSQL, table="t")
+        self.assertUnknown("ALTER INDEX ix ON t REBUILD")
+
+    def test_rebuild_and_switch(self):
+        (rebuild,) = recognize(
+            "ALTER TABLE t REBUILD PARTITION = ALL WITH (ONLINE = ON)", MSSQL
+        ).actions
+        self.assertEqual(rebuild.kind, "rebuild")
+        self.assertTrue(rebuild.options["partition"])
+        self.assertEqual(dict(rebuild.options["with"]), {"ONLINE": "ON"})
+        (switch,) = recognize(
+            "ALTER TABLE t SWITCH PARTITION 1 TO dbo.u PARTITION 1 WITH "
+            "(WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 MINUTES, ABORT_AFTER_WAIT = NONE))",
+            MSSQL,
+        ).actions
+        self.assertEqual((switch.kind, switch.options["target"]), ("switch", "dbo.u"))
+        self.assertIn("WAIT_AT_LOW_PRIORITY", switch.options["with"])
+        self.assertUnknown("ALTER TABLE t SWITCH TO u", table="t")
+        self.assertUnknown("ALTER TABLE t REBUILD", table="t")
+
+    def test_update_statistics(self):
+        parsed = recognize("UPDATE STATISTICS dbo.t (ix, ix2) WITH FULLSCAN", MSSQL)
+        self.assertEqual((parsed.kind, parsed.table), ("update_statistics", "dbo.t"))
+        self.assertTrue(parsed.options["fullscan"])
+        sampled = recognize("UPDATE STATISTICS t ix WITH SAMPLE 10 PERCENT", MSSQL)
+        self.assertFalse(sampled.options["fullscan"])
+        self.assertFalse(recognize("UPDATE STATISTICS t", MSSQL).options["fullscan"])
 
 
 class UnknownTestCase(RecognizerTestCase):

@@ -93,7 +93,7 @@
         "dsn_env": "SUSTAINED_TEST_MSSQL_LATEST_DSN",
         "dsn": "mssql://sa:Sustained1!@127.0.0.1:51533/sustained"
       },
-      "covers": ["queries", "writes", "transactions", "migrations"],
+      "covers": ["queries", "writes", "transactions", "migrations", "impact"],
       "note": "Off the rehearsal allowlist, so rehearse refuses without scratch=True. OFFSET with FETCH sets the floor. pyodbc needs the ODBC driver installed."
     },
     {

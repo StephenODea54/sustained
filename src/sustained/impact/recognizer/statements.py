@@ -30,6 +30,8 @@ class Statements(Cursor):
     """DML, maintenance, SET, LOCK, and the other statements."""
 
     def update(self) -> ParsedStatement:
+        if self.mssql and self.accept("STATISTICS"):
+            return self.update_statistics()
         limited = self.top()
         self.accept("ONLY")
         table = self.target()
@@ -37,6 +39,24 @@ class Statements(Cursor):
         if not self.top_level_word(rest, "SET"):
             raise Unrecognized("expected SET in UPDATE")
         return self.write_statement("update", table, rest, limited)
+
+    def update_statistics(self) -> ParsedStatement:
+        """
+        SQL Server's `UPDATE STATISTICS table [name | (names)] [WITH ...]`;
+        `fullscan` says whether WITH FULLSCAN reads every row.
+        """
+        table = self.target()
+        if self.is_punct("("):
+            self.group()
+        elif self.is_name() and not self.is_word("WITH"):
+            self.name()
+        fullscan = False
+        if self.accept("WITH"):
+            words = {t.value for t in self.rest() if t.kind == WORD}
+            fullscan = "FULLSCAN" in words
+        return ParsedStatement(
+            "update_statistics", table, options=frozen({"fullscan": fullscan})
+        )
 
     def top(self) -> bool:
         """SQL Server's `TOP (n)`, which caps the rows a write touches."""
@@ -378,6 +398,13 @@ class Statements(Cursor):
                 "rename_column",
                 path[-1],
                 frozen({"old": path[-1], "new": arguments[1]}),
+            )
+            return ParsedStatement("alter_table", table, (action,))
+        if kind == "INDEX" and len(path) >= 2:
+            table = ".".join(path[:-1])
+            self.table = table
+            action = Action(
+                "rename_index", None, frozen({"old": path[-1], "new": arguments[1]})
             )
             return ParsedStatement("alter_table", table, (action,))
         if kind == "OBJECT":

@@ -59,6 +59,7 @@ from sustained.impact.model import (
     TableImpact,
     Work,
 )
+from sustained.impact.rules.common import settled_work, work_mismatch
 from sustained.impact.window import aggregate
 
 if TYPE_CHECKING:
@@ -329,41 +330,13 @@ def _compare(
         if table.blocks != profile.blocks(table.lock):
             blocks = max(blocks, table.blocks)
         updated = updated._replace(lock=observed.lock, blocks=blocks)
-    work = _work(table.work, observed.work)
+    work = settled_work(table.work, observed.work)
     if work is not None and work != table.work:
-        findings.append(_mismatch(_work_message(table, observed.work)))
+        findings.append(
+            _mismatch(work_mismatch(table, observed.work, "copied no file"))
+        )
         updated = updated._replace(work=work)
     return updated, findings
-
-
-def _work(predicted: Work, observed: Optional[Work]) -> Optional[Work]:
-    """
-    The work to report. A copy that was seen stands. With no copy seen,
-    a predicted scan, row write, or catalog change stands, since an
-    observation cannot tell them apart, and a predicted copy falls to
-    a scan, the heaviest work that copies nothing.
-    """
-    if observed is None or observed is Work.UNKNOWN:
-        return None
-    if observed in (Work.REWRITE, Work.INDEX_BUILD):
-        return observed
-    if predicted in (Work.REWRITE, Work.INDEX_BUILD):
-        return Work.SCAN
-    return None
-
-
-def _work_message(table: TableImpact, observed: Optional[Work]) -> str:
-    if observed is Work.REWRITE:
-        return f"the rules predicted {table.work} on {table.table}, and the server rewrote it"
-    if observed is Work.INDEX_BUILD:
-        return (
-            f"the rules predicted {table.work} on {table.table}, and the server "
-            "built an index on it"
-        )
-    what = "a rewrite" if table.work is Work.REWRITE else "an index build"
-    return (
-        f"the rules predicted {what} on {table.table}, and the server " "copied no file"
-    )
 
 
 def _display(names: Mapping[str, int], oid: int) -> str:
