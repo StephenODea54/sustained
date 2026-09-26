@@ -6,5 +6,5 @@ block, and whether the table is rewritten.
 The package is being built in phases. So far it holds the shared
 tokenizer (`sustained.impact.tokens`), the report model
 (`sustained.impact.model`), and the recognizer that reads a statement's
-text into a shape (`sustained.impact.shapes`).
+text into a parsed statement (`sustained.impact.recognizer`).
 """

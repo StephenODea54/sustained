@@ -310,7 +310,7 @@ class TrackingTableCases(BothMigrators):
             "FROM sustained_migrations ORDER BY seq"
         ).fetchall()
 
-    async def test_fresh_table_has_full_shape(self):
+    async def test_fresh_table_has_every_column(self):
         await self.migrator([]).up()
         self.assertEqual(
             self.columns(),
@@ -901,7 +901,7 @@ class ReadOnlyPathsCases(BothMigrators):
         later = self.migrator(self.migrations())
         self.assertEqual([r.id for r in await later.read_applied_records()], ["001_t"])
 
-    async def test_a_tracking_table_of_the_old_shape_reads_as_empty(self):
+    async def test_a_tracking_table_of_the_old_layout_reads_as_empty(self):
         self.conn.execute("CREATE TABLE sustained_migrations (id TEXT)")
         self.conn.execute("INSERT INTO sustained_migrations VALUES ('001_t')")
         migrator = self.migrator(self.migrations())

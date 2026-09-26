@@ -793,7 +793,7 @@ class DiffSnapshotsTestCase(unittest.TestCase):
             ["column 'snap_users.bio' missing"],
         )
 
-    def test_changed_column_names_both_shapes(self):
+    def test_changed_column_names_both_definitions(self):
         before = self.snapshot()
         self.conn.execute("DROP TABLE snap_users")
         self.conn.execute(

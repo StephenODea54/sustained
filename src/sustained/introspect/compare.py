@@ -11,7 +11,7 @@ from sustained.introspect.model import IntrospectedColumn, IntrospectedTable
 from sustained.introspect.normalize import normalize_type, type_params
 
 
-def _column_shape(column: IntrospectedColumn) -> Tuple[str, Optional[str], bool, bool]:
+def _column_parts(column: IntrospectedColumn) -> Tuple[str, Optional[str], bool, bool]:
     """
     One column reduced to the parts two snapshots are compared on: the
     logical type, its parameters, nullability, and key membership. The
@@ -28,7 +28,7 @@ def _column_shape(column: IntrospectedColumn) -> Tuple[str, Optional[str], bool,
 
 
 def _describe_column(column: IntrospectedColumn) -> str:
-    """A column shape in one readable phrase."""
+    """A column definition in one readable phrase."""
     text = (column.raw_type or "?").upper()
     if not column.nullable:
         text += " NOT NULL"
@@ -62,7 +62,7 @@ def diff_snapshots(
         for column in sorted(set(old) - set(new)):
             lines.append(f"column '{table}.{column}' missing")
         for column in sorted(set(old) & set(new)):
-            if _column_shape(old[column]) != _column_shape(new[column]):
+            if _column_parts(old[column]) != _column_parts(new[column]):
                 lines.append(
                     f"column '{table}.{column}' changed: "
                     f"{_describe_column(old[column])} became "

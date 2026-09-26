@@ -153,7 +153,7 @@
 - The CLI removes the `sys.path` entry it added by value, not by position, so a config module that prepends its own directory keeps that entry.
 - A compiler override written before the render context keeps working. The `Compiler` base class wraps the old signature at class creation, including `staticmethod` and `classmethod` overrides.
 - `GuardBlocked([])` builds its message instead of raising `ValueError` over an empty `max()`.
-- A capitalized join spelling such as `LeftJoin` resolves, and an unknown join-shaped name raises `AttributeError` so `hasattr()` works.
+- A capitalized join spelling such as `LeftJoin` resolves, and an unknown name that looks like a join raises `AttributeError` so `hasattr()` works.
 - The docs say a row count of `-1` from an async write means the driver reported no count; asyncpg does this for batched inserts. `returning()` gives an exact count.
 - The matrix runner runs the container-free targets when compose fails, instead of reporting sqlite, duckdb, and athena as not started.
 - The README links to the schema guide with the site URL, so the link works on GitHub and PyPI.

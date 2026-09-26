@@ -56,7 +56,7 @@ class TestToDicts(ResultFormatTestCase):
 
 @unittest.skipUnless(HAS_PANDAS, "pandas not installed")
 class TestToDf(ResultFormatTestCase):
-    def test_dataframe_shape_and_columns(self):
+    def test_dataframe_rows_and_columns(self):
         df = FmtUser.query().orderBy("id").to_df()
         self.assertEqual(list(df.columns), ["id", "name"])
         self.assertEqual(len(df), 2)

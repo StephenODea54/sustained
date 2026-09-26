@@ -237,7 +237,7 @@ class JoinClauseBuilder:
                 return dynamic_join_caller
             else:
                 # This is a raw ...join() call
-                # One name covers three call shapes, so the arguments are
+                # One name covers three call signatures, so the arguments are
                 # sorted out below rather than in the signature. The typed
                 # overloads a caller sees live in join_builder.pyi.
                 def dynamic_raw_join_caller(

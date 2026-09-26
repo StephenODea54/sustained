@@ -1,12 +1,12 @@
-"""Tests for the recognizer that reads statement text into a Shape."""
+"""Tests for the recognizer that reads statement text into a ParsedStatement."""
 
 import unittest
 
 from sustained.dialects import Dialects
-from sustained.impact.model import UNKNOWN_SHAPE
-from sustained.impact.shapes import (
+from sustained.impact.model import UNKNOWN_KIND
+from sustained.impact.recognizer import (
     ACTION_KINDS,
-    SHAPE_KINDS,
+    STATEMENT_KINDS,
     classify_default,
     recognize,
 )
@@ -20,42 +20,42 @@ SQLITE = Dialects.DEFAULT
 
 def action(sql, dialect=PG):
     """The single ALTER TABLE action a statement holds."""
-    shape = recognize(sql, dialect)
-    assert shape.kind == "alter_table", (shape, sql)
-    assert len(shape.actions) == 1, shape.actions
-    return shape.actions[0]
+    parsed = recognize(sql, dialect)
+    assert parsed.kind == "alter_table", (parsed, sql)
+    assert len(parsed.actions) == 1, parsed.actions
+    return parsed.actions[0]
 
 
 class RecognizerTestCase(unittest.TestCase):
     def assertUnknown(self, sql, dialect=PG, table=None):
-        shape = recognize(sql, dialect)
-        self.assertEqual(shape.kind, UNKNOWN_SHAPE, (sql, shape))
-        self.assertFalse(shape.known)
-        self.assertTrue(shape.options["reason"])
-        self.assertEqual(shape.table, table)
-        return shape
+        parsed = recognize(sql, dialect)
+        self.assertEqual(parsed.kind, UNKNOWN_KIND, (sql, parsed))
+        self.assertFalse(parsed.known)
+        self.assertTrue(parsed.options["reason"])
+        self.assertEqual(parsed.table, table)
+        return parsed
 
 
 class CreateIndexTestCase(RecognizerTestCase):
     def test_plain_index(self):
-        shape = recognize('CREATE INDEX "ix_a" ON "app"."items" ("a", "b")', PG)
-        self.assertEqual(shape.kind, "create_index")
-        self.assertEqual(shape.table, "app.items")
-        self.assertEqual(shape.options["name"], "ix_a")
-        self.assertEqual(shape.options["columns"], 2)
-        self.assertFalse(shape.options["unique"])
-        self.assertFalse(shape.options["concurrently"])
-        self.assertFalse(shape.options["partial"])
+        parsed = recognize('CREATE INDEX "ix_a" ON "app"."items" ("a", "b")', PG)
+        self.assertEqual(parsed.kind, "create_index")
+        self.assertEqual(parsed.table, "app.items")
+        self.assertEqual(parsed.options["name"], "ix_a")
+        self.assertEqual(parsed.options["columns"], 2)
+        self.assertFalse(parsed.options["unique"])
+        self.assertFalse(parsed.options["concurrently"])
+        self.assertFalse(parsed.options["partial"])
 
     def test_every_postgres_option(self):
-        shape = recognize(
+        parsed = recognize(
             "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ix ON ONLY t "
             "USING btree (lower(a), b DESC NULLS LAST) INCLUDE (c) "
             "NULLS NOT DISTINCT WITH (fillfactor = 70) TABLESPACE fast "
             "WHERE deleted_at IS NULL",
             PG,
         )
-        options = shape.options
+        options = parsed.options
         self.assertTrue(options["unique"])
         self.assertTrue(options["concurrently"])
         self.assertTrue(options["if_not_exists"])
@@ -66,26 +66,26 @@ class CreateIndexTestCase(RecognizerTestCase):
         self.assertTrue(options["partial"])
 
     def test_an_unnamed_index(self):
-        shape = recognize("CREATE INDEX ON t (a)", PG)
-        self.assertIsNone(shape.options["name"])
-        self.assertEqual(shape.table, "t")
+        parsed = recognize("CREATE INDEX ON t (a)", PG)
+        self.assertIsNone(parsed.options["name"])
+        self.assertEqual(parsed.table, "t")
 
     def test_mssql_online_and_filegroup(self):
-        shape = recognize(
+        parsed = recognize(
             "CREATE NONCLUSTERED INDEX [ix] ON [dbo].[t] ([a]) "
             "WITH (ONLINE = ON, RESUMABLE = ON) ON [PRIMARY]",
             MSSQL,
         )
-        self.assertEqual(shape.table, "dbo.t")
-        self.assertEqual(shape.options["with"], {"ONLINE": "ON", "RESUMABLE": "ON"})
+        self.assertEqual(parsed.table, "dbo.t")
+        self.assertEqual(parsed.options["with"], {"ONLINE": "ON", "RESUMABLE": "ON"})
 
     def test_mysql_algorithm_and_lock(self):
-        shape = recognize(
+        parsed = recognize(
             "CREATE FULLTEXT INDEX ix ON t (body) ALGORITHM = INPLACE LOCK=NONE", MYSQL
         )
-        self.assertTrue(shape.options["fulltext"])
-        self.assertEqual(shape.options["algorithm"], "INPLACE")
-        self.assertEqual(shape.options["lock"], "NONE")
+        self.assertTrue(parsed.options["fulltext"])
+        self.assertEqual(parsed.options["algorithm"], "INPLACE")
+        self.assertEqual(parsed.options["lock"], "NONE")
 
     def test_an_unread_option_is_unknown(self):
         self.assertUnknown("CREATE INDEX ix ON t (a) FROBNICATE", table="t")
@@ -96,24 +96,24 @@ class CreateIndexTestCase(RecognizerTestCase):
 
 class DropIndexTestCase(RecognizerTestCase):
     def test_postgres_names_no_table(self):
-        shape = recognize("DROP INDEX CONCURRENTLY IF EXISTS app.ix_a, ix_b CASCADE")
-        self.assertEqual(shape.kind, "drop_index")
-        self.assertIsNone(shape.table)
-        self.assertEqual(shape.options["name"], "app.ix_a")
-        self.assertEqual(shape.options["names"], ("app.ix_a", "ix_b"))
-        self.assertTrue(shape.options["concurrently"])
-        self.assertTrue(shape.options["if_exists"])
+        parsed = recognize("DROP INDEX CONCURRENTLY IF EXISTS app.ix_a, ix_b CASCADE")
+        self.assertEqual(parsed.kind, "drop_index")
+        self.assertIsNone(parsed.table)
+        self.assertEqual(parsed.options["name"], "app.ix_a")
+        self.assertEqual(parsed.options["names"], ("app.ix_a", "ix_b"))
+        self.assertTrue(parsed.options["concurrently"])
+        self.assertTrue(parsed.options["if_exists"])
 
     def test_mysql_on_table(self):
-        shape = recognize("DROP INDEX `ix` ON `app`.`t` ALGORITHM=INPLACE", MYSQL)
-        self.assertEqual(shape.table, "app.t")
-        self.assertEqual(shape.options["algorithm"], "INPLACE")
+        parsed = recognize("DROP INDEX `ix` ON `app`.`t` ALGORITHM=INPLACE", MYSQL)
+        self.assertEqual(parsed.table, "app.t")
+        self.assertEqual(parsed.options["algorithm"], "INPLACE")
 
     def test_mssql_forms(self):
         self.assertEqual(recognize("DROP INDEX [ix] ON [t]", MSSQL).table, "t")
-        shape = recognize("DROP INDEX t.ix", MSSQL)
-        self.assertEqual(shape.table, "t")
-        self.assertEqual(shape.options["name"], "ix")
+        parsed = recognize("DROP INDEX t.ix", MSSQL)
+        self.assertEqual(parsed.table, "t")
+        self.assertEqual(parsed.options["name"], "ix")
         # Postgres reads the same text as schema.index.
         self.assertIsNone(recognize("DROP INDEX t.ix", PG).table)
 
@@ -123,17 +123,17 @@ class DropIndexTestCase(RecognizerTestCase):
 
 class AlterTableTestCase(RecognizerTestCase):
     def test_table_options(self):
-        shape = recognize("ALTER TABLE IF EXISTS ONLY app.t DROP COLUMN c")
-        self.assertEqual(shape.table, "app.t")
-        self.assertTrue(shape.options["if_exists"])
-        self.assertTrue(shape.options["only"])
+        parsed = recognize("ALTER TABLE IF EXISTS ONLY app.t DROP COLUMN c")
+        self.assertEqual(parsed.table, "app.t")
+        self.assertTrue(parsed.options["if_exists"])
+        self.assertTrue(parsed.options["only"])
 
     def test_several_actions_in_order(self):
-        shape = recognize(
+        parsed = recognize(
             "ALTER TABLE t ADD COLUMN a int, DROP COLUMN b, ALTER COLUMN c SET NOT NULL"
         )
         self.assertEqual(
-            [(a.kind, a.column) for a in shape.actions],
+            [(a.kind, a.column) for a in parsed.actions],
             [("add_column", "a"), ("drop_column", "b"), ("set_not_null", "c")],
         )
 
@@ -244,11 +244,11 @@ class AlterTableTestCase(RecognizerTestCase):
         self.assertTrue(added.options["with_values"])
 
     def test_mssql_lists_more_columns_after_one_add_or_drop(self):
-        shape = recognize("ALTER TABLE t ADD a INT, b INT NULL", MSSQL)
-        self.assertEqual([a.column for a in shape.actions], ["a", "b"])
-        shape = recognize("ALTER TABLE t DROP COLUMN a, b", MSSQL)
+        parsed = recognize("ALTER TABLE t ADD a INT, b INT NULL", MSSQL)
+        self.assertEqual([a.column for a in parsed.actions], ["a", "b"])
+        parsed = recognize("ALTER TABLE t DROP COLUMN a, b", MSSQL)
         self.assertEqual(
-            [(a.kind, a.column) for a in shape.actions],
+            [(a.kind, a.column) for a in parsed.actions],
             [("drop_column", "a"), ("drop_column", "b")],
         )
         self.assertUnknown("ALTER TABLE t ADD a INT, b INT", PG, table="t")
@@ -296,14 +296,14 @@ class AlterTableTestCase(RecognizerTestCase):
         self.assertEqual(fk.options["name"], "fk_a")
 
     def test_mssql_check_forms(self):
-        shape = recognize(
+        parsed = recognize(
             "ALTER TABLE t WITH NOCHECK ADD CONSTRAINT ck CHECK (a > 0)", MSSQL
         )
-        self.assertTrue(shape.options["nocheck"])
-        self.assertEqual(shape.actions[0].options["constraint"], "check")
-        shape = recognize("ALTER TABLE t WITH CHECK CHECK CONSTRAINT ck", MSSQL)
-        self.assertFalse(shape.options["nocheck"])
-        self.assertEqual(shape.actions[0].kind, "enable_constraint")
+        self.assertTrue(parsed.options["nocheck"])
+        self.assertEqual(parsed.actions[0].options["constraint"], "check")
+        parsed = recognize("ALTER TABLE t WITH CHECK CHECK CONSTRAINT ck", MSSQL)
+        self.assertFalse(parsed.options["nocheck"])
+        self.assertEqual(parsed.actions[0].kind, "enable_constraint")
         self.assertEqual(
             action("ALTER TABLE t NOCHECK CONSTRAINT ck", MSSQL).kind,
             "disable_constraint",
@@ -442,12 +442,12 @@ class AlterTableTestCase(RecognizerTestCase):
                 self.assertUnknown(f"ALTER TABLE t {clause}", table="t")
 
     def test_mysql_table_options(self):
-        shape = recognize(
+        parsed = recognize(
             "ALTER TABLE t ADD COLUMN c INT, ALGORITHM=INSTANT, LOCK = NONE", MYSQL
         )
-        self.assertEqual(shape.options["algorithm"], "INSTANT")
-        self.assertEqual(shape.options["lock"], "NONE")
-        self.assertEqual([a.kind for a in shape.actions], ["add_column"])
+        self.assertEqual(parsed.options["algorithm"], "INSTANT")
+        self.assertEqual(parsed.options["lock"], "NONE")
+        self.assertEqual([a.kind for a in parsed.actions], ["add_column"])
         self.assertEqual(action("ALTER TABLE t ENGINE = InnoDB", MYSQL).kind, "engine")
         converted = action(
             "ALTER TABLE t CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_bin", MYSQL
@@ -459,10 +459,10 @@ class AlterTableTestCase(RecognizerTestCase):
         self.assertUnknown("ALTER TABLE t ALGORITHM=INPLACE", MYSQL, table="t")
 
     def test_unknown_action_keeps_the_table(self):
-        shape = self.assertUnknown(
+        parsed = self.assertUnknown(
             "ALTER TABLE app.t ADD COLUMN a int, CLUSTER ON ix", table="app.t"
         )
-        self.assertIn("CLUSTER", shape.options["reason"])
+        self.assertIn("CLUSTER", parsed.options["reason"])
 
     def test_athena_add_columns_is_unknown(self):
         self.assertUnknown(
@@ -472,17 +472,17 @@ class AlterTableTestCase(RecognizerTestCase):
 
 class CreateAndDropTestCase(RecognizerTestCase):
     def test_create_table_records_its_references(self):
-        shape = recognize(
+        parsed = recognize(
             'CREATE TABLE IF NOT EXISTS "kids" ("id" int PRIMARY KEY, '
             '"parent_id" int REFERENCES "app"."parents" ("id"), '
             "FOREIGN KEY (a) REFERENCES others (id)) WITH (fillfactor = 70)",
             PG,
         )
-        self.assertEqual(shape.kind, "create_table")
-        self.assertEqual(shape.table, "kids")
-        self.assertTrue(shape.options["if_not_exists"])
-        self.assertEqual(shape.options["references"], ("app.parents", "others"))
-        self.assertFalse(shape.options["as_select"])
+        self.assertEqual(parsed.kind, "create_table")
+        self.assertEqual(parsed.table, "kids")
+        self.assertTrue(parsed.options["if_not_exists"])
+        self.assertEqual(parsed.options["references"], ("app.parents", "others"))
+        self.assertFalse(parsed.options["as_select"])
 
     def test_create_table_forms(self):
         self.assertTrue(recognize("CREATE TEMP TABLE t (a int)").options["temporary"])
@@ -500,16 +500,16 @@ class CreateAndDropTestCase(RecognizerTestCase):
         self.assertEqual(partition.options["partition_of"], "p")
 
     def test_mssql_guarded_create_table(self):
-        shape = recognize(
+        parsed = recognize(
             "IF OBJECT_ID(N'[t]', 'U') IS NULL CREATE TABLE [t] ([id] INT)", MSSQL
         )
-        self.assertEqual((shape.kind, shape.table), ("create_table", "t"))
+        self.assertEqual((parsed.kind, parsed.table), ("create_table", "t"))
 
     def test_drops_of_tables_views_and_types(self):
-        shape = recognize("DROP TABLE IF EXISTS a, app.b CASCADE")
-        self.assertEqual(shape.kind, "drop_table")
-        self.assertEqual(shape.options["tables"], ("a", "app.b"))
-        self.assertTrue(shape.options["if_exists"])
+        parsed = recognize("DROP TABLE IF EXISTS a, app.b CASCADE")
+        self.assertEqual(parsed.kind, "drop_table")
+        self.assertEqual(parsed.options["tables"], ("a", "app.b"))
+        self.assertTrue(parsed.options["if_exists"])
         view = recognize("DROP MATERIALIZED VIEW v")
         self.assertEqual(view.kind, "drop_view")
         self.assertTrue(view.options["materialized"])
@@ -569,8 +569,8 @@ class CreateAndDropTestCase(RecognizerTestCase):
             ("DROP FUNCTION f(int)", "drop_object", "function"),
         ):
             with self.subTest(sql):
-                shape = recognize(sql, PG)
-                self.assertEqual((shape.kind, shape.options["object"]), (kind, obj))
+                parsed = recognize(sql, PG)
+                self.assertEqual((parsed.kind, parsed.options["object"]), (kind, obj))
 
     def test_unread_create_and_drop_are_unknown(self):
         for sql in (
@@ -584,10 +584,10 @@ class CreateAndDropTestCase(RecognizerTestCase):
 
 class DmlTestCase(RecognizerTestCase):
     def test_update(self):
-        shape = recognize('UPDATE "t" SET "a" = 1 WHERE "a" IS NULL')
-        self.assertEqual((shape.kind, shape.table), ("update", "t"))
-        self.assertTrue(shape.options["where"])
-        self.assertFalse(shape.options["limited"])
+        parsed = recognize('UPDATE "t" SET "a" = 1 WHERE "a" IS NULL')
+        self.assertEqual((parsed.kind, parsed.table), ("update", "t"))
+        self.assertTrue(parsed.options["where"])
+        self.assertFalse(parsed.options["limited"])
         every = recognize("UPDATE ONLY t AS x SET a = (SELECT 1 WHERE true)")
         self.assertFalse(every.options["where"])
 
@@ -600,9 +600,9 @@ class DmlTestCase(RecognizerTestCase):
         )
 
     def test_delete_forms(self):
-        shape = recognize("DELETE FROM ONLY t USING u WHERE t.a = u.a")
-        self.assertEqual((shape.kind, shape.table), ("delete", "t"))
-        self.assertTrue(shape.options["where"])
+        parsed = recognize("DELETE FROM ONLY t USING u WHERE t.a = u.a")
+        self.assertEqual((parsed.kind, parsed.table), ("delete", "t"))
+        self.assertTrue(parsed.options["where"])
         self.assertEqual(recognize("DELETE t WHERE a = 1", MSSQL).table, "t")
         self.assertEqual(
             recognize("DELETE TOP (10) FROM t", MSSQL).options["limited"], True
@@ -629,11 +629,11 @@ class DmlTestCase(RecognizerTestCase):
         self.assertUnknown("INSERT INTO t SET a = 1", MYSQL, table="t")
 
     def test_with_prefixed_writes(self):
-        shape = recognize(
+        parsed = recognize(
             "WITH RECURSIVE ids (id) AS NOT MATERIALIZED (SELECT 1), "
             "more AS (SELECT 2) UPDATE t SET a = 1 FROM ids WHERE t.id = ids.id"
         )
-        self.assertEqual((shape.kind, shape.table), ("update", "t"))
+        self.assertEqual((parsed.kind, parsed.table), ("update", "t"))
 
     def test_a_writing_cte_is_unknown(self):
         self.assertUnknown(
@@ -654,9 +654,9 @@ class MaintenanceTestCase(RecognizerTestCase):
         self.assertEqual(renamed.options["renames"], (("a", "b"), ("c", "d")))
 
     def test_reindex(self):
-        shape = recognize("REINDEX (VERBOSE) TABLE CONCURRENTLY app.t")
-        self.assertEqual((shape.kind, shape.table), ("reindex", "app.t"))
-        self.assertTrue(shape.options["concurrently"])
+        parsed = recognize("REINDEX (VERBOSE) TABLE CONCURRENTLY app.t")
+        self.assertEqual((parsed.kind, parsed.table), ("reindex", "app.t"))
+        self.assertTrue(parsed.options["concurrently"])
         index = recognize("REINDEX INDEX ix")
         self.assertIsNone(index.table)
         self.assertEqual(index.options["target"], "index")
@@ -674,13 +674,13 @@ class MaintenanceTestCase(RecognizerTestCase):
         self.assertEqual(recognize("CLUSTER ix ON t").table, "t")
         self.assertIsNone(recognize("CLUSTER").table)
         self.assertEqual(recognize("CLUSTER VERBOSE t").table, "t")
-        shape = recognize("OPTIMIZE LOCAL TABLE a, b", MYSQL)
-        self.assertEqual(shape.options["tables"], ("a", "b"))
+        parsed = recognize("OPTIMIZE LOCAL TABLE a, b", MYSQL)
+        self.assertEqual(parsed.options["tables"], ("a", "b"))
 
     def test_refresh(self):
-        shape = recognize("REFRESH MATERIALIZED VIEW CONCURRENTLY v WITH DATA")
-        self.assertTrue(shape.options["concurrently"])
-        self.assertTrue(shape.options["with_data"])
+        parsed = recognize("REFRESH MATERIALIZED VIEW CONCURRENTLY v WITH DATA")
+        self.assertTrue(parsed.options["concurrently"])
+        self.assertTrue(parsed.options["with_data"])
         self.assertFalse(
             recognize("REFRESH MATERIALIZED VIEW v WITH NO DATA").options["with_data"]
         )
@@ -706,9 +706,9 @@ class MaintenanceTestCase(RecognizerTestCase):
         self.assertUnknown("ALTER TYPE mood OWNER TO app")
 
     def test_lock_table(self):
-        shape = recognize("LOCK TABLE ONLY a, b IN SHARE ROW EXCLUSIVE MODE NOWAIT")
-        self.assertEqual(shape.options["mode"], "SHARE ROW EXCLUSIVE")
-        self.assertTrue(shape.options["nowait"])
+        parsed = recognize("LOCK TABLE ONLY a, b IN SHARE ROW EXCLUSIVE MODE NOWAIT")
+        self.assertEqual(parsed.options["mode"], "SHARE ROW EXCLUSIVE")
+        self.assertTrue(parsed.options["nowait"])
         self.assertEqual(recognize("LOCK t").options["mode"], "ACCESS EXCLUSIVE")
         self.assertUnknown("LOCK TABLE t IN SOME MODE", table="t")
         self.assertUnknown("LOCK TABLES t WRITE", MYSQL)
@@ -716,9 +716,9 @@ class MaintenanceTestCase(RecognizerTestCase):
 
 class SetTestCase(RecognizerTestCase):
     def settings(self, sql, dialect=PG):
-        shape = recognize(sql, dialect)
-        self.assertEqual(shape.kind, "set", shape)
-        return shape.options["settings"]
+        parsed = recognize(sql, dialect)
+        self.assertEqual(parsed.kind, "set", parsed)
+        return parsed.options["settings"]
 
     def test_postgres_scopes(self):
         self.assertEqual(
@@ -775,15 +775,15 @@ class SetTestCase(RecognizerTestCase):
 
 class MssqlRenameTestCase(RecognizerTestCase):
     def test_column_rename(self):
-        shape = recognize("EXEC sp_rename N'dbo.t.old', N'new', 'COLUMN'", MSSQL)
-        self.assertEqual((shape.kind, shape.table), ("alter_table", "dbo.t"))
-        self.assertEqual(shape.actions[0].kind, "rename_column")
-        self.assertEqual(shape.actions[0].options["new"], "new")
+        parsed = recognize("EXEC sp_rename N'dbo.t.old', N'new', 'COLUMN'", MSSQL)
+        self.assertEqual((parsed.kind, parsed.table), ("alter_table", "dbo.t"))
+        self.assertEqual(parsed.actions[0].kind, "rename_column")
+        self.assertEqual(parsed.actions[0].options["new"], "new")
 
     def test_table_rename(self):
-        shape = recognize("EXECUTE sp_rename 'dbo.t', 'u'", MSSQL)
-        self.assertEqual((shape.kind, shape.table), ("rename_table", "dbo.t"))
-        self.assertEqual(shape.options["new"], "u")
+        parsed = recognize("EXECUTE sp_rename 'dbo.t', 'u'", MSSQL)
+        self.assertEqual((parsed.kind, parsed.table), ("rename_table", "dbo.t"))
+        self.assertEqual(parsed.options["new"], "u")
 
     def test_other_procedures_and_kinds_are_unknown(self):
         self.assertUnknown("EXEC sp_who", MSSQL)
@@ -807,8 +807,8 @@ class UnknownTestCase(RecognizerTestCase):
                 self.assertUnknown(sql)
 
     def test_several_statements_are_unknown(self):
-        shape = self.assertUnknown("ALTER TABLE t DROP COLUMN a; DROP TABLE t")
-        self.assertIn("more than one", shape.options["reason"])
+        parsed = self.assertUnknown("ALTER TABLE t DROP COLUMN a; DROP TABLE t")
+        self.assertIn("more than one", parsed.options["reason"])
 
     def test_a_trailing_semicolon_is_fine(self):
         self.assertEqual(recognize("DROP TABLE t;;").kind, "drop_table")
@@ -817,15 +817,15 @@ class UnknownTestCase(RecognizerTestCase):
         self.assertUnknown("ALTER TABLE t ADD COLUMN c text DEFAULT 'x")
 
     def test_a_comment_is_ignored(self):
-        shape = recognize("-- add it\nALTER TABLE t /* note */ ADD COLUMN c int")
-        self.assertEqual(shape.actions[0].kind, "add_column")
+        parsed = recognize("-- add it\nALTER TABLE t /* note */ ADD COLUMN c int")
+        self.assertEqual(parsed.actions[0].kind, "add_column")
 
     def test_statement_ends_early(self):
         self.assertUnknown("ALTER TABLE t ADD CONSTRAINT", table="t")
         self.assertUnknown("CREATE INDEX ix ON t (a", table="t")
 
     def test_every_kind_is_declared(self):
-        self.assertIn(UNKNOWN_SHAPE, SHAPE_KINDS)
+        self.assertIn(UNKNOWN_KIND, STATEMENT_KINDS)
         self.assertIn("alter_column_type", ACTION_KINDS)
 
 

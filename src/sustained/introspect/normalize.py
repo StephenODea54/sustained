@@ -170,7 +170,7 @@ def normalize_default(raw: Optional[str]) -> Optional[str]:
     serial column, and no model declaration can ever equal it.
 
     Parentheses come off only when they balance, so an expression such
-    as (1)+(2) keeps its shape. The cast comes off before the quotes,
+    as (1)+(2) keeps its parentheses. The cast comes off before the quotes,
     since the cast may carry a length that the quote strip would leave
     behind.
     """

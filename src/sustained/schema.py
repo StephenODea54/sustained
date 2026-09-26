@@ -1,7 +1,7 @@
 """
 Typed column definitions and model-driven DDL.
 
-Models declare their physical shape with tableColumns, a dict of column
+Models declare their physical columns with tableColumns, a dict of column
 name to ColumnDef. The dialect compiler maps each logical type to the
 engine's SQL type, so one declaration generates CREATE TABLE for every
 supported dialect.

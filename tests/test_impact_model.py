@@ -11,8 +11,8 @@ from sustained.impact.model import (
     Hold,
     ImpactReport,
     MigrationImpact,
+    ParsedStatement,
     Severity,
-    Shape,
     StatementImpact,
     TableImpact,
     Work,
@@ -53,7 +53,7 @@ class ReportTestCase(unittest.TestCase):
     def statement(self, sql, *severities):
         return StatementImpact(
             sql,
-            Shape("create_index", "t"),
+            ParsedStatement("create_index", "t"),
             (
                 TableImpact(
                     "t", "SHARE", Blocks.WRITES, Work.INDEX_BUILD, Hold.STATEMENT
@@ -96,9 +96,9 @@ class ReportTestCase(unittest.TestCase):
         self.assertEqual(report.count(Severity.DANGER), 1)
         self.assertEqual(report.count(Severity.INFO), 1)
 
-    def test_shape_knows_whether_it_was_understood(self):
-        self.assertTrue(Shape("create_index").known)
-        self.assertFalse(Shape("unknown").known)
+    def test_a_parsed_statement_knows_whether_it_was_understood(self):
+        self.assertTrue(ParsedStatement("create_index").known)
+        self.assertFalse(ParsedStatement("unknown").known)
 
 
 if __name__ == "__main__":

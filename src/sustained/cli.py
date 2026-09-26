@@ -161,7 +161,7 @@ def _callback(config: ModuleType, name: str) -> Optional[Callable[..., CallbackR
 
 def _config_callbacks(config: ModuleType) -> Callbacks:
     """
-    The config module's callbacks, in the shape the migrator takes. The
+    The config module's callbacks, as the Callbacks the migrator takes. The
     module is how the CLI gathers them; the migrator is what calls them.
     """
     return Callbacks(
@@ -375,7 +375,7 @@ def _statement_json(
     verdicts: Dict[str, List[Verdict]],
 ) -> Optional[List[Dict[str, JsonValue]]]:
     """
-    One JSON object per statement, the same shape everywhere a command
+    One JSON object per statement, with the same keys everywhere a command
     reports SQL: the statement, whether it removes data, and the guard
     verdicts on it. None stays None, for a callable step that renders no
     SQL. A verdict is reported on the statement it flags and nowhere

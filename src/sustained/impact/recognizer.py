@@ -1,16 +1,16 @@
 """
-The recognizer: statement text to a `Shape`.
+The recognizer: statement text to a `ParsedStatement`.
 
 The recognizer reads the token stream `sustained.impact.tokens` gives
-and understands only the statement shapes the impact rules need. It is
-recursive descent over those tokens, not a SQL parser: a clause it has
-no rule for is skipped only where skipping cannot hide a change, such as
-the body of a view or the tail of a CREATE TABLE.
+and understands only the statements the impact rules need. It is
+recursive descent over those tokens, not a full SQL parser: a clause it
+has no rule for is skipped only where skipping cannot hide a change,
+such as the body of a view or the tail of a CREATE TABLE.
 
-Every other statement becomes `Shape(kind="unknown")`, and so does a
-recognized statement with any part the recognizer cannot read, such as
-an ALTER TABLE action it does not know. A partly understood statement
-never counts as understood. An unknown shape keeps the table the
+Every other statement becomes `ParsedStatement(kind="unknown")`, and so
+does a recognized statement with any part the recognizer cannot read,
+such as an ALTER TABLE action it does not know. A partly understood statement
+never counts as understood. An unknown statement keeps the table the
 recognizer had read when it stopped, when it got that far, and names
 what stopped it in `options["reason"]`.
 
@@ -18,7 +18,7 @@ Names come back dotted and unquoted, as the statement spells them:
 `"app"."Items"` reads as `app.Items`. A caller that matches names
 compares them case-insensitively.
 
-The shape kinds, and the options each one sets:
+The statement kinds, and the options each one sets:
 
 - `create_index`: name, unique, concurrently, if_not_exists, only,
   using, partial, columns, with (a dict of the WITH (...) options),
@@ -68,7 +68,7 @@ from typing import (
     Tuple,
 )
 
-from sustained.impact.model import UNKNOWN_SHAPE, Action, Shape
+from sustained.impact.model import UNKNOWN_KIND, Action, ParsedStatement
 from sustained.impact.tokens import (
     ERROR,
     IDENT,
@@ -84,7 +84,7 @@ from sustained.impact.tokens import (
 if TYPE_CHECKING:
     from sustained.dialects import Dialects
 
-SHAPE_KINDS = frozenset(
+STATEMENT_KINDS = frozenset(
     {
         "create_index",
         "drop_index",
@@ -115,7 +115,7 @@ SHAPE_KINDS = frozenset(
         "drop_object",
         "set",
         "lock_table",
-        UNKNOWN_SHAPE,
+        UNKNOWN_KIND,
     }
 )
 
@@ -481,7 +481,7 @@ class _Parser:
         return ".".join(self.name_parts())
 
     def target(self) -> str:
-        """The statement's target table, remembered for an unknown shape."""
+        """The statement's target table, remembered for an unknown statement."""
         self.table = self.name()
         return self.table
 
@@ -593,7 +593,7 @@ class _Parser:
 
     # --- statements ----------------------------------------------------
 
-    def statement(self) -> Shape:
+    def statement(self) -> ParsedStatement:
         token = self.peek()
         if token is None or token.kind != WORD:
             raise Unrecognized("the statement does not start with a keyword")
@@ -609,7 +609,7 @@ class _Parser:
 
     # CREATE ...
 
-    def create(self) -> Shape:
+    def create(self) -> ParsedStatement:
         self.accept("OR", "REPLACE")
         if self.is_word("DEFINER"):
             self.definer()
@@ -626,7 +626,9 @@ class _Parser:
         materialized = self.accept("MATERIALIZED")
         if self.accept("VIEW"):
             self.rest()
-            return Shape("create_view", options=_frozen({"materialized": materialized}))
+            return ParsedStatement(
+                "create_view", options=_frozen({"materialized": materialized})
+            )
         if self.accept("TRIGGER") or self.accept("CONSTRAINT", "TRIGGER"):
             return self.create_trigger()
         if self.accept("TYPE"):
@@ -634,7 +636,9 @@ class _Parser:
         found = self.accept_any(*_OBJECT_WORDS)
         if found:
             self.rest()
-            return Shape("create_object", options=_frozen({"object": found.lower()}))
+            return ParsedStatement(
+                "create_object", options=_frozen({"object": found.lower()})
+            )
         raise Unrecognized(f"no rule reads CREATE {self.where()}")
 
     def definer(self) -> None:
@@ -645,7 +649,7 @@ class _Parser:
         ):
             self.pos += 1
 
-    def create_index(self, unique: bool, fulltext: bool) -> Shape:
+    def create_index(self, unique: bool, fulltext: bool) -> ParsedStatement:
         options: _Options = {"unique": unique, "fulltext": fulltext}
         options["concurrently"] = self.accept("CONCURRENTLY")
         options["if_not_exists"] = self.accept("IF", "NOT", "EXISTS")
@@ -658,7 +662,7 @@ class _Parser:
         columns = self.group()
         options["columns"] = len(self.split_top(columns))
         self.index_tail(options)
-        return Shape("create_index", table, options=_frozen(options))
+        return ParsedStatement("create_index", table, options=_frozen(options))
 
     def index_tail(self, options: _Options) -> None:
         """What may follow an index's column list, in any order."""
@@ -716,7 +720,7 @@ class _Parser:
             items[-1].append(token)
         return [item for item in items if item]
 
-    def create_table(self, temporary: bool) -> Shape:
+    def create_table(self, temporary: bool) -> ParsedStatement:
         options: _Options = {"temporary": temporary}
         options["if_not_exists"] = self.accept("IF", "NOT", "EXISTS")
         table = self.target()
@@ -734,7 +738,7 @@ class _Parser:
         # The tail holds storage options, which change nothing about a
         # table that does not exist yet.
         self.rest()
-        return Shape("create_table", table, options=_frozen(options))
+        return ParsedStatement("create_table", table, options=_frozen(options))
 
     def references_in(self, tokens: Sequence[Token]) -> Tuple[str, ...]:
         """The tables a CREATE TABLE body's foreign keys point at."""
@@ -754,7 +758,7 @@ class _Parser:
                 found.append(".".join(parts))
         return tuple(found)
 
-    def create_trigger(self) -> Shape:
+    def create_trigger(self) -> ParsedStatement:
         self.accept("IF", "NOT", "EXISTS")
         name = self.name()
         tokens = self.rest()
@@ -766,27 +770,29 @@ class _Parser:
                 sub = _Parser(self.sql, list(tokens[index + 1 :]), self.dialect)
                 table = sub.name()
                 self.table = table
-                return Shape("create_trigger", table, options=_frozen({"name": name}))
+                return ParsedStatement(
+                    "create_trigger", table, options=_frozen({"name": name})
+                )
         raise Unrecognized("expected ON <table> in CREATE TRIGGER")
 
-    def create_type(self) -> Shape:
+    def create_type(self) -> ParsedStatement:
         self.name()
         enum = self.accept("AS", "ENUM")
         self.rest()
-        return Shape("create_type", options=_frozen({"enum": enum}))
+        return ParsedStatement("create_type", options=_frozen({"enum": enum}))
 
     # DROP ...
 
-    def drop(self) -> Shape:
+    def drop(self) -> ParsedStatement:
         if self.accept("INDEX"):
             return self.drop_index()
         if self.accept("TABLE"):
             return self.drop_many("drop_table")
         materialized = self.accept("MATERIALIZED")
         if self.accept("VIEW"):
-            shape = self.drop_many("drop_view")
-            return shape._replace(
-                options=_frozen({**shape.options, "materialized": materialized})
+            parsed = self.drop_many("drop_view")
+            return parsed._replace(
+                options=_frozen({**parsed.options, "materialized": materialized})
             )
         if self.accept("TRIGGER"):
             return self.drop_trigger()
@@ -794,25 +800,29 @@ class _Parser:
             self.accept("IF", "EXISTS")
             names = self.names()
             self.accept_any("CASCADE", "RESTRICT")
-            return Shape("drop_type", options=_frozen({"names": tuple(names)}))
+            return ParsedStatement(
+                "drop_type", options=_frozen({"names": tuple(names)})
+            )
         found = self.accept_any(*_OBJECT_WORDS)
         if found:
             self.rest()
-            return Shape("drop_object", options=_frozen({"object": found.lower()}))
+            return ParsedStatement(
+                "drop_object", options=_frozen({"object": found.lower()})
+            )
         raise Unrecognized(f"no rule reads DROP {self.where()}")
 
-    def drop_many(self, kind: str) -> Shape:
+    def drop_many(self, kind: str) -> ParsedStatement:
         if_exists = self.accept("IF", "EXISTS")
         tables = self.names()
         self.table = tables[0]
         self.accept_any("CASCADE", "RESTRICT")
-        return Shape(
+        return ParsedStatement(
             kind,
             tables[0],
             options=_frozen({"tables": tuple(tables), "if_exists": if_exists}),
         )
 
-    def drop_index(self) -> Shape:
+    def drop_index(self) -> ParsedStatement:
         options: _Options = {}
         options["concurrently"] = self.accept("CONCURRENTLY")
         options["if_exists"] = self.accept("IF", "EXISTS")
@@ -838,16 +848,16 @@ class _Parser:
                 options["lock"] = self.mysql_option("LOCK")
             else:
                 raise Unrecognized(f"unread text {self.where()}")
-        return Shape("drop_index", table, options=_frozen(options))
+        return ParsedStatement("drop_index", table, options=_frozen(options))
 
-    def drop_trigger(self) -> Shape:
+    def drop_trigger(self) -> ParsedStatement:
         self.accept("IF", "EXISTS")
         name = self.name()
         table: Optional[str] = None
         if self.accept("ON"):
             table = self.target()
         self.accept_any("CASCADE", "RESTRICT")
-        return Shape("drop_trigger", table, options=_frozen({"name": name}))
+        return ParsedStatement("drop_trigger", table, options=_frozen({"name": name}))
 
     @property
     def mssql(self) -> bool:
@@ -855,29 +865,31 @@ class _Parser:
 
     # ALTER ...
 
-    def alter(self) -> Shape:
+    def alter(self) -> ParsedStatement:
         if self.accept("TABLE"):
             return self.alter_table()
         if self.accept("TYPE"):
             return self.alter_type()
         raise Unrecognized(f"no rule reads ALTER {self.where()}")
 
-    def alter_type(self) -> Shape:
+    def alter_type(self) -> ParsedStatement:
         self.name()
         if self.accept("ADD", "VALUE"):
             self.accept("IF", "NOT", "EXISTS")
             value = self.value()
             if self.accept_any("BEFORE", "AFTER"):
                 self.value()
-            return Shape("alter_type_add_value", options=_frozen({"value": value}))
+            return ParsedStatement(
+                "alter_type_add_value", options=_frozen({"value": value})
+            )
         if self.accept("RENAME", "VALUE"):
             self.value()
             self.expect("TO")
             self.value()
-            return Shape("alter_type_rename_value")
+            return ParsedStatement("alter_type_rename_value")
         raise Unrecognized(f"no rule reads ALTER TYPE {self.where()}")
 
-    def alter_table(self) -> Shape:
+    def alter_table(self) -> ParsedStatement:
         options: _Options = {}
         options["if_exists"] = self.accept("IF", "EXISTS")
         options["only"] = self.accept("ONLY")
@@ -893,7 +905,7 @@ class _Parser:
         self.finish()
         if not actions:
             raise Unrecognized("the ALTER TABLE has no action")
-        return Shape("alter_table", table, tuple(actions), _frozen(options))
+        return ParsedStatement("alter_table", table, tuple(actions), _frozen(options))
 
     def alter_action(
         self, options: _Options, actions: Sequence[Action]
@@ -1415,14 +1427,14 @@ class _Parser:
 
     # UPDATE, DELETE, INSERT, WITH
 
-    def update(self) -> Shape:
+    def update(self) -> ParsedStatement:
         limited = self.top()
         self.accept("ONLY")
         table = self.target()
         rest = self.rest()
         if not self.top_level_word(rest, "SET"):
             raise Unrecognized("expected SET in UPDATE")
-        return self.write_shape("update", table, rest, limited)
+        return self.write_statement("update", table, rest, limited)
 
     def top(self) -> bool:
         """SQL Server's `TOP (n)`, which caps the rows a write touches."""
@@ -1432,16 +1444,16 @@ class _Parser:
         self.accept("PERCENT")
         return True
 
-    def write_shape(
+    def write_statement(
         self, kind: str, table: str, rest: Sequence[Token], limited: bool
-    ) -> Shape:
+    ) -> ParsedStatement:
         options: _Options = {
             "where": self.top_level_word(rest, "WHERE"),
             "limited": limited or self.top_level_word(rest, "LIMIT"),
         }
-        return Shape(kind, table, options=_frozen(options))
+        return ParsedStatement(kind, table, options=_frozen(options))
 
-    def delete(self) -> Shape:
+    def delete(self) -> ParsedStatement:
         limited = self.top()
         if self.accept("FROM"):
             self.accept("ONLY")
@@ -1449,9 +1461,9 @@ class _Parser:
         else:
             # SQL Server and MySQL: DELETE t [FROM ...] [WHERE ...].
             table = self.target()
-        return self.write_shape("delete", table, self.rest(), limited)
+        return self.write_statement("delete", table, self.rest(), limited)
 
-    def insert(self) -> Shape:
+    def insert(self) -> ParsedStatement:
         self.accept("IGNORE")
         self.accept("INTO")
         table = self.target()
@@ -1474,7 +1486,7 @@ class _Parser:
             rest and rest[0].text == "("
         ):
             raise Unrecognized("expected VALUES or SELECT in INSERT")
-        return Shape("insert", table, options=_frozen(options))
+        return ParsedStatement("insert", table, options=_frozen(options))
 
     def select_group_follows(self) -> bool:
         """Whether the parenthesized group ahead is a query, not columns."""
@@ -1495,7 +1507,7 @@ class _Parser:
                 break
         return rows
 
-    def with_query(self) -> Shape:
+    def with_query(self) -> ParsedStatement:
         """A statement that opens with CTEs: the write after them."""
         self.accept("RECURSIVE")
         while True:
@@ -1517,7 +1529,7 @@ class _Parser:
 
     # The rest
 
-    def truncate(self) -> Shape:
+    def truncate(self) -> ParsedStatement:
         self.accept("TABLE")
         self.accept("ONLY")
         tables = self.names()
@@ -1526,9 +1538,11 @@ class _Parser:
         if self.accept_any("RESTART", "CONTINUE"):
             self.expect("IDENTITY")
         self.accept_any("CASCADE", "RESTRICT")
-        return Shape("truncate", tables[0], options=_frozen({"tables": tuple(tables)}))
+        return ParsedStatement(
+            "truncate", tables[0], options=_frozen({"tables": tuple(tables)})
+        )
 
-    def rename(self) -> Shape:
+    def rename(self) -> ParsedStatement:
         self.expect("TABLE")
         pairs: List[Tuple[str, str]] = []
         while True:
@@ -1539,9 +1553,9 @@ class _Parser:
                 break
         self.table = pairs[0][0]
         options: _Options = {"new": pairs[0][1], "renames": tuple(pairs)}
-        return Shape("rename_table", pairs[0][0], options=_frozen(options))
+        return ParsedStatement("rename_table", pairs[0][0], options=_frozen(options))
 
-    def reindex(self) -> Shape:
+    def reindex(self) -> ParsedStatement:
         if self.is_punct("("):
             self.group()
         target = self.expect_one_of_words(
@@ -1556,9 +1570,9 @@ class _Parser:
             "name": name,
             "concurrently": concurrently,
         }
-        return Shape("reindex", table, options=_frozen(options))
+        return ParsedStatement("reindex", table, options=_frozen(options))
 
-    def vacuum(self) -> Shape:
+    def vacuum(self) -> ParsedStatement:
         full = False
         if self.is_punct("("):
             full = any(t.is_word("FULL") for t in self.group())
@@ -1566,7 +1580,9 @@ class _Parser:
             full = full or self.tokens[self.pos - 1].is_word("FULL")
         tables = self.table_list()
         options: _Options = {"full": full, "tables": tables}
-        return Shape("vacuum", tables[0] if tables else None, options=_frozen(options))
+        return ParsedStatement(
+            "vacuum", tables[0] if tables else None, options=_frozen(options)
+        )
 
     def table_list(self) -> Tuple[str, ...]:
         """VACUUM and ANALYZE's optional tables, each with optional columns."""
@@ -1579,40 +1595,40 @@ class _Parser:
                 break
         return tuple(tables)
 
-    def analyze(self) -> Shape:
+    def analyze(self) -> ParsedStatement:
         self.accept("VERBOSE")
         if self.is_punct("("):
             self.group()
         tables = self.table_list()
-        return Shape(
+        return ParsedStatement(
             "analyze",
             tables[0] if tables else None,
             options=_frozen({"tables": tables}),
         )
 
-    def cluster(self) -> Shape:
+    def cluster(self) -> ParsedStatement:
         self.accept("VERBOSE")
         if self.at_end():
-            return Shape("cluster", options=_frozen({"index": None}))
+            return ParsedStatement("cluster", options=_frozen({"index": None}))
         first = self.name()
         if self.accept("ON"):
             # The older form: CLUSTER index ON table.
             table = self.target()
-            return Shape("cluster", table, options=_frozen({"index": first}))
+            return ParsedStatement("cluster", table, options=_frozen({"index": first}))
         self.table = first
         index = self.name() if self.accept("USING") else None
-        return Shape("cluster", first, options=_frozen({"index": index}))
+        return ParsedStatement("cluster", first, options=_frozen({"index": index}))
 
-    def optimize(self) -> Shape:
+    def optimize(self) -> ParsedStatement:
         self.accept_any("NO_WRITE_TO_BINLOG", "LOCAL")
         self.expect("TABLE")
         tables = self.names()
         self.table = tables[0]
-        return Shape(
+        return ParsedStatement(
             "optimize_table", tables[0], options=_frozen({"tables": tuple(tables)})
         )
 
-    def refresh(self) -> Shape:
+    def refresh(self) -> ParsedStatement:
         self.expect("MATERIALIZED", "VIEW")
         concurrently = self.accept("CONCURRENTLY")
         view = self.target()
@@ -1621,9 +1637,11 @@ class _Parser:
             with_data = not self.accept("NO")
             self.expect("DATA")
         options: _Options = {"concurrently": concurrently, "with_data": with_data}
-        return Shape("refresh_materialized_view", view, options=_frozen(options))
+        return ParsedStatement(
+            "refresh_materialized_view", view, options=_frozen(options)
+        )
 
-    def comment(self) -> Shape:
+    def comment(self) -> ParsedStatement:
         self.expect("ON")
         object_words: List[str] = []
         while self.is_word(
@@ -1651,14 +1669,14 @@ class _Parser:
         self.expect("IS")
         self.value()
         options: _Options = {"object": kind, "column": column}
-        return Shape("comment_on", table, options=_frozen(options))
+        return ParsedStatement("comment_on", table, options=_frozen(options))
 
-    def set_statement(self) -> Shape:
+    def set_statement(self) -> ParsedStatement:
         scope = self.accept_any("SESSION", "LOCAL", "GLOBAL", "PERSIST", "PERSIST_ONLY")
         settings = [self.assignment(scope)]
         while self.accept_punct(","):
             settings.append(self.assignment(None))
-        return Shape("set", options=_frozen({"settings": tuple(settings)}))
+        return ParsedStatement("set", options=_frozen({"settings": tuple(settings)}))
 
     def assignment(self, scope: Optional[str]) -> Tuple[str, str, str]:
         """One `name = value` of a SET: (scope, name, value)."""
@@ -1688,16 +1706,18 @@ class _Parser:
         value = tokens[0].value if len(tokens) == 1 else self.text(tokens)
         return ((scope or "session").lower(), name, value)
 
-    def pragma(self) -> Shape:
+    def pragma(self) -> ParsedStatement:
         name = self.name().lower()
         value = ""
         if self.accept_op("="):
             value = self.value()
         elif self.is_punct("("):
             value = self.text(self.group())
-        return Shape("set", options=_frozen({"settings": (("pragma", name, value),)}))
+        return ParsedStatement(
+            "set", options=_frozen({"settings": (("pragma", name, value),)})
+        )
 
-    def lock(self) -> Shape:
+    def lock(self) -> ParsedStatement:
         if self.is_word("TABLES"):
             raise Unrecognized("no rule reads LOCK TABLES")
         self.accept("TABLE")
@@ -1715,9 +1735,9 @@ class _Parser:
             self.expect("MODE")
         nowait = self.accept("NOWAIT")
         options: _Options = {"tables": tuple(tables), "mode": mode, "nowait": nowait}
-        return Shape("lock_table", tables[0], options=_frozen(options))
+        return ParsedStatement("lock_table", tables[0], options=_frozen(options))
 
-    def execute(self) -> Shape:
+    def execute(self) -> ParsedStatement:
         """SQL Server's `EXEC sp_rename 'path', 'new'[, 'kind']`."""
         procedure = self.name_parts()
         if procedure[-1].lower() != "sp_rename":
@@ -1737,17 +1757,19 @@ class _Parser:
                 path[-1],
                 _frozen({"old": path[-1], "new": arguments[1]}),
             )
-            return Shape("alter_table", table, (action,))
+            return ParsedStatement("alter_table", table, (action,))
         if kind == "OBJECT":
             self.table = arguments[0]
             options: _Options = {
                 "new": arguments[1],
                 "renames": ((arguments[0], arguments[1]),),
             }
-            return Shape("rename_table", arguments[0], options=_frozen(options))
+            return ParsedStatement(
+                "rename_table", arguments[0], options=_frozen(options)
+            )
         raise Unrecognized(f"no rule reads sp_rename of a {kind.lower()}")
 
-    def if_statement(self) -> Shape:
+    def if_statement(self) -> ParsedStatement:
         """SQL Server's `IF OBJECT_ID(...) IS [NOT] NULL <statement>`."""
         self.expect("OBJECT_ID")
         self.group()
@@ -1757,7 +1779,7 @@ class _Parser:
         return self.statement()
 
 
-_Handler = Callable[[_Parser], Shape]
+_Handler = Callable[[_Parser], ParsedStatement]
 _STATEMENTS: Dict[str, _Handler] = {
     "CREATE": _Parser.create,
     "DROP": _Parser.drop,
@@ -1818,14 +1840,14 @@ def _holds_body(tokens: Sequence[Token]) -> bool:
     return any(t.is_word("TRIGGER", "FUNCTION", "PROCEDURE") for t in tokens[1:8])
 
 
-def unknown(reason: str, table: Optional[str] = None) -> Shape:
-    """An unknown shape, naming what stopped the recognizer."""
-    return Shape(UNKNOWN_SHAPE, table, options=_frozen({"reason": reason}))
+def unknown(reason: str, table: Optional[str] = None) -> ParsedStatement:
+    """An unknown statement, naming what stopped the recognizer."""
+    return ParsedStatement(UNKNOWN_KIND, table, options=_frozen({"reason": reason}))
 
 
-def recognize(sql: str, dialect: Optional["Dialects"] = None) -> Shape:
+def recognize(sql: str, dialect: Optional["Dialects"] = None) -> ParsedStatement:
     """
-    The shape of one statement, or an unknown shape. The dialect decides
+    One statement, parsed, or an unknown statement. The dialect decides
     the lexical rules, as `tokenize()` reads them, and the few spellings
     that differ between engines, such as SQL Server's `DROP INDEX t.ix`.
 
@@ -1845,8 +1867,8 @@ def recognize(sql: str, dialect: Optional["Dialects"] = None) -> Shape:
         return unknown("the text holds more than one statement")
     parser = _Parser(sql, tokens, dialect)
     try:
-        shape = parser.statement()
+        parsed = parser.statement()
         parser.finish()
     except Unrecognized as error:
         return unknown(error.reason, parser.table)
-    return shape
+    return parsed

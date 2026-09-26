@@ -227,7 +227,7 @@ class Compiler:
         given it by name, so it keeps the context it asked for.
 
         A staticmethod or classmethod override is unwrapped first and put
-        back in the same descriptor, so it keeps the call shape it was
+        back in the same descriptor, so it keeps the call signature it was
         written with.
         """
         super().__init_subclass__(**kwargs)
@@ -1169,8 +1169,8 @@ class Compiler:
 
     def compile_ctas(self, table_sql: str, select_sql: str, temporary: bool) -> str:
         """
-        Renders a CREATE TABLE ... AS statement. Dialects with a different
-        shape raise DialectError.
+        Renders a CREATE TABLE ... AS statement. Dialects that spell it
+        differently raise DialectError.
         """
         keyword = "CREATE TEMPORARY TABLE" if temporary else "CREATE TABLE"
         return f"{keyword} {table_sql} AS {select_sql}"

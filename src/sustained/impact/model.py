@@ -179,7 +179,7 @@ class Intent(NamedTuple):
         return self.details.get(key, default)
 
 
-class Shape(NamedTuple):
+class ParsedStatement(NamedTuple):
     """
     What the recognizer understood of one statement: its `kind`, such as
     `create_index` or `alter_table`, the table it names, the actions of
@@ -197,7 +197,7 @@ class Shape(NamedTuple):
 
     @property
     def known(self) -> bool:
-        return self.kind != UNKNOWN_SHAPE
+        return self.kind != UNKNOWN_KIND
 
 
 class Action(NamedTuple):
@@ -211,7 +211,7 @@ class Action(NamedTuple):
     options: Mapping[str, object] = _NO_DETAILS
 
 
-UNKNOWN_SHAPE = "unknown"
+UNKNOWN_KIND = "unknown"
 
 
 class TableImpact(NamedTuple):
@@ -250,7 +250,7 @@ class StatementImpact(NamedTuple):
     """The impact of one statement, with what the answer rests on."""
 
     statement: str
-    shape: Optional[Shape]
+    parsed: Optional[ParsedStatement]
     tables: Tuple[TableImpact, ...]
     findings: Tuple[Finding, ...]
     evidence: Evidence

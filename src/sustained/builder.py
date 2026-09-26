@@ -1315,7 +1315,7 @@ class QueryBuilder:
 
         SELECT statements return a list of hydrated model instances, with
         any withGraphFetched() relations attached. Use to_dicts(), to_df(),
-        or to_arrow() for other result shapes. INSERT, UPDATE, and DELETE
+        or to_arrow() for other result types. INSERT, UPDATE, and DELETE
         statements are committed and return the affected row count, or a
         list of dicts when a RETURNING clause is present.
 

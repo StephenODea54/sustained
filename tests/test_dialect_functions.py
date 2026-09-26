@@ -187,7 +187,7 @@ class TestOldCompilerOverrides(unittest.TestCase):
         # math.hypot has no signature the inspect module can read.
         self.assertEqual(_context_mode(math.hypot, 1), "positional")
 
-    def test_a_static_override_keeps_its_call_shape(self):
+    def test_a_static_override_keeps_its_call_signature(self):
         from sustained.compilers.base import Compiler
         from sustained.expressions import WindowExpression
 
@@ -235,7 +235,7 @@ class TestOldCompilerOverrides(unittest.TestCase):
         )
         self.assertEqual(StaticKeyword.compile_window(window), "STATIC_KEYWORD(False)")
 
-    def test_a_class_override_keeps_its_call_shape(self):
+    def test_a_class_override_keeps_its_call_signature(self):
         from sustained.compilers.base import Compiler
         from sustained.expressions import WindowExpression
 

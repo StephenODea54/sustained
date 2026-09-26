@@ -22,7 +22,7 @@ found them.
 from __future__ import annotations
 
 from sustained.introspect.compare import (
-    _column_shape,
+    _column_parts,
     _describe_column,
     diff_snapshots,
 )
@@ -147,7 +147,7 @@ __all__ = [
     "_balanced_paren_body",
     "_CAST_RE",
     "_catalog_filter",
-    "_column_shape",
+    "_column_parts",
     "_declared_schema",
     "_describe_column",
     "_dooms_transaction",

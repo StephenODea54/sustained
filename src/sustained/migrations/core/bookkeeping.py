@@ -164,7 +164,7 @@ def has_columns(m: MigratorBase, columns: Tuple[str, ...]) -> Core[bool]:
 def upgrade_tracking_table(m: MigratorBase) -> Core[None]:
     """
     Brings a tracking table written by an earlier version, which held
-    only id and applied_at, up to the current shape. Missing columns
+    only id and applied_at, up to the current columns. Missing columns
     are added nullable; seq and success are backfilled from the
     existing rows in applied order.
     """
