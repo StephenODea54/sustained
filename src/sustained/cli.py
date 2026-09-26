@@ -84,7 +84,7 @@ from sustained.guards import Verdict, blocking, run_guards
 from sustained.impact import (
     EngineContext,
     StatementImpact,
-    analyze,
+    attach_impact,
     read_context,
     supported,
 )
@@ -106,7 +106,6 @@ from sustained.migrations import (
     RehearsalResult,
     migration_sql,
     rehearsal_failed,
-    with_impact,
 )
 from sustained.types import Connection
 
@@ -399,8 +398,7 @@ def _plan_verdicts(
     statements: List[str] = [s for summary in summaries for s in summary.sql or []]
     statements.extend(drift or [])
     if guards and context is not None:
-        tagged = [MigrationStatement(s) for s in statements]
-        statements = list(with_impact(tagged, analyze(tagged, dialect, context)))
+        statements = list(attach_impact(statements, dialect, context))
     by_statement: Dict[str, List[Verdict]] = {}
     for verdict in run_guards(guards, statements, dialect):
         by_statement.setdefault(normalize_statement(verdict.statement), []).append(
@@ -409,48 +407,40 @@ def _plan_verdicts(
     return by_statement
 
 
-class _PlanImpact(NamedTuple):
-    """
-    The impact of each statement the plan prints, by position: one list
-    per pending migration, None for a callable step, and one list for
-    the drift preview, None when the config module names no models.
-    """
-
-    pending: List[Optional[List[StatementImpact]]]
-    drift: Optional[List[StatementImpact]]
-
-
-def _plan_impact(
+def _with_plan_impact(
     migrator: Migrator,
     summaries: List[PendingSummary],
     drift: Optional[List[str]],
     context: Optional[EngineContext],
-) -> Optional[_PlanImpact]:
+) -> Tuple[List[PendingSummary], Optional[List[str]]]:
     """
-    The impact of the pending statements and the drift preview, analyzed
-    as one run in that order with the server facts the connection gives,
-    or None on a dialect the analysis does not cover, which reads no
-    context. The analysis returns one entry per statement in run order,
-    so the entries map back to the statements by position.
+    The pending migrations and the drift preview with each statement's
+    impact attached, analyzed as one run in that order with the server
+    facts the connection gives. Without a context, on a dialect the
+    analysis does not cover, both come back as they are.
     """
     if context is None:
-        return None
+        return summaries, drift
     statements = [s for summary in summaries for s in summary.sql or []]
     statements.extend(drift or [])
-    impacts = iter(analyze(statements, migrator.dialect, context).statements)
+    attached = iter(attach_impact(statements, migrator.dialect, context))
 
-    def take(group: Optional[List[str]]) -> Optional[List[StatementImpact]]:
+    def take(group: Optional[List[str]]) -> Optional[List[str]]:
         if group is None:
             return None
-        return [next(impacts) for _ in group]
+        return [next(attached) for _ in group]
 
-    return _PlanImpact([take(s.sql) for s in summaries], take(drift))
+    return [s._replace(sql=take(s.sql)) for s in summaries], take(drift)
+
+
+def _impact_of(statement: str) -> Optional[StatementImpact]:
+    impact: Optional[StatementImpact] = getattr(statement, "impact", None)
+    return impact
 
 
 def _statement_json(
     statements: Optional[List[str]],
     verdicts: Dict[str, List[Verdict]],
-    impacts: Optional[List[StatementImpact]] = None,
 ) -> Optional[List[Dict[str, JsonValue]]]:
     """
     One JSON object per statement, with the same keys everywhere a command
@@ -469,10 +459,15 @@ def _statement_json(
                 {"rule": v.rule, "verdict": v.verdict}
                 for v in verdicts.get(normalize_statement(statement), [])
             ],
-            "impact": statement_data(impacts[i]) if impacts is not None else None,
+            "impact": _impact_json(statement),
         }
-        for i, statement in enumerate(statements)
+        for statement in statements
     ]
+
+
+def _impact_json(statement: str) -> Optional[Dict[str, JsonValue]]:
+    impact = _impact_of(statement)
+    return statement_data(impact) if impact is not None else None
 
 
 def _plan_json(
@@ -480,7 +475,6 @@ def _plan_json(
     problems: List[str],
     drift: Optional[List[str]],
     verdicts: Dict[str, List[Verdict]],
-    impact: Optional[_PlanImpact],
 ) -> None:
     """
     Prints the plan as one JSON object. `drift` is null, not an empty
@@ -494,19 +488,13 @@ def _plan_json(
                     "id": summary.id,
                     "state": summary.state,
                     "repeatable": summary.repeatable,
-                    "statements": _statement_json(
-                        summary.sql,
-                        verdicts,
-                        impact.pending[i] if impact is not None else None,
-                    ),
+                    "statements": _statement_json(summary.sql, verdicts),
                     "destructive": summary.destructive,
                 }
-                for i, summary in enumerate(summaries)
+                for summary in summaries
             ],
             "problems": problems,
-            "drift": _statement_json(
-                drift, verdicts, impact.drift if impact is not None else None
-            ),
+            "drift": _statement_json(drift, verdicts),
         }
     )
 
@@ -522,18 +510,18 @@ def _print_guards(verdicts: List[Verdict]) -> None:
         print(f"  {verdict.verdict:<5}  {verdict.rule:<{width}}  {verdict.statement}")
 
 
-def _flagged_impact(impact: Optional[_PlanImpact]) -> List[StatementImpact]:
+def _flagged_impact(
+    summaries: List[PendingSummary], drift: Optional[List[str]]
+) -> List[StatementImpact]:
     """
     The statements the impact section lists, in the order the plan
     prints them: those with a `warn` or `danger` finding, and those the
     analysis could not read.
     """
-    if impact is None:
-        return []
-    groups = [g for g in impact.pending if g is not None]
-    if impact.drift is not None:
-        groups.append(impact.drift)
-    return flagged([s for group in groups for s in group])
+    statements = [s for summary in summaries for s in summary.sql or []]
+    statements.extend(drift or [])
+    impacts = [_impact_of(s) for s in statements]
+    return flagged([impact for impact in impacts if impact is not None])
 
 
 def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) -> int:
@@ -559,7 +547,7 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
     )
     verdicts = [v for group in by_statement.values() for v in group]
     blockers = blocking(verdicts)
-    impact = _plan_impact(migrator, summaries, drift, context)
+    summaries, drift = _with_plan_impact(migrator, summaries, drift, context)
 
     # Problems mean the plan itself cannot be trusted, so they outrank a
     # blocked statement, which outranks work merely waiting.
@@ -573,7 +561,7 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
         exit_code = 0
 
     if args.json:
-        _plan_json(summaries, problems, drift, by_statement, impact)
+        _plan_json(summaries, problems, drift, by_statement)
         return exit_code
 
     sections: List[str] = []
@@ -599,7 +587,7 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
             print()
         _print_guards(verdicts)
         sections.append(_count(len(verdicts), "guard verdict"))
-    listed = _flagged_impact(impact)
+    listed = _flagged_impact(summaries, drift)
     if listed:
         if sections:
             print()

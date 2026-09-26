@@ -418,14 +418,7 @@ check_statements(guards, statements, dialect, reported=None)
 ```
 {: .sig #check_statements}
 
-What `check_guards()` does, over statements already collected, such as statements `with_impact()` returned.
-
-```python
-with_impact(statements, report) -> list[MigrationStatement]
-```
-{: .sig #with_impact}
-
-The statements with each one's `StatementImpact` from `report` on its `impact` attribute. `report` must be the analysis of the same statements, in the same order.
+What `check_guards()` does, over statements already collected, such as statements [`attach_impact()`](impact.md#attach_impact) returned.
 
 ```python
 report_danger(statements, reported=None)

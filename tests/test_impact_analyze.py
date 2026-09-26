@@ -15,6 +15,7 @@ from sustained.impact import (
     Thresholds,
     Work,
     analyze,
+    attach_impact,
     supported,
 )
 from sustained.impact.analyzer import intent_agrees
@@ -463,6 +464,23 @@ class UnknownTestCase(unittest.TestCase):
         self.assertEqual(impact.confidence, Confidence.UNKNOWN)
         self.assertEqual(impact.findings[0].severity, Severity.INFO)
         self.assertIn("not understood", impact.findings[0].message)
+
+
+class AttachImpactTestCase(unittest.TestCase):
+    def test_each_statement_gets_its_impact_and_keeps_its_migration(self):
+        statements = attach_impact(
+            [m("ALTER TABLE t ADD COLUMN c int", "m1", False), "DROP TABLE t"], PG
+        )
+        first, second = statements
+        self.assertEqual((first.migration_id, first.transactional), ("m1", False))
+        self.assertEqual(first.impact.tables[0].table, "t")
+        self.assertIsInstance(second, MigrationStatement)
+        self.assertIsNone(second.migration_id)
+        self.assertEqual(second.impact.statement, "DROP TABLE t")
+
+    def test_refuses_a_dialect_without_rules(self):
+        with self.assertRaises(ValueError):
+            attach_impact(["SELECT 1"], Dialects.DEFAULT)
 
 
 if __name__ == "__main__":

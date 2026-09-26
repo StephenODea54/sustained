@@ -24,7 +24,6 @@ if TYPE_CHECKING:
     from sustained.analysis import MigrationStatement
     from sustained.compilers.base import Compiler
     from sustained.guards import Guard, Verdict
-    from sustained.impact import ImpactReport
 
 
 def run_statements(
@@ -81,22 +80,6 @@ def check_guards(
     """
     compiler = Dialects.get_compiler(dialect)
     check_statements(guards, run_statements(run, compiler), dialect, reported)
-
-
-def with_impact(
-    statements: Sequence["MigrationStatement"], report: "ImpactReport"
-) -> List["MigrationStatement"]:
-    """
-    The statements with each one's `StatementImpact` attached. The
-    report must be the analysis of these statements, which lists one
-    entry per statement in the same order.
-    """
-    from sustained.analysis import MigrationStatement
-
-    return [
-        MigrationStatement(statement, impact=impact)
-        for statement, impact in zip(statements, report.statements)
-    ]
 
 
 def report_danger(

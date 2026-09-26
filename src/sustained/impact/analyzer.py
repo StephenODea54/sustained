@@ -57,6 +57,7 @@ from sustained.impact.state import RunState
 from sustained.impact.window import aggregate
 
 if TYPE_CHECKING:
+    from sustained.analysis import MigrationStatement
     from sustained.dialects import Dialects
 
 # The statement kinds, and ALTER TABLE actions, each intent kind may
@@ -158,6 +159,27 @@ def analyze(
     return ImpactReport(
         profile.name, context.version, evidence, migrations, context.read
     )
+
+
+def attach_impact(
+    statements: Sequence[str],
+    dialect: "Dialects",
+    context: Optional[EngineContext] = None,
+) -> List["MigrationStatement"]:
+    """
+    The statements with each one's `StatementImpact` from `analyze()` on
+    its `impact` attribute. A plain `str` becomes a statement of an
+    unnamed migration inside a transaction; a `MigrationStatement` keeps
+    its migration, its transaction flag, its destructive mark, and its
+    intent. Raises ValueError for a dialect that has no impact rules yet.
+    """
+    from sustained.analysis import MigrationStatement
+
+    report = analyze(statements, dialect, context)
+    return [
+        MigrationStatement(statement, impact=impact)
+        for statement, impact in zip(statements, report.statements)
+    ]
 
 
 def _groups(

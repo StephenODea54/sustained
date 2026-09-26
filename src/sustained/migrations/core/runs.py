@@ -24,7 +24,6 @@ from sustained.migrations.checks import (
     check_statements,
     report_danger,
     run_statements,
-    with_impact,
 )
 from sustained.migrations.core import bookkeeping
 from sustained.migrations.core.base import MigratorBase
@@ -311,12 +310,12 @@ def guard_run(
     for a run checked twice.
     """
     from sustained.guards import reads_impact
-    from sustained.impact import analyze, supported
+    from sustained.impact import attach_impact, supported
 
     statements = run_statements(run, m._compiler)
     if statements and supported(m._dialect):
         context = yield ReadContext()
-        statements = with_impact(statements, analyze(statements, m._dialect, context))
+        statements = attach_impact(statements, m._dialect, context)
         check_statements(m._guards, statements, m._dialect, warned)
         if not any(reads_impact(guard) for guard in m._guards):
             report_danger(statements, dangers)

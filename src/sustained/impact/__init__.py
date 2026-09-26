@@ -4,7 +4,8 @@ database while it runs, such as the locks it takes, what those locks
 block, and whether the table is rewritten.
 
 `analyze()` reads the statements a run would apply and returns an
-`ImpactReport`, with no database. `read_context()` and
+`ImpactReport`, with no database. `attach_impact()` puts each
+statement's part of that report on the statement. `read_context()` and
 `async_read_context()` read the server facts it takes as its context.
 The pieces:
 
@@ -18,7 +19,7 @@ The pieces:
 - `sustained.impact.trace`: what a traced rehearsal saw the server do
 """
 
-from sustained.impact.analyzer import analyze
+from sustained.impact.analyzer import analyze, attach_impact
 from sustained.impact.context import (
     EngineContext,
     TableStats,
@@ -45,6 +46,7 @@ from sustained.impact.rules import supported
 
 __all__ = [
     "analyze",
+    "attach_impact",
     "async_read_context",
     "read_context",
     "supported",

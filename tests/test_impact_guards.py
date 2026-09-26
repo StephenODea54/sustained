@@ -28,8 +28,8 @@ from sustained.guards import (
     run_guards,
     statement_impacts,
 )
-from sustained.impact import Blocks, EngineContext, TableStats, analyze
-from sustained.migrations import Migration, Migrator, with_impact
+from sustained.impact import Blocks, EngineContext, TableStats, attach_impact
+from sustained.migrations import Migration, Migrator
 from tests.test_impact_context import INDEX, ScriptedAdapter, ScriptedConnection
 
 PG = Dialects.POSTGRES
@@ -51,7 +51,7 @@ def context(rows, size):
 
 def attached(statements, facts):
     tagged = [MigrationStatement(s, "001_orders") for s in statements]
-    return with_impact(tagged, analyze(tagged, PG, facts))
+    return attach_impact(tagged, PG, facts)
 
 
 def flagged(guard, statements, dialect=PG):
@@ -173,7 +173,7 @@ class ImpactRuleTestCase(unittest.TestCase):
             MigrationStatement("ALTER TABLE a ADD COLUMN x int", "001"),
             MigrationStatement("ALTER TABLE b ADD COLUMN y int", "002", False),
         ]
-        statements = with_impact(run, analyze(run, PG))
+        statements = attach_impact(run, PG)
         self.assertEqual([s.migration_id for s in statements], ["001", "001", "002"])
         self.assertFalse(statements[2].transactional)
         self.assertEqual(

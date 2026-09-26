@@ -20,6 +20,13 @@ The impact of the statements a run would apply, in run order. `statements` is th
 Without a `context`, the rules assume the dialect's support floor, and the report's evidence is `static`. The context's `profile` picks the rules on a dialect with more than one profile: `mysql` or `mariadb` on `Dialects.MYSQL`. Without a context, MySQL is assumed, and the first migration gets an `impact.assumed_profile` finding. `analyze()` connects to no database. It raises `ValueError` for a dialect without impact rules.
 
 ```python
+attach_impact(statements, dialect, context=None) -> list[MigrationStatement]
+```
+{: .sig #attach_impact}
+
+The statements with each one's `StatementImpact` from `analyze()` on its `impact` attribute, which the impact guards read. A plain `str` becomes a `MigrationStatement` of an unnamed migration inside a transaction. A `MigrationStatement` keeps its migration id, its transaction flag, its `destructive` mark, and its `intent`. It raises `ValueError` for a dialect without impact rules.
+
+```python
 supported(dialect) -> bool
 ```
 {: .sig #supported}
