@@ -61,7 +61,14 @@ from typing import (
     Tuple,
 )
 
-from sustained.impact.context import FLOORS, ContextPlan, EngineContext, TableStats
+from sustained.impact.context import (
+    FLOORS,
+    ContextPlan,
+    EngineContext,
+    Rows,
+    TableStats,
+    attempt,
+)
 from sustained.impact.model import (
     Action,
     Blocks,
@@ -71,7 +78,6 @@ from sustained.impact.model import (
     Work,
 )
 from sustained.impact.rules import Effect, Facts, Outcome, Profile, Rule, common
-from sustained.types import RowValue
 
 _MYSQL_DOCS = "https://dev.mysql.com/doc/refman/8.0/en/"
 _ONLINE = _MYSQL_DOCS + "innodb-online-ddl-operations.html"
@@ -1873,10 +1879,7 @@ def context_plan() -> ContextPlan:
     settings: Dict[str, str] = {}
     tables: Dict[str, TableStats] = {}
     read: Set[str] = set()
-    try:
-        rows = yield _SETTINGS_SQL
-    except Exception:
-        rows = []
+    rows = yield from attempt(_SETTINGS_SQL)
     if rows:
         text, checks, timeout = rows[0]
         profile, version = server_version(str(text))
@@ -1885,10 +1888,7 @@ def context_plan() -> ContextPlan:
             "lock_wait_timeout": str(timeout),
         }
         read |= {"version", "settings"}
-    try:
-        sizes = yield _SIZES_SQL
-    except Exception:
-        sizes = None
+    sizes = yield from attempt(_SIZES_SQL)
     if sizes is not None:
         tables, current = _sizes(sizes)
         read.add("sizes")
@@ -1902,7 +1902,7 @@ def context_plan() -> ContextPlan:
     )
 
 
-_StoragePlan = Generator[str, List[Sequence[RowValue]], None]
+_StoragePlan = Generator[str, Rows, None]
 
 
 def _storage(
@@ -1916,19 +1916,15 @@ def _storage(
     Adds each table's FULLTEXT indexes and instant row versions to
     `tables`, whose `schema.table` keys `current` maps each bare key to.
     """
-    try:
-        fulltext = yield _FULLTEXT_SQL
-    except Exception:
-        fulltext = None
+    fulltext = yield from attempt(_FULLTEXT_SQL)
     if fulltext is not None:
         marked = {f"{schema}.{name}".lower() for schema, name in fulltext}
         _update(tables, current, lambda key, s: s._replace(fulltext=key in marked))
         read.add("fulltext")
     if profile != "mysql" or version < (8, 0, 29):
         return
-    try:
-        versions = yield _ROW_VERSIONS_SQL
-    except Exception:
+    versions = yield from attempt(_ROW_VERSIONS_SQL)
+    if versions is None:
         return
     # INNODB_TABLES names a table `schema/table`.
     counts = {

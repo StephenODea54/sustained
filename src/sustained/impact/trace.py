@@ -48,6 +48,7 @@ from typing import (
     Tuple,
 )
 
+from sustained.impact.context import Rows, attempt
 from sustained.impact.model import (
     Evidence,
     Finding,
@@ -60,13 +61,11 @@ from sustained.impact.model import (
     Work,
 )
 from sustained.impact.window import aggregate
-from sustained.types import RowValue
 
 if TYPE_CHECKING:
     from sustained.dialects import Dialects
     from sustained.impact.rules import Profile
 
-Rows = List[Sequence[RowValue]]
 
 _SYSTEM_SCHEMAS = (
     "n.nspname NOT IN ('pg_catalog', 'information_schema') "
@@ -160,9 +159,8 @@ def _literal(value: str) -> str:
 
 def tables_plan() -> Generator[str, Rows, Optional[FrozenSet[int]]]:
     """The oids of every table that exists, or None when the read failed."""
-    try:
-        rows = yield _TABLES_SQL
-    except Exception:
+    rows = yield from attempt(_TABLES_SQL)
+    if rows is None:
         return None
     return frozenset(int(str(row[0])) for row in rows)
 
@@ -173,24 +171,18 @@ def sighting_plan(tables: Sequence[str]) -> Generator[str, Rows, Sighting]:
     names: Dict[str, int] = {}
     storage: Dict[int, Dict[int, File]] = {}
     read: Set[str] = set()
-    try:
-        rows = yield _LOCKS_SQL
-    except Exception:
-        pass
-    else:
+    rows = yield from attempt(_LOCKS_SQL)
+    if rows is not None:
         read.add("locks")
         for oid, schema, name, visible, mode in rows:
             _name(names, int(str(oid)), str(schema), str(name), bool(visible))
             locks.setdefault(int(str(oid)), set()).add(lock_name(str(mode)))
     wanted = sorted({_key(t).rsplit(".", 1)[-1] for t in tables})
     if wanted:
-        try:
-            rows = yield _STORAGE_SQL.format(
-                names=", ".join(_literal(name) for name in wanted)
-            )
-        except Exception:
-            pass
-        else:
+        rows = yield from attempt(
+            _STORAGE_SQL.format(names=", ".join(_literal(name) for name in wanted))
+        )
+        if rows is not None:
             read.add("storage")
             for oid, schema, name, visible, relid, index, node, size in rows:
                 table = int(str(oid))

@@ -32,7 +32,13 @@ import re
 from types import MappingProxyType
 from typing import Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-from sustained.impact.context import FLOORS, ContextPlan, EngineContext, TableStats
+from sustained.impact.context import (
+    FLOORS,
+    ContextPlan,
+    EngineContext,
+    TableStats,
+    attempt,
+)
 from sustained.impact.model import (
     Action,
     Blocks,
@@ -1581,20 +1587,14 @@ def context_plan() -> ContextPlan:
     settings: Dict[str, str] = {}
     tables: Dict[str, TableStats] = {}
     read: Set[str] = set()
-    try:
-        rows = yield _SETTINGS_SQL
-    except Exception:
-        rows = []
+    rows = yield from attempt(_SETTINGS_SQL)
     if rows:
         number, zone, timeout = rows[0]
         version = server_version(str(number))
         settings = {"TimeZone": str(zone), "lock_timeout": str(timeout)}
         read |= {"version", "settings"}
-    try:
-        sizes = yield _SIZES_SQL
-    except Exception:
-        pass
-    else:
+    sizes = yield from attempt(_SIZES_SQL)
+    if sizes is not None:
         tables = _sizes(sizes)
         read.add("sizes")
     return EngineContext(

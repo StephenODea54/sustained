@@ -202,6 +202,20 @@ its rows, has a failed statement's error thrown in, and returns the
 context it read, without the schema.
 """
 
+Rows = List[Sequence[RowValue]]
+
+
+def attempt(statement: str) -> Generator[str, Rows, Optional[Rows]]:
+    """
+    One step of a read plan: the statement's rows, or None when the
+    statement failed, so the plan goes on without its facts.
+    """
+    try:
+        rows = yield statement
+    except Exception:
+        return None
+    return rows
+
 
 def read_context(connection: Connection, dialect: "Dialects") -> EngineContext:
     """
