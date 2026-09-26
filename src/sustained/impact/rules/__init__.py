@@ -125,6 +125,8 @@ class Profile(NamedTuple):
     migration commits. `prefix` starts the id of every rule the profile
     owns, such as `pg` in `pg.create_index`. `context_plan()` is the
     catalog read that fills an `EngineContext` from a live server.
+    `title` is the engine's name as its vendor writes it, such as
+    `PostgreSQL`.
     `fixture_schema` creates the objects the rules' fixtures name, for
     the ground-truth tests.
 
@@ -137,6 +139,7 @@ class Profile(NamedTuple):
     """
 
     name: str
+    title: str
     prefix: str
     effects: Callable[[Facts], Outcome]
     blocks: Callable[[Optional[str]], Blocks]
@@ -186,6 +189,15 @@ def profile_for(dialect: "Dialects", name: Optional[str] = None) -> Optional[Pro
 def profiles_for(dialect: "Dialects") -> Tuple[Profile, ...]:
     """Every profile of a dialect, the one assumed without a server first."""
     return _profiles().get(dialect.name, ())
+
+
+def title(name: str) -> str:
+    """The vendor's name for the engine a profile name stands for."""
+    for profiles in _profiles().values():
+        for profile in profiles:
+            if profile.name == name:
+                return profile.title
+    return name
 
 
 def supported(dialect: "Dialects") -> bool:

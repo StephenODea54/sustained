@@ -422,7 +422,7 @@ class _Run:
 
 def _assumed_profile(profile: Profile, profiles: Sequence[Profile]) -> Finding:
     from sustained.impact.context import FLOORS, version_text
-    from sustained.impact.report import title
+    from sustained.impact.rules import title
 
     others = " or ".join(title(p.name) for p in profiles if p is not profile)
     return Finding(

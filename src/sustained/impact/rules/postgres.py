@@ -41,7 +41,7 @@ from sustained.impact.model import (
     Severity,
     Work,
 )
-from sustained.impact.rules import Effect, Facts, Outcome, Profile, Rule
+from sustained.impact.rules import Effect, Facts, Outcome, Profile, Rule, common
 from sustained.impact.tokens import PUNCT, Token, tokenize
 
 _DOCS = "https://www.postgresql.org/docs/current/"
@@ -456,7 +456,7 @@ def _table_label(index: str, table: Optional[str]) -> str:
 
 def _create_index(facts: Facts) -> Outcome:
     parsed = facts.parsed
-    table = parsed.table or "(unnamed table)"
+    table = common.table(facts)
     if parsed.options.get("concurrently"):
         return Outcome(
             (
@@ -562,13 +562,6 @@ def _create_table(facts: Facts) -> Outcome:
     return Outcome(tuple(effects))
 
 
-def _tables(facts: Facts) -> List[str]:
-    tables = facts.parsed.items("tables")
-    if tables:
-        return [str(t) for t in tables]
-    return [facts.parsed.table] if facts.parsed.table else []
-
-
 def _drop_table(facts: Facts) -> Outcome:
     """
     DROP TABLE and TRUNCATE lock each named table. A dropped table's
@@ -577,7 +570,7 @@ def _drop_table(facts: Facts) -> Outcome:
     table, and TRUNCATE also empties the tables those keys belong to,
     and the tables that point at those in turn.
     """
-    named = _tables(facts)
+    named = common.tables(facts)
     effects = [
         Effect(DROP_TABLE, table, ACCESS_EXCLUSIVE, Work.CATALOG) for table in named
     ]
@@ -650,23 +643,14 @@ def _drop_view(facts: Facts) -> Outcome:
     return Outcome(
         tuple(
             Effect(DROP_VIEW, table, ACCESS_EXCLUSIVE, Work.CATALOG)
-            for table in _tables(facts)
+            for table in common.tables(facts)
         )
     )
 
 
 def _write_rows(facts: Facts) -> Outcome:
-    table = facts.parsed.table or "(unnamed table)"
-    verb = facts.parsed.kind.upper()
-    if facts.intent is not None and facts.intent.kind == "backfill":
-        what = "the backfill"
-    else:
-        what = f"the {verb}"
-    until = "the migration commits" if facts.transactional else "it ends"
-    message = (
-        f"writes to the rows {what} changes on {table} wait until {until}; on a "
-        "large table, backfill in batches outside the DDL migration"
-    )
+    table = common.table(facts)
+    message = common.row_write_message(facts, table)
     return Outcome(
         (
             Effect(
@@ -682,7 +666,7 @@ def _write_rows(facts: Facts) -> Outcome:
 
 
 def _insert(facts: Facts) -> Outcome:
-    table = facts.parsed.table or "(unnamed table)"
+    table = common.table(facts)
     return Outcome((Effect(INSERT_ROWS, table, ROW_EXCLUSIVE, Work.ROWS),))
 
 
@@ -727,7 +711,7 @@ def _reindex(facts: Facts) -> Outcome:
 
 
 def _vacuum(facts: Facts) -> Outcome:
-    tables = _tables(facts)
+    tables = common.tables(facts)
     if not tables:
         return Outcome(
             findings=(
@@ -788,7 +772,7 @@ def _refresh(facts: Facts) -> Outcome:
 
 
 def _trigger(facts: Facts) -> Outcome:
-    table = facts.parsed.table or "(unnamed table)"
+    table = common.table(facts)
     lock = (
         SHARE_ROW_EXCLUSIVE
         if facts.parsed.kind == "create_trigger"
@@ -800,7 +784,7 @@ def _trigger(facts: Facts) -> Outcome:
 def _comment(facts: Facts) -> Outcome:
     if facts.parsed.options.get("object") not in ("table", "column"):
         return Outcome()
-    table = facts.parsed.table or "(unnamed table)"
+    table = common.table(facts)
     return Outcome((Effect(COMMENT, table, SHARE_UPDATE_EXCLUSIVE, Work.CATALOG),))
 
 
@@ -811,7 +795,7 @@ def _lock_table(facts: Facts) -> Outcome:
     return Outcome(
         tuple(
             Effect(LOCK_TABLE, table, mode, Work.CATALOG, waits=waits)
-            for table in _tables(facts)
+            for table in common.tables(facts)
         )
     )
 
@@ -833,10 +817,6 @@ def _drop_object(facts: Facts) -> Outcome:
     )
 
 
-def _no_table(facts: Facts) -> Outcome:
-    return Outcome()
-
-
 # --- ALTER TABLE -------------------------------------------------------
 
 
@@ -847,7 +827,7 @@ def _alter_table(facts: Facts) -> Outcome:
     for action in facts.parsed.actions:
         handler = _ACTIONS.get(action.kind)
         if handler is None:
-            return _unknown_action(facts, action)
+            return common.unknown(facts, f"the ALTER TABLE action {action.kind}")
         outcome = handler(facts, action)
         effects.extend(outcome.effects)
         findings.extend(outcome.findings)
@@ -859,32 +839,15 @@ def _alter_table(facts: Facts) -> Outcome:
     return Outcome(tuple(effects), tuple(findings), confidence)
 
 
-def _unknown_action(facts: Facts, action: Action) -> Outcome:
-    return Outcome(
-        findings=(
-            Finding(
-                "impact.unknown",
-                Severity.INFO,
-                f"no PostgreSQL rule reads the ALTER TABLE action {action.kind}",
-            ),
-        ),
-        confidence=Confidence.UNKNOWN,
-    )
-
-
-def _table(facts: Facts) -> str:
-    return facts.parsed.table or "(unnamed table)"
-
-
 def _simple(rule: Rule, lock: str, work: Work) -> "_ActionHandler":
     def handler(facts: Facts, action: Action) -> Outcome:
-        return Outcome((Effect(rule, _table(facts), lock, work),))
+        return Outcome((Effect(rule, common.table(facts), lock, work),))
 
     return handler
 
 
 def _add_column(facts: Facts, action: Action) -> Outcome:
-    table = _table(facts)
+    table = common.table(facts)
     options = action.options
     column = action.column or "?"
     volatility = options.get("default_volatility")
@@ -955,7 +918,7 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
 
 
 def _drop_column(facts: Facts, action: Action) -> Outcome:
-    table = _table(facts)
+    table = common.table(facts)
     live = facts.state.original(table)
     column = [action.column] if action.column else []
     effects = [Effect(DROP_COLUMN, table, ACCESS_EXCLUSIVE, Work.CATALOG)]
@@ -970,7 +933,7 @@ def _drop_column(facts: Facts, action: Action) -> Outcome:
 
 
 def _drop_constraint(facts: Facts, action: Action) -> Outcome:
-    table = _table(facts)
+    table = common.table(facts)
     live = facts.state.original(table)
     effects = [Effect(DROP_CONSTRAINT, table, ACCESS_EXCLUSIVE, Work.CATALOG)]
     name = action.options.get("name")
@@ -1010,7 +973,7 @@ def _constraint_columns(
 
 
 def _set_not_null(facts: Facts, action: Action) -> Outcome:
-    table = _table(facts)
+    table = common.table(facts)
     column = action.column or "?"
     check = f"{_last(table)}_{column}_not_null"[:63]
     t, c, k = _ident(table), _ident(column), _ident(check)
@@ -1048,7 +1011,11 @@ def _add_constraint(facts: Facts, action: Action) -> Outcome:
     if constraint in ("primary_key", "unique"):
         return _add_key(facts, action)
     return Outcome(
-        (Effect(ADD_EXCLUSION, _table(facts), ACCESS_EXCLUSIVE, Work.INDEX_BUILD),)
+        (
+            Effect(
+                ADD_EXCLUSION, common.table(facts), ACCESS_EXCLUSIVE, Work.INDEX_BUILD
+            ),
+        )
     )
 
 
@@ -1058,12 +1025,12 @@ def _validate_later(facts: Facts, action: Action) -> Tuple[str, ...]:
         return ()
     return (
         _trimmed(facts.statement) + " NOT VALID",
-        f"ALTER TABLE {_ident(_table(facts))} VALIDATE CONSTRAINT {_ident(str(name))}",
+        f"ALTER TABLE {_ident(common.table(facts))} VALIDATE CONSTRAINT {_ident(str(name))}",
     )
 
 
 def _add_check(facts: Facts, action: Action) -> Outcome:
-    table = _table(facts)
+    table = common.table(facts)
     if action.options.get("not_valid"):
         return Outcome(
             (Effect(ADD_CHECK_NOT_VALID, table, ACCESS_EXCLUSIVE, Work.CATALOG),)
@@ -1085,7 +1052,7 @@ def _add_check(facts: Facts, action: Action) -> Outcome:
 
 
 def _add_foreign_key(facts: Facts, action: Action) -> Outcome:
-    table = _table(facts)
+    table = common.table(facts)
     referenced = str(action.options.get("references"))
     if action.options.get("not_valid"):
         return Outcome(
@@ -1114,7 +1081,7 @@ def _add_foreign_key(facts: Facts, action: Action) -> Outcome:
 
 
 def _add_key(facts: Facts, action: Action) -> Outcome:
-    table = _table(facts)
+    table = common.table(facts)
     options = action.options
     if options.get("using_index"):
         return Outcome(
@@ -1152,7 +1119,7 @@ def _add_key(facts: Facts, action: Action) -> Outcome:
 
 
 def _rename(facts: Facts, action: Action) -> Outcome:
-    table = _table(facts)
+    table = common.table(facts)
     if action.kind == "rename_constraint":
         return Outcome((Effect(RENAME, table, ACCESS_EXCLUSIVE, Work.CATALOG),))
     what = "column" if action.kind == "rename_column" else "table"
@@ -1174,7 +1141,10 @@ def _attach_partition(facts: Facts, action: Action) -> Outcome:
     return Outcome(
         (
             Effect(
-                ATTACH_PARTITION, _table(facts), SHARE_UPDATE_EXCLUSIVE, Work.CATALOG
+                ATTACH_PARTITION,
+                common.table(facts),
+                SHARE_UPDATE_EXCLUSIVE,
+                Work.CATALOG,
             ),
             Effect(
                 ATTACH_PARTITION,
@@ -1193,7 +1163,7 @@ def _attach_partition(facts: Facts, action: Action) -> Outcome:
 
 
 def _detach_partition(facts: Facts, action: Action) -> Outcome:
-    table = _table(facts)
+    table = common.table(facts)
     partition = str(action.options.get("partition"))
     if action.options.get("concurrently"):
         findings: Tuple[Finding, ...] = ()
@@ -1256,14 +1226,14 @@ def _set_parameters(facts: Facts, action: Action) -> Outcome:
             (
                 Effect(
                     TABLE_PARAMETERS,
-                    _table(facts),
+                    common.table(facts),
                     SHARE_UPDATE_EXCLUSIVE,
                     Work.CATALOG,
                 ),
             )
         )
     return Outcome(
-        (Effect(TABLE_CATALOG, _table(facts), ACCESS_EXCLUSIVE, Work.CATALOG),)
+        (Effect(TABLE_CATALOG, common.table(facts), ACCESS_EXCLUSIVE, Work.CATALOG),)
     )
 
 
@@ -1412,7 +1382,7 @@ def _alter_column_type(facts: Facts, action: Action) -> Outcome:
 
 
 def _column_type(facts: Facts, action: Action) -> Outcome:
-    table = _table(facts)
+    table = common.table(facts)
     column = action.column or "?"
     to_type = str(action.options.get("type"))
     using = action.options.get("using")
@@ -1454,7 +1424,7 @@ def _type_keys(facts: Facts, action: Action) -> List[Effect]:
     and when that table holds the key, its rows are checked again
     unless the old and new types compare the same way.
     """
-    table = _table(facts)
+    table = common.table(facts)
     live = facts.state.original(table)
     column = [action.column] if action.column else []
     effects = [
@@ -1522,8 +1492,7 @@ _ACTIONS: Dict[str, _ActionHandler] = {
     "disable_trigger": _simple(TRIGGER_STATE, SHARE_ROW_EXCLUSIVE, Work.CATALOG),
 }
 
-_Handler = Callable[[Facts], Outcome]
-_STATEMENTS: Dict[str, _Handler] = {
+_STATEMENTS: Dict[str, common.Handler] = {
     "alter_table": _alter_table,
     "create_index": _create_index,
     "drop_index": _drop_index,
@@ -1544,31 +1513,19 @@ _STATEMENTS: Dict[str, _Handler] = {
     "comment_on": _comment,
     "lock_table": _lock_table,
     "drop_object": _drop_object,
-    "create_object": _no_table,
-    "create_type": _no_table,
-    "drop_type": _no_table,
-    "alter_type_add_value": _no_table,
-    "alter_type_rename_value": _no_table,
-    "create_view": _no_table,
-    "set": _no_table,
+    "create_object": common.nothing,
+    "create_type": common.nothing,
+    "drop_type": common.nothing,
+    "alter_type_add_value": common.nothing,
+    "alter_type_rename_value": common.nothing,
+    "create_view": common.nothing,
+    "set": common.nothing,
 }
 
 
 def effects(facts: Facts) -> Outcome:
     """What the statement does on PostgreSQL, table by table."""
-    handler = _STATEMENTS.get(facts.parsed.kind)
-    if handler is None:
-        return Outcome(
-            findings=(
-                Finding(
-                    "impact.unknown",
-                    Severity.INFO,
-                    f"no PostgreSQL rule reads a {facts.parsed.kind} statement",
-                ),
-            ),
-            confidence=Confidence.UNKNOWN,
-        )
-    return handler(facts)
+    return common.dispatch(facts, _STATEMENTS)
 
 
 # --- the server facts --------------------------------------------------
@@ -1657,9 +1614,7 @@ def _sizes(rows: Sequence[Sequence[object]]) -> Dict[str, TableStats]:
     tables: Dict[str, TableStats] = {}
     for schema, name, visible, count, size, unread in rows:
         stats = TableStats(None if unread else int(str(count)), int(str(size)))
-        tables[f"{schema}.{name}".lower()] = stats
-        if visible:
-            tables[str(name).lower()] = stats
+        common.add_stats(tables, str(schema), str(name), bool(visible), stats)
     return tables
 
 
@@ -1669,6 +1624,7 @@ def _rules() -> Tuple[Rule, ...]:
 
 PROFILE = Profile(
     name="postgres",
+    title="PostgreSQL",
     prefix="pg",
     effects=effects,
     blocks=blocks,

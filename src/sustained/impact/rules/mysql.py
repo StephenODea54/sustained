@@ -70,7 +70,7 @@ from sustained.impact.model import (
     Severity,
     Work,
 )
-from sustained.impact.rules import Effect, Facts, Outcome, Profile, Rule
+from sustained.impact.rules import Effect, Facts, Outcome, Profile, Rule, common
 from sustained.types import RowValue
 
 _MYSQL_DOCS = "https://dev.mysql.com/doc/refman/8.0/en/"
@@ -616,10 +616,6 @@ def _foreign_key_checks_off(facts: Facts) -> bool:
     return _off(setting)
 
 
-def _table(facts: Facts) -> str:
-    return facts.parsed.table or "(unnamed table)"
-
-
 def _stats(facts: Facts, table: str) -> TableStats:
     if facts.state.is_new(table):
         return TableStats(0, 0, "DYNAMIC", 0, False)
@@ -691,7 +687,7 @@ def _unread_note(facts: Facts, table: str) -> str:
 
 def _add_column(facts: Facts, action: Action) -> _Change:
     options = action.options
-    table = _table(facts)
+    table = common.table(facts)
     mariadb = _mariadb(facts)
     default = str(options.get("default") or "")
     if options.get("generated") == "stored":
@@ -797,7 +793,7 @@ def _indexed(facts: Facts, table: str, column: str) -> Optional[bool]:
 
 
 def _drop_column(facts: Facts, action: Action) -> _Change:
-    table = _table(facts)
+    table = common.table(facts)
     column = action.column or "?"
     mariadb = _mariadb(facts)
     indexed = _indexed(facts, table, column)
@@ -961,7 +957,7 @@ def _type_change(
 
 
 def _modify_column(facts: Facts, action: Action) -> _Change:
-    table = _table(facts)
+    table = common.table(facts)
     column = action.column or "?"
     options = action.options
     mariadb = _mariadb(facts)
@@ -1150,7 +1146,7 @@ def _rename_to(facts: Facts, action: Action) -> _Change:
         Work.CATALOG,
         "rename",
         "the table is renamed in the data dictionary",
-        notes=(_rename_note("table", _table(facts)),),
+        notes=(_rename_note("table", common.table(facts)),),
     )
 
 
@@ -1170,7 +1166,7 @@ def _index_change(facts: Facts, fulltext: bool) -> _Change:
             "add_index",
             "the index is built while reads and writes go on",
         )
-    table = _table(facts)
+    table = common.table(facts)
     existing = _stats(facts, table).fulltext
     if existing:
         return _Change(
@@ -1214,7 +1210,7 @@ def _add_constraint(facts: Facts, action: Action) -> _Change:
 
 
 def _add_foreign_key(facts: Facts, action: Action) -> _Change:
-    table = _table(facts)
+    table = common.table(facts)
     if _foreign_key_checks_off(facts):
         return _Change(
             Online("INSTANT") if _mariadb(facts) else Online("INPLACE", "NONE"),
@@ -1240,7 +1236,7 @@ def _drop_constraint(facts: Facts, action: Action) -> _Change:
     options = action.options
     constraint = options.get("constraint")
     name = str(options.get("name") or "")
-    table = _table(facts)
+    table = common.table(facts)
     live = facts.state.original(table)
     if constraint is None and name:
         constraint = _constraint_kind(facts, live, name)
@@ -1464,7 +1460,7 @@ def _online_outcome(facts: Facts, change: _Change) -> Outcome:
     statement spells.
     """
     rules = _rules(facts)
-    table = _table(facts)
+    table = common.table(facts)
     requested_algorithm, requested_lock = _requested(facts)
     online = change.online
     refusal = _refusal(facts, online, requested_algorithm, requested_lock)
@@ -1595,7 +1591,7 @@ def _parent_effects(facts: Facts) -> List[Effect]:
     if _mariadb(facts):
         return []
     rule = _rules(facts)["foreign_key_parent"]
-    table = _table(facts)
+    table = common.table(facts)
     live = facts.state.original(table)
     parents: List[str] = []
     for action in facts.parsed.actions:
@@ -1646,29 +1642,15 @@ def _alter_table(facts: Facts) -> Outcome:
     for action in actions:
         handler = _ACTIONS.get(action.kind)
         if handler is None:
-            return _unknown_action(facts, action)
+            return common.unknown(facts, f"the ALTER TABLE action {action.kind}")
         if swaps_primary_key and action.kind == "drop_constraint":
             # Dropping the primary key and adding another in the same
             # statement rebuilds the table in place.
             continue
         changes.append(handler(facts, action))
     if not changes:
-        return _unknown_action(facts, actions[0])
+        return common.unknown(facts, f"the ALTER TABLE action {actions[0].kind}")
     return _online_outcome(facts, _heaviest(changes))
-
-
-def _unknown_action(facts: Facts, action: Action) -> Outcome:
-    engine = "MariaDB" if _mariadb(facts) else "MySQL"
-    return Outcome(
-        findings=(
-            Finding(
-                "impact.unknown",
-                Severity.INFO,
-                f"no {engine} rule reads the ALTER TABLE action {action.kind}",
-            ),
-        ),
-        confidence=Confidence.UNKNOWN,
-    )
 
 
 def _create_index(facts: Facts) -> Outcome:
@@ -1695,15 +1677,8 @@ def _metadata(facts: Facts, rule_name: str, tables: Sequence[str]) -> Outcome:
     )
 
 
-def _tables(facts: Facts) -> List[str]:
-    tables = facts.parsed.items("tables")
-    if tables:
-        return [str(t) for t in tables]
-    return [facts.parsed.table] if facts.parsed.table else []
-
-
 def _drop_table(facts: Facts) -> Outcome:
-    named = _tables(facts)
+    named = common.tables(facts)
     outcome = _metadata(facts, "drop_table", named)
     if _mariadb(facts) or facts.parsed.kind != "drop_table":
         return outcome
@@ -1738,7 +1713,7 @@ def _create_table(facts: Facts) -> Outcome:
     if _mariadb(facts):
         return Outcome()
     rule = _rules(facts)["foreign_key_parent"]
-    table = facts.parsed.table or "(unnamed table)"
+    table = common.table(facts)
     return Outcome(
         tuple(
             _parent_effect(rule, table, str(parent))
@@ -1752,7 +1727,7 @@ def _create_table(facts: Facts) -> Outcome:
 def _optimize(facts: Facts) -> Outcome:
     rule = _rules(facts)["table_rebuild"]
     effects = []
-    for table in _tables(facts):
+    for table in common.tables(facts):
         if _stats(facts, table).fulltext:
             online = _copy(facts)
         else:
@@ -1777,18 +1752,12 @@ def _optimize(facts: Facts) -> Outcome:
 
 def _write_rows(facts: Facts) -> Outcome:
     rule = _rules(facts)["write_rows"]
-    table = facts.parsed.table or "(unnamed table)"
-    verb = facts.parsed.kind.upper()
-    if facts.intent is not None and facts.intent.kind == "backfill":
-        what = "the backfill"
-    else:
-        what = f"the {verb}"
-    until = "the migration commits" if facts.transactional else "it ends"
-    message = (
-        f"writes to the rows {what} changes on {table} wait until {until}, and "
-        "InnoDB locks every row the statement reads when no index narrows the "
-        "WHERE clause; on a large table, backfill in batches outside the DDL "
-        "migration"
+    table = common.table(facts)
+    message = common.row_write_message(
+        facts,
+        table,
+        ", and InnoDB locks every row the statement reads when no index narrows "
+        "the WHERE clause",
     )
     return Outcome(
         (
@@ -1806,7 +1775,7 @@ def _write_rows(facts: Facts) -> Outcome:
 
 def _insert(facts: Facts) -> Outcome:
     rule = _rules(facts)["insert"]
-    table = facts.parsed.table or "(unnamed table)"
+    table = common.table(facts)
     return Outcome((Effect(rule, table, ROW_LOCKS, Work.ROWS),))
 
 
@@ -1820,15 +1789,10 @@ def _trigger(facts: Facts) -> Outcome:
 
 
 def _drop_view(facts: Facts) -> Outcome:
-    return _metadata(facts, "drop_view", _tables(facts))
+    return _metadata(facts, "drop_view", common.tables(facts))
 
 
-def _no_table(facts: Facts) -> Outcome:
-    return Outcome()
-
-
-_Handler = Callable[[Facts], Outcome]
-_STATEMENTS: Dict[str, _Handler] = {
+_STATEMENTS: Dict[str, common.Handler] = {
     "alter_table": _alter_table,
     "create_index": _create_index,
     "drop_index": _drop_index,
@@ -1843,29 +1807,16 @@ _STATEMENTS: Dict[str, _Handler] = {
     "create_trigger": _trigger,
     "drop_trigger": _trigger,
     "drop_view": _drop_view,
-    "create_view": _no_table,
-    "create_object": _no_table,
-    "drop_object": _no_table,
-    "set": _no_table,
+    "create_view": common.nothing,
+    "create_object": common.nothing,
+    "drop_object": common.nothing,
+    "set": common.nothing,
 }
 
 
 def effects(facts: Facts) -> Outcome:
     """What the statement does on MySQL or MariaDB, table by table."""
-    handler = _STATEMENTS.get(facts.parsed.kind)
-    if handler is None:
-        engine = "MariaDB" if _mariadb(facts) else "MySQL"
-        return Outcome(
-            findings=(
-                Finding(
-                    "impact.unknown",
-                    Severity.INFO,
-                    f"no {engine} rule reads a {facts.parsed.kind} statement",
-                ),
-            ),
-            confidence=Confidence.UNKNOWN,
-        )
-    return handler(facts)
+    return common.dispatch(facts, _STATEMENTS)
 
 
 # --- the server facts --------------------------------------------------
@@ -2016,10 +1967,9 @@ def _sizes(
             int(str(size)),
             None if row_format is None else str(row_format),
         )
-        key = f"{schema}.{name}".lower()
-        tables[key] = stats
-        if here and int(str(here)):
-            tables[str(name).lower()] = stats
+        bare = bool(here and int(str(here)))
+        key = common.add_stats(tables, str(schema), str(name), bare, stats)
+        if bare:
             current[str(name).lower()] = key
     return tables, current
 
@@ -2028,6 +1978,7 @@ def _profile(name: str) -> Profile:
     mariadb = name == "mariadb"
     return Profile(
         name=name,
+        title="MariaDB" if mariadb else "MySQL",
         prefix=name,
         effects=effects,
         blocks=blocks,

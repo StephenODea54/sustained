@@ -28,18 +28,12 @@ from sustained.impact.model import (
     StatementImpact,
     TableImpact,
 )
+from sustained.impact.rules import title
 
 JsonValue = Union[
     str, int, float, bool, None, Sequence["JsonValue"], Mapping[str, "JsonValue"]
 ]
 """What the data functions return: what json.dumps accepts."""
-
-_TITLES = {"postgres": "PostgreSQL", "mysql": "MySQL", "mariadb": "MariaDB"}
-
-
-def title(profile: str) -> str:
-    """A profile's engine as people write it, such as `PostgreSQL`."""
-    return _TITLES.get(profile, profile)
 
 
 def statement_data(impact: StatementImpact) -> Dict[str, JsonValue]:
