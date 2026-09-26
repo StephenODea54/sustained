@@ -112,6 +112,9 @@ _INTENT_FORMS: Mapping[str, FrozenSet[Tuple[str, Optional[str]]]] = {
     "session_setting": frozenset({("set", None)}),
 }
 
+# The id of the lock-timeout finding, after the profile's prefix.
+_LOCK_TIMEOUT = "lock_timeout"
+
 _WORK_WORDS: Mapping[Work, str] = {
     Work.SCAN: "while every row is read",
     Work.ROWS: "while the rows are written",
@@ -410,7 +413,7 @@ class _Run:
     def timeout_finding(self, tables: Sequence[str], transactional: bool) -> Finding:
         setting = self.profile.timeout_setting
         return Finding(
-            f"{self.profile.prefix}.lock_timeout",
+            f"{self.profile.prefix}.{_LOCK_TIMEOUT}",
             Severity.WARN,
             f"no {setting} in scope: while this statement waits for its lock, "
             f"every query that conflicts with it on {', '.join(tables)} queues "
@@ -418,6 +421,11 @@ class _Run:
             (self.profile.timeout_statement(transactional),),
             self.profile.timeout_source,
         )
+
+
+def is_lock_timeout(finding: Finding) -> bool:
+    """Whether the finding is a profile's lock-timeout finding."""
+    return finding.rule.partition(".")[2] == _LOCK_TIMEOUT
 
 
 def _assumed_profile(profile: Profile, profiles: Sequence[Profile]) -> Finding:
