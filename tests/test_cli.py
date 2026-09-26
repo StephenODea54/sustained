@@ -747,7 +747,7 @@ class JsonFailureTestCase(CliBase):
     KEYS = {
         "status": {"migrations"},
         "plan": {"pending", "problems", "drift"},
-        "rehearse": {"rehearsed", "scratch", "key", "recorded", "ok"},
+        "rehearse": {"rehearsed", "scratch", "key", "recorded", "ok", "impact"},
         "validate": {"ok", "problems"},
     }
 
@@ -919,7 +919,7 @@ class RehearseCliTestCase(CliBase):
         self.assertEqual(code, 0)
         self.assertEqual(
             set(payload),
-            {"rehearsed", "scratch", "key", "recorded", "ok", "error"},
+            {"rehearsed", "scratch", "key", "recorded", "ok", "impact", "error"},
         )
         self.assertTrue(payload["recorded"])
         self.assertEqual(len(payload["key"]), 64)
@@ -1580,6 +1580,44 @@ class ImpactCliTestCase(CliBase):
         payload = json.loads(out)
         self.assertIsNone(payload["migrations"])
         self.assertIn("does not cover", payload["error"])
+
+    def _trace_stand_in(self):
+        patcher = mock.patch("sustained.impact.trace.traces", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_rehearse_trace_on_a_dialect_it_cannot_observe_exits_one(self):
+        code, _, err = self.run_cli("rehearse", "--trace")
+        self.assertEqual(code, 1)
+        self.assertIn("POSTGRES only", err)
+
+    def test_rehearse_trace_prints_the_report(self):
+        self._postgres_rules()
+        self._trace_stand_in()
+        self.run_cli("migrate")
+        self._add_index()
+        code, out, _ = self.run_cli("rehearse", "--trace")
+        self.assertEqual(code, 0)
+        self.assertIn("rehearsed 003_index", out)
+        self.assertIn("users  SHARE  blocks writes  index_build", out)
+        self.assertIn("Evidence: catalog", out)
+        self.assertLess(out.index("Evidence:"), out.index("rollback complete"))
+
+    def test_rehearse_trace_json_carries_the_report(self):
+        self._postgres_rules()
+        self._trace_stand_in()
+        self.run_cli("migrate")
+        self._add_index()
+        code, out, _ = self.run_cli("rehearse", "--trace", "--json")
+        self.assertEqual(code, 0)
+        impact = json.loads(out)["impact"]
+        self.assertEqual(impact["profile"], "postgres")
+        self.assertEqual(impact["migrations"][0]["id"], "003_index")
+
+    def test_rehearse_json_without_trace_has_a_null_impact(self):
+        code, out, _ = self.run_cli("rehearse", "--json")
+        self.assertEqual(code, 0)
+        self.assertIsNone(json.loads(out)["impact"])
 
     def test_plan_lists_flagged_statements(self):
         self._postgres_rules()

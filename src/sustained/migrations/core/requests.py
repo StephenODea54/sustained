@@ -15,7 +15,9 @@ The requests fall into four groups.
 Statements: Execute, ExecuteMany, Fetch, TakeLock, RunStep, Commit and
 Rollback. ReadSchema and DiffSource read the live schema, the one for a
 rehearsal's before-and-after comparison and the other for a diff against
-the models. ReadContext reads the server facts the impact analysis uses.
+the models. ReadContext reads the server facts the impact analysis uses,
+and ReadCatalog runs any other read plan, such as the lock reads of a
+traced rehearsal.
 
 Callbacks: Fire calls one of the migrator's callbacks with the connection
 or adapter in front of its arguments, and awaits what it returns on the
@@ -163,6 +165,18 @@ class ReadContext(NamedTuple):
     """
 
 
+class ReadCatalog(NamedTuple):
+    """
+    Runs a read plan, a generator that yields SQL and takes each
+    statement's rows back, answered with what the plan returns. The
+    driver runs it through run_plan() or async_run_plan(), so on
+    Postgres each statement runs inside a savepoint and a failed one
+    leaves the transaction usable.
+    """
+
+    plan: Generator[str, Any, Any]
+
+
 class RefuseOpenTransaction(NamedTuple):
     """
     Raises when a transaction block is open on the connection: the run
@@ -241,6 +255,7 @@ Request = Union[
     ReadSchema,
     DiffSource,
     ReadContext,
+    ReadCatalog,
     RefuseOpenTransaction,
     RefuseRehearsal,
     Transaction,

@@ -63,6 +63,7 @@ from sustained.migrations.core.requests import (
     Fetch,
     Fire,
     PinnedTransaction,
+    ReadCatalog,
     ReadContext,
     ReadSchema,
     RefuseOpenTransaction,
@@ -182,7 +183,7 @@ class AsyncMigrator(MigratorBase):
             if inspect.isawaitable(result):
                 await result
             return None
-        if isinstance(request, (ReadSchema, ReadContext)):
+        if isinstance(request, (ReadSchema, ReadContext, ReadCatalog)):
             return await self._read(request)
         if isinstance(request, DiffSource):
             snapshot, read = await self._read_schema(request.schemas)
@@ -212,11 +213,18 @@ class AsyncMigrator(MigratorBase):
             return None
         raise TypeError(f"Unknown migrator request: {request!r}")
 
-    async def _read(self, request: Union[ReadSchema, ReadContext]) -> Any:
-        """Reads the live schema, or the server facts the impact rules use."""
+    async def _read(self, request: Union[ReadSchema, ReadContext, ReadCatalog]) -> Any:
+        """
+        Reads the live schema, the server facts the impact rules use, or
+        what a read plan asks for.
+        """
         if isinstance(request, ReadSchema):
             schema, _ = await self._read_schema()
             return schema
+        if isinstance(request, ReadCatalog):
+            from sustained.introspect.runner import async_run_plan
+
+            return await async_run_plan(self._adapter, self._dialect, request.plan)
         from sustained.impact import async_read_context
 
         return await async_read_context(self._adapter, self._dialect)
@@ -537,6 +545,7 @@ class AsyncMigrator(MigratorBase):
         renames: Optional[Dict[str, str]] = None,
         table_renames: Optional[Dict[str, str]] = None,
         type_casts: Optional[Dict[str, str]] = None,
+        trace: bool = False,
     ) -> Rehearsal:
         """
         Runs every pending migration up, then back down, inside one
@@ -567,6 +576,9 @@ class AsyncMigrator(MigratorBase):
         runs inside one. Its result reports up_ok as None with the reason,
         the run can still pass, and the row a passing run records covers
         it without proof.
+
+        With trace=True, the result's `impact` holds the run's impact as
+        the server showed it, as Migrator.rehearse() describes.
         """
         return await self._drive(
             rehearsing.rehearse(
@@ -579,6 +591,7 @@ class AsyncMigrator(MigratorBase):
                 renames=renames,
                 table_renames=table_renames,
                 type_casts=type_casts,
+                trace=trace,
             )
         )
 

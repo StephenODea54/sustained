@@ -44,6 +44,7 @@ from sustained.migrations.core.requests import (
     Fetch,
     Fire,
     PinnedTransaction,
+    ReadCatalog,
     ReadContext,
     ReadSchema,
     RefuseOpenTransaction,
@@ -197,7 +198,7 @@ class Migrator(MigratorBase):
         if isinstance(request, Fire):
             request.hook(connection, *request.args)
             return None
-        if isinstance(request, (ReadSchema, ReadContext)):
+        if isinstance(request, (ReadSchema, ReadContext, ReadCatalog)):
             return self._read(request)
         if isinstance(request, DiffSource):
             # The diff reads the connection itself, and can ask whether a
@@ -230,12 +231,19 @@ class Migrator(MigratorBase):
             return None
         raise TypeError(f"Unknown migrator request: {request!r}")
 
-    def _read(self, request: Union[ReadSchema, ReadContext]) -> Any:
-        """Reads the live schema, or the server facts the impact rules use."""
+    def _read(self, request: Union[ReadSchema, ReadContext, ReadCatalog]) -> Any:
+        """
+        Reads the live schema, the server facts the impact rules use, or
+        what a read plan asks for.
+        """
         if isinstance(request, ReadSchema):
             from sustained.autogenerate import introspect_schema
 
             return introspect_schema(self._connection, self._dialect)
+        if isinstance(request, ReadCatalog):
+            from sustained.introspect.runner import run_plan
+
+            return run_plan(self._connection, self._dialect, request.plan)
         from sustained.impact import read_context
 
         return read_context(self._connection, self._dialect)
@@ -531,6 +539,7 @@ class Migrator(MigratorBase):
         renames: Optional[dict[str, str]] = None,
         table_renames: Optional[dict[str, str]] = None,
         type_casts: Optional[dict[str, str]] = None,
+        trace: bool = False,
     ) -> Rehearsal:
         """
         Runs every pending migration up, then back down, inside one
@@ -584,6 +593,18 @@ class Migrator(MigratorBase):
         the run can still pass, and the row a passing run records covers
         it without proof. What such a migration does can only be seen by
         running it.
+
+        With trace=True, each statement of each up step runs on its own,
+        and the locks the transaction holds and the files of the tables
+        the statement names are read before and after it. The result's
+        `impact` is then the run's impact report with what the server did
+        in place of what the rules predicted: the lock each table was
+        seen to take, and whether a table was rewritten or an index built.
+        Each difference from the prediction is an `impact.mismatch`
+        finding. A read that fails leaves its statement's facts as
+        predicted. A migration the rehearsal leaves out, and a callable
+        step, keep their predicted facts. Tracing reads pg_locks, so it
+        raises DialectError on any dialect other than POSTGRES.
         """
         return self._drive(
             rehearsing.rehearse(
@@ -596,6 +617,7 @@ class Migrator(MigratorBase):
                 renames=renames,
                 table_renames=table_renames,
                 type_casts=type_casts,
+                trace=trace,
             )
         )
 

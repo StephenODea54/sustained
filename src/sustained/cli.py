@@ -39,6 +39,8 @@ anyway and records the override on the database.
 they block, and the work each does; see sustained.impact. It never
 gates: blocking on impact is the guards' job. `plan` lists the
 statements whose impact merits a look in an `impact` section.
+`rehearse --trace` observes each statement on Postgres and prints the
+impact report with what the server did in place of the prediction.
 
 `status`, `validate`, `plan`, `impact`, and `rehearse` take `--json`, which prints
 one JSON object instead of the plain lines. A failure prints the object
@@ -208,7 +210,7 @@ _JSON_KEYS: Dict[str, Tuple[str, ...]] = {
     "status": ("migrations",),
     "plan": ("pending", "problems", "drift"),
     "impact": ("profile", "version", "evidence", "read", "migrations", "counts"),
-    "rehearse": ("rehearsed", "scratch", "key", "recorded", "ok"),
+    "rehearse": ("rehearsed", "scratch", "key", "recorded", "ok", "impact"),
     "validate": ("ok", "problems"),
 }
 """
@@ -658,7 +660,9 @@ def _report_rehearsal(results: Rehearsal, scratch: bool, note: Optional[str]) ->
     Prints the rehearsal and returns the exit code: 1 when any step
     failed, when the models did not land, or when the schema did not come
     back, 0 otherwise. A migration whose down step could not be proved is
-    not a failure; the line says so and the run still passes.
+    not a failure; the line says so and the run still passes. A traced
+    rehearsal prints its impact report after the results; a mismatch in
+    it does not change the exit code.
     """
     if not results:
         print("Nothing to rehearse.")
@@ -670,6 +674,10 @@ def _report_rehearsal(results: Rehearsal, scratch: bool, note: Optional[str]) ->
             print(f"    outstanding  {gap}")
         for leftover in result.reversed or []:
             print(f"    leftover     {leftover}")
+    if results.impact is not None:
+        print()
+        print(render(results.impact))
+        print()
     if scratch:
         print("rehearsal complete on the scratch database")
     else:
@@ -690,7 +698,8 @@ def _rehearsal_json(
     null when the check did not run, an empty list when it passed, and
     the lines naming the trouble when it failed. `key` names the content
     the run covered, and `recorded` says whether the row reached the
-    database migrate will read.
+    database migrate will read. `impact` is the traced impact report,
+    or null without --trace.
     """
     _print_json(
         {
@@ -709,6 +718,9 @@ def _rehearsal_json(
             "key": key,
             "recorded": recorded,
             "ok": results.ok,
+            "impact": (
+                report_data(results.impact) if results.impact is not None else None
+            ),
         }
     )
 
@@ -721,7 +733,7 @@ def _cmd_rehearse(
     scratch = factory is not None
     note: Optional[str] = None
     if factory is None:
-        results = migrator.rehearse(models=models)
+        results = migrator.rehearse(models=models, trace=args.trace)
         key, recorded = results.key, results.recorded
         if recorded and results.ok:
             note = "rehearsal row recorded"
@@ -729,7 +741,7 @@ def _cmd_rehearse(
         connection = factory()
         try:
             results = _migrator_on(connection, config).rehearse(
-                scratch=True, models=models
+                scratch=True, models=models, trace=args.trace
             )
         finally:
             _close_quietly(connection)
@@ -892,10 +904,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # Ordered as they are used: plan reads, rehearse proves, migrate applies.
-    command(
+    rehearse = command(
         "rehearse",
         "Run the pending migrations up and back down, then roll it all back.",
         machine_readable=True,
+    )
+    rehearse.add_argument(
+        "--trace",
+        action="store_true",
+        help="Observe the locks and rewrites of each statement (Postgres).",
     )
 
     migrate = command("migrate", "Apply pending migrations in order.")

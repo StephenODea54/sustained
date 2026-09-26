@@ -21,7 +21,7 @@ Guide: [Schema and Migrations](/schema#command-line).
 | `plan` | `--json` | Shows the pending migrations, the problems, and the model drift. |
 | `impact` | `--json` | Shows the locks, blocking, and work of each statement in the run. |
 | `status` | `--json` | Shows every migration's state: applied, pending, or changed. |
-| `rehearse` | `--json` | Runs the pending migrations up and back down, then rolls it all back. |
+| `rehearse` | `--json`, `--trace` | Runs the pending migrations up and back down, then rolls it all back. |
 | `migrate` | `--target ID`, `--no-validate`, `--allow-out-of-order`, `--unrehearsed` | Applies pending migrations in order. |
 | `down` | `--steps N` (default 1) or `--to ID` | Reverts applied migrations, newest first. |
 | `validate` | `--json` | Checks the tracking table against the migrations. |
@@ -46,6 +46,8 @@ Guide: [Schema and Migrations](/schema#command-line).
 `argparse` also exits 2 on a usage error. If your script treats 2 as "work is waiting", check stderr for an `error:` line first.
 
 `rehearse` exits 1 when an up step or a down step failed, when the models did not land, or when the schema did not come back. A migration with no down step is not a failure, so `rehearse` exits 0 for it.
+
+`rehearse --trace` observes the locks each statement takes and the tables it rewrites, and prints the impact report after the rehearsal's lines, with the observed facts in place of the prediction; see [Observed impact](/impact#observed-impact). An `impact.mismatch` finding in the report does not change the exit code. `--trace` needs PostgreSQL, and exits 1 on any other dialect.
 
 `migrate` exits 4 when the run would remove data and no passing rehearsal covers those statements. The message names the statements and both ways forward, and repeats `--target` when the run had one.
 
@@ -284,11 +286,12 @@ $ sustained rehearse --json
   "key": "9c1f...",
   "recorded": true,
   "ok": true,
+  "impact": null,
   "error": null
 }
 ```
 
-`landed` and `reversed` are `null` when the check did not run, `[]` when the check passed, and the lines naming the trouble when the check failed. `key` names the content the run covered. `recorded` says whether Sustained wrote the row where `migrate` will read it.
+`landed` and `reversed` are `null` when the check did not run, `[]` when the check passed, and the lines naming the trouble when the check failed. `key` names the content the run covered. `recorded` says whether Sustained wrote the row where `migrate` will read it. `impact` holds the traced report in the form `impact --json` prints, and is `null` without `--trace`.
 
 `status --json` prints `{"migrations": [{"id": ..., "state": ...}], "error": null}`. `validate --json` prints `{"ok": ..., "problems": [...], "error": null}`.
 

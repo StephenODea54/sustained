@@ -4,7 +4,7 @@ The state both migrators hold, which the core's generators read and set.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple
 
 from sustained.dialects import Dialects
 from sustained.migrations.migration import Callbacks, Migration, checked_unique_ids
@@ -51,6 +51,8 @@ class MigratorBase:
         self._tracking_ready = False
         self._rehearsal_ready = False
         self._rehearsing = False
+        # The Tracer of a rehearsal run with trace=True, while it runs.
+        self._tracer: Any = None
 
     @property
     def dialect(self) -> Dialects:

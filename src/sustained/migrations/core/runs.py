@@ -326,7 +326,10 @@ def _apply_body(
 ) -> Core[None]:
     """The step and its tracking row, inside the migration's scope."""
     started = time.perf_counter()
-    yield RunStep(migration.up)
+    if m._tracer is not None:
+        yield from m._tracer.run_step(migration)
+    else:
+        yield RunStep(migration.up)
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     timestamp = datetime.now(timezone.utc).isoformat()
     checksum = migration_checksum(migration)

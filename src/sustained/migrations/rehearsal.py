@@ -37,6 +37,7 @@ from sustained.types import SqlValue
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
+    from sustained.impact import ImpactReport
 
 
 class RehearsalResult(NamedTuple):
@@ -97,7 +98,9 @@ class Rehearsal(List[RehearsalResult]):
     earlier versions returned. `key` names the exact content the rehearsal
     covered: the applied history it started from and the statements it
     ran. `recorded` says whether the row reached the tracking
-    database, which a scratch rehearsal leaves to the caller.
+    database, which a scratch rehearsal leaves to the caller. `impact`
+    is the run's impact as the server showed it, from a rehearsal run
+    with trace=True, and None otherwise.
     """
 
     def __init__(
@@ -105,10 +108,12 @@ class Rehearsal(List[RehearsalResult]):
         results: Iterable[RehearsalResult],
         key: str,
         recorded: bool = False,
+        impact: Optional["ImpactReport"] = None,
     ) -> None:
         super().__init__(results)
         self.key = key
         self.recorded = recorded
+        self.impact = impact
 
     @property
     def ok(self) -> bool:

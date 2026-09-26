@@ -189,6 +189,36 @@ The analysis recognizes the DDL and DML statements its rules cover. Any other st
 
 A default the rules do not recognize as stable counts as volatile, so `ADD COLUMN ... DEFAULT some_function()` reads as a rewrite, with confidence `likely` and a finding that names the function.
 
+## Observed impact
+
+`sustained rehearse --trace` runs the rehearsal and records what the server did for each statement, and prints the impact report with those facts in place of the prediction. `Migrator.rehearse(trace=True)` puts the report on the result's `impact` attribute, and `await AsyncMigrator.rehearse(trace=True)` does the same.
+
+The rehearsal runs each statement of each up step on its own. Before and after each statement it reads two things inside the rehearsal transaction:
+
+- the table locks the transaction holds, from `pg_locks` for its own backend. Locks are held until the rollback, so a lock the statement took is one held after it and not before.
+- the file of each table the statement names and of each of the table's indexes, from `pg_relation_filenode()` and `pg_relation_size()`. A table whose file changed and still holds data was rewritten. An index that is new, or whose file changed, was built.
+
+The observed lock and work replace the predicted ones, and the statement's evidence becomes `observed`. Each difference from the prediction is an `impact.mismatch` finding with severity `warn`:
+
+```console
+  ALTER TABLE orders ALTER COLUMN note TYPE short_text
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  scan  statement  8.0 KB  [pg.alter_column_type]
+    info    character varying(10) to short_text is not binary coercible as far as the rules know, so orders and its indexes are rewritten while reads and writes wait; ...
+    warn    the rules predicted a rewrite on orders, and the server copied no file
+```
+
+A lock of `SHARE UPDATE EXCLUSIVE` or stronger on a table no rule named, such as the table a dropped foreign key references, is a mismatch too, and the table joins the statement's tables. The windows are read again from the observed facts.
+
+What the observation can and cannot show:
+
+- It cannot tell a scan from a catalog change, because neither changes a file. A predicted scan stands unless a copy was seen, and a predicted rewrite or index build that copied no file falls to `scan`.
+- A table file that changed but is empty afterwards, as after `TRUNCATE` or a rewrite of an empty table, proves nothing either way.
+- A table the run created earlier is left as predicted, as the analysis leaves it.
+- A migration with `transactional=False` is left out of every rehearsal, so a `CONCURRENTLY` statement keeps its prediction. So does a callable step, whose statements are not known.
+- Each read runs inside a savepoint. A read that fails leaves its statement's facts as predicted, and the rehearsal goes on.
+
+A mismatch does not change the exit code of `rehearse`. `--trace` needs PostgreSQL, and `rehearse(trace=True)` raises `DialectError` on any other dialect.
+
 ## PostgreSQL
 
 The rules follow the PostgreSQL documentation for 12 and later. Each rule id links to the page it relies on through the finding's `source`.

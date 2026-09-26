@@ -15,6 +15,7 @@ The pieces:
 - `sustained.impact.state`: what a run carries between statements
 - `sustained.impact.rules`: the rule profiles, one per engine
 - `sustained.impact.window`: locks held across a migration
+- `sustained.impact.trace`: what a traced rehearsal saw the server do
 """
 
 from sustained.impact.analyzer import analyze

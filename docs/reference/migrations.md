@@ -242,13 +242,15 @@ Pass every model you manage, because these methods compare the whole database ag
 ### Rehearsing
 
 ```python
-rehearse(scratch=False, models=None, ...) -> Rehearsal
+rehearse(scratch=False, models=None, ..., trace=False) -> Rehearsal
 ```
 {: .sig #rehearse}
 
 `rehearse()` applies every pending migration, runs the down steps back down, and rolls the whole run back. It returns an empty `Rehearsal` when nothing is pending. With `models`, the migration generated from those models joins the run without being registered, and the remaining arguments are the diff options above.
 
 `rehearse()` reads the schema before the run and again after the down sweep, so it reports a down step that runs without taking its change back. The comparison covers tables and columns, but not indexes, constraints, or column defaults.
+
+With `trace=True`, each statement of each up step runs on its own between two reads of the locks the transaction holds and the files of the tables it names, and the result's `impact` holds the run's impact report with what the server did in place of what the rules predicted. See [Observed impact](/impact#observed-impact). `trace=True` raises `DialectError` on any dialect other than Postgres.
 
 `rehearse()` raises `ValueError` when:
 
@@ -332,6 +334,7 @@ script(direction='up') -> str
 | `key` | `str` | The rehearsal key for the set the rehearsal ran. |
 | `recorded` | `bool` | Whether the row was written. `False` after `scratch=True`. |
 | `ok` | `bool` | Whether every result passed. |
+| `impact` | `ImpactReport` or `None` | The run's observed impact, after `trace=True`. `None` otherwise. |
 
 `ok` uses the module function `rehearsal_failed(result)`. A result fails when its up step raised, when its down step failed, when the models did not land, or when the schema did not come back. A down step the rehearsal could not prove is not a failure.
 

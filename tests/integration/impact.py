@@ -1,14 +1,15 @@
 """
 The impact analysis, run against every server whose support.json row
-claims the `impact` cover: the server facts read_context() reads, and
-Migrator.impact() on a live connection.
+claims the `impact` cover: the server facts read_context() reads,
+Migrator.impact() on a live connection, and rehearse(trace=True).
 """
 
 import asyncio
 import unittest
 
+from sustained.aio_migrations import AsyncMigrator
 from sustained.dialects import Dialects
-from sustained.impact import Evidence, async_read_context, read_context
+from sustained.impact import Evidence, Work, async_read_context, read_context
 from sustained.migrations import Migration, Migrator
 
 from . import aio_lifecycle, harness
@@ -18,6 +19,7 @@ TABLES = (
     "it_impact_parts",
     "it_impact_notes",
     "it_impact_migrations",
+    "it_impact_rehearsals",
 )
 
 
@@ -52,6 +54,7 @@ class ImpactCase(unittest.TestCase):
         self.connection.rollback()
         for table in TABLES:
             self.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+        self.execute("DROP DOMAIN IF EXISTS it_impact_text")
 
     def execute(self, *statements):
         cursor = self.connection.cursor()
@@ -170,3 +173,100 @@ class ImpactCase(unittest.TestCase):
         # A small table's blocking work is info, not a warning.
         index = [f for f in report.findings if f.rule == "pg.create_index"]
         self.assertEqual([str(f.severity) for f in index], ["info"])
+
+    def migrator(self, migrations):
+        return Migrator(
+            self.connection,
+            migrations,
+            dialect=self.DIALECT,
+            table="it_impact_migrations",
+            rehearsal_table="it_impact_rehearsals",
+        )
+
+    def orders(self):
+        self.execute(
+            "CREATE TABLE it_impact_orders (id integer PRIMARY KEY, note varchar(10))",
+            "INSERT INTO it_impact_orders SELECT g, 'n' FROM generate_series(1, 50) g",
+            "ANALYZE it_impact_orders",
+        )
+
+    TRACED = [
+        Migration(
+            "001_traced",
+            up=[
+                "CREATE INDEX it_impact_note_ix ON it_impact_orders (note)",
+                "ALTER TABLE it_impact_orders ALTER COLUMN id TYPE bigint",
+            ],
+            down=None,
+        )
+    ]
+
+    def test_a_traced_rehearsal_observes_each_statement(self):
+        self.orders()
+        results = self.migrator(self.TRACED).rehearse(trace=True)
+        self.assertTrue(results.ok)
+        report = results.impact
+        self.assertIs(report.evidence, Evidence.OBSERVED)
+        index, retype = report.statements
+        self.assertEqual(
+            [(t.table, t.lock, t.work) for t in index.tables],
+            [("it_impact_orders", "SHARE", Work.INDEX_BUILD)],
+        )
+        self.assertEqual(
+            [(t.table, t.lock, t.work) for t in retype.tables],
+            [("it_impact_orders", "ACCESS EXCLUSIVE", Work.REWRITE)],
+        )
+        self.assertNotIn("impact.mismatch", [f.rule for f in report.findings])
+        # The rehearsal rolled everything back.
+        rows = self.fetch(
+            "SELECT count(*) FROM pg_indexes WHERE indexname = 'it_impact_note_ix'"
+        )
+        self.assertEqual(rows, [(0,)])
+
+    def test_a_trace_reports_a_wrong_prediction(self):
+        self.orders()
+        self.execute("CREATE DOMAIN it_impact_text AS text")
+        results = self.migrator(
+            [
+                Migration(
+                    "001_domain",
+                    up="ALTER TABLE it_impact_orders ALTER COLUMN note "
+                    "TYPE it_impact_text",
+                    down=None,
+                )
+            ]
+        ).rehearse(trace=True)
+        (statement,) = results.impact.statements
+        # A domain without constraints is binary coercible, which the
+        # rules do not know, so they predicted a rewrite.
+        self.assertIs(statement.tables[0].work, Work.SCAN)
+        mismatches = [f for f in statement.findings if f.rule == "impact.mismatch"]
+        self.assertEqual(len(mismatches), 1)
+        self.assertIn("copied no file", mismatches[0].message)
+
+    def test_the_async_trace_matches_the_blocking_one(self):
+        if self.NAME not in aio_lifecycle.ADAPTERS:
+            self.skipTest(f"{self.NAME} has no async adapter")
+        self.orders()
+        blocking = self.migrator(self.TRACED).rehearse(trace=True).impact
+
+        async def rehearse():
+            adapter, close = await aio_lifecycle.ADAPTERS[self.NAME]()
+            try:
+                migrator = AsyncMigrator(
+                    adapter,
+                    self.TRACED,
+                    dialect=self.DIALECT,
+                    table="it_impact_migrations",
+                    rehearsal_table="it_impact_rehearsals",
+                )
+                return (await migrator.rehearse(trace=True)).impact
+            finally:
+                await close()
+
+        report = asyncio.run(rehearse())
+        self.assertIs(report.evidence, Evidence.OBSERVED)
+        self.assertEqual(
+            [s.tables for s in report.statements],
+            [s.tables for s in blocking.statements],
+        )

@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Impact reference
-description: "Reference for sustained.impact: analyze(), read_context(), the ImpactReport model, EngineContext, thresholds, and the report's text and JSON forms."
+description: "Reference for sustained.impact: analyze(), read_context(), rehearse(trace=True), the ImpactReport model, EngineContext, thresholds, and the report's text and JSON forms."
 ---
 
 These names live in `sustained.impact`, except where a section names another module.
@@ -49,6 +49,36 @@ await AsyncMigrator.impact(models=None) -> ImpactReport
 The impact of the run `up()` would make: every pending migration, then the migration the models generate when `models` is given. The generated migration is diffed against the schema as it is now, before the pending migrations run, as `plan()` diffs it. A callable step renders no SQL and is left out. Nothing is written.
 
 The context comes from `read_context()` on the migrator's connection, or `async_read_context()` on its adapter. Both raise `DialectError` on a dialect the analysis does not cover, before any statement runs.
+
+## `Migrator.rehearse(trace=True)`
+
+```python
+Migrator.rehearse(..., trace=True) -> Rehearsal
+await AsyncMigrator.rehearse(..., trace=True) -> Rehearsal
+```
+{: .sig #rehearse-trace}
+
+Rehearses the run with each statement observed; see [Observed impact](/impact#observed-impact). The result's `impact` is the run's `ImpactReport`, with the context read at the start of the rehearsal and each observed statement's lock and work in place of the prediction. It covers every migration the up sweep reached, in run order, including the ones the rehearsal left out, which keep their prediction. `impact` is `None` for a rehearsal without `trace`, and for one with nothing pending. `trace=True` raises `DialectError` on any dialect other than `POSTGRES`, before any statement runs.
+
+These names live in `sustained.impact.trace`:
+
+```python
+sighting_plan(tables) -> Sighting
+tables_plan() -> frozenset[int] | None
+```
+{: .sig #sighting_plan}
+
+Read plans, generators that yield SQL and take each statement's rows back, which `run_plan()` in `sustained.introspect.runner` drives. `sighting_plan()` reads the table locks the transaction holds and the files of the named tables and their indexes. `tables_plan()` reads the oids of every table that exists.
+
+`Sighting(locks, names, storage, read)` holds one read: the lock modes held on each table, by oid, in the rules' names, such as `SHARE`; the lower case names that find each table; each named table's `File(is_index, filenode, size)` records, by relation oid; and `read`, which holds `locks` and `storage` for the parts that were read.
+
+```python
+observe(impact, before, after, existing, profile) -> StatementImpact
+with_observations(report, observations, existing, profile) -> ImpactReport
+```
+{: .sig #observe}
+
+`observe()` returns one statement's impact with the facts its two sightings show, and an `impact.mismatch` finding for each difference. `existing` holds the oids of the tables that existed before the run, or `None` to compare every table. It returns the impact unchanged when the locks were not read both times. `with_observations()` applies `observe()` across a report, keyed by migration id and the statement's position in its migration, counting from 0, and reads each migration's locks and windows again.
 
 ## `ImpactReport`
 
@@ -107,6 +137,7 @@ The analysis itself raises these findings:
 | --- | --- | --- |
 | `impact.unknown` | `info` | The recognizer could not read the statement. The message gives the reason. |
 | `impact.intent_mismatch` | `warn` | A generated statement's text reads as something other than its intent. The analysis follows the text. |
+| `impact.mismatch` | `warn` | A traced rehearsal saw the server take another lock than the rules predicted, copy a file the rules did not predict, or copy none where they predicted a rewrite or an index build. |
 | `pg.lock_timeout` | `warn` | A lock that blocks writes or more waits with no `lock_timeout` in scope, from a `SET` earlier in the run or from the connection's settings. |
 | `window.held` | `warn` | A table stays blocked until the commit across heavier work from a later statement. |
 | `window.lock_order` | `warn` | One migration blocks reads and writes on more than one table at once. |

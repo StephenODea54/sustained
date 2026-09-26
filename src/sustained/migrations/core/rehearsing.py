@@ -25,6 +25,7 @@ from sustained.migrations.core.requests import (
     rollback_quietly,
     run_in,
 )
+from sustained.migrations.core.tracing import Tracer, check_traceable
 from sustained.migrations.migration import AppliedRecord, Migration, MigrationStep
 from sustained.migrations.rehearsal import (
     REHEARSAL_FAILED,
@@ -43,6 +44,7 @@ from sustained.migrations.tracking import _next_seq
 
 if TYPE_CHECKING:
     from sustained.autogenerate import IntrospectedTable
+    from sustained.impact import ImpactReport
     from sustained.introspect import Snapshot
     from sustained.model import Model
 
@@ -60,9 +62,12 @@ def rehearse(
     renames: Optional[Dict[str, str]],
     table_renames: Optional[Dict[str, str]],
     type_casts: Optional[Dict[str, str]],
+    trace: bool = False,
 ) -> Core[Rehearsal]:
     if not scratch:
         _check_rehearsable(m._dialect)
+    if trace:
+        check_traceable(m)
     yield RefuseRehearsal()
 
     def locked() -> Core[Rehearsal]:
@@ -83,7 +88,9 @@ def rehearse(
         # as inside a transaction, so a callable step that runs a query
         # skips its commit and a nested transaction block takes a
         # savepoint.
-        pinned: Tuple[List[RehearsalResult], Optional[Migration]] = yield from run_in(
+        pinned: Tuple[
+            List[RehearsalResult], Optional[Migration], Optional["ImpactReport"]
+        ] = yield from run_in(
             PinnedTransaction,
             _rehearse_pinned(
                 m,
@@ -98,9 +105,10 @@ def rehearse(
                 renames=renames,
                 table_renames=table_renames,
                 type_casts=type_casts,
+                trace=trace,
             ),
         )
-        results, drift = pinned
+        results, drift, report = pinned
         # What the row covers: the pending set, plus the generated
         # migration when the diff produced one.
         attempted = list(pending) + ([drift] if drift is not None else [])
@@ -121,7 +129,7 @@ def rehearse(
             else:
                 yield from bookkeeping.record_rehearsals(m, [key], REHEARSAL_FAILED)
             recorded = True
-        return Rehearsal(results, key, recorded)
+        return Rehearsal(results, key, recorded, report)
 
     # The lock sits outside the rehearsal transaction, so the rollback
     # runs before the lock is released. The state reads sit inside it,
@@ -146,22 +154,33 @@ def _rehearse_pinned(
     renames: Optional[Dict[str, str]],
     table_renames: Optional[Dict[str, str]],
     type_casts: Optional[Dict[str, str]],
-) -> Core[Tuple[List[RehearsalResult], Optional[Migration]]]:
+    trace: bool,
+) -> Core[Tuple[List[RehearsalResult], Optional[Migration], Optional["ImpactReport"]]]:
     """
     The run inside the rehearsal transaction, which it takes back itself
-    at the end whatever happened. Returns the results and the migration
-    the diff against the models generated, if any.
+    at the end whatever happened. Returns the results, the migration the
+    diff against the models generated, if any, and with `trace` the
+    run's impact as the server showed it.
     """
     m._rehearsing = True
     try:
         yield BeginPinned()
+        tracer: Optional[Tracer] = None
+        if trace:
+            tracer = Tracer(m)
+            yield from tracer.start()
+            m._tracer = tracer
         ran: List[Migration] = []
         skipped: List[Migration] = []
+        # Every migration the up sweep reached, in run order, which the
+        # traced report covers.
+        reached: List[Migration] = []
         up_error: Optional[Tuple[str, str]] = None
 
         def apply_each(group: List[Migration]) -> Core[None]:
             nonlocal seq, up_error
             for migration in group:
+                reached.append(migration)
                 if not migration.transactional:
                     # The rehearsal runs inside one transaction,
                     # which this migration's statements refuse or
@@ -202,6 +221,7 @@ def _rehearse_pinned(
                 type_casts=type_casts,
             )
             if drift is not None:
+                reached.append(drift)
                 if not drift.transactional:
                     # A generated SQLite rebuild says
                     # transactional=False, and its pragmas are
@@ -228,6 +248,8 @@ def _rehearse_pinned(
                         )
         if up_error is None:
             yield from apply_each([x for x in pending if x.repeatable])
+        m._tracer = None
+        report = tracer.report(reached) if tracer is not None else None
         outcomes = {} if up_error else (yield from rehearse_down(m, ran))
         reverted = None
         if before is not None and _reversal_provable(ran, outcomes):
@@ -239,9 +261,10 @@ def _rehearse_pinned(
         results = _rehearsal_results(
             ran, up_error, outcomes, landed, reverted
         ) + _skipped_results(skipped)
-        return results, drift
+        return results, drift, report
     finally:
         m._rehearsing = False
+        m._tracer = None
         yield from roll_back_rehearsal(m)
 
 
