@@ -34,7 +34,7 @@ from sustained.types import Connection
 if TYPE_CHECKING:
     from sustained.analysis import MigrationStatement
     from sustained.compilers.base import Compiler
-    from sustained.impact import ImpactReport
+    from sustained.impact import EngineContext, ImpactReport
     from sustained.introspect import Snapshot
     from sustained.model import Model
 
@@ -79,6 +79,37 @@ def plan_migration(
         type_casts=type_casts,
         ignore_undeclared=ignore_undeclared,
         snapshot=snapshot,
+    )
+
+
+def asserted_migration(
+    migration: Migration,
+    dialect: Dialects,
+    compiler: "Compiler",
+    context: "EngineContext",
+) -> Migration:
+    """
+    The generated migration with the ALGORITHM and LOCK clause the
+    impact rules predict written on each ALTER TABLE, CREATE INDEX, and
+    DROP INDEX, as sustained.impact.rules.mysql.asserted_statements()
+    writes them, so the server refuses the statement instead of running
+    it with a slower algorithm or a stronger lock. The migration is
+    returned as it is on a dialect other than MySQL, and when no
+    statement changed. The down step is left as it is.
+    """
+    if dialect is not Dialects.MYSQL or callable(migration.up):
+        return migration
+    from sustained.impact.rules.mysql import asserted_statements
+
+    statements = migration_sql(migration, "up", compiler)
+    asserted = asserted_statements(statements, context)
+    if asserted == statements:
+        return migration
+    return Migration(
+        migration.id,
+        up=asserted,
+        down=migration.down,
+        transactional=migration.transactional,
     )
 
 

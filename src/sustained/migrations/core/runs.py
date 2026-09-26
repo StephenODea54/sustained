@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, Type
 
+from sustained.dialects import Dialects
 from sustained.migrations.checks import (
     _changed_down_message,
     _changed_since_applied,
@@ -50,7 +51,11 @@ from sustained.migrations.migration import (
     _tag_migration,
     migration_checksum,
 )
-from sustained.migrations.planning import drift_lines, plan_migration
+from sustained.migrations.planning import (
+    asserted_migration,
+    drift_lines,
+    plan_migration,
+)
 from sustained.migrations.rehearsal import (
     REHEARSAL_OVERRIDE,
     _destructive_in,
@@ -136,6 +141,7 @@ def up(
     table_renames: Optional[Dict[str, str]],
     type_casts: Optional[Dict[str, str]],
     unrehearsed: bool,
+    assert_algorithm: bool = False,
 ) -> Core[List[str]]:
     yield RefuseOpenTransaction("up")
     callbacks = m._callbacks
@@ -155,6 +161,7 @@ def up(
             table_renames=table_renames,
             type_casts=type_casts,
             unrehearsed=unrehearsed,
+            assert_algorithm=assert_algorithm,
         )
     except Exception as error:
         yield from fire_on_error(m, error)
@@ -177,6 +184,7 @@ def run_up(
     table_renames: Optional[Dict[str, str]],
     type_casts: Optional[Dict[str, str]],
     unrehearsed: bool,
+    assert_algorithm: bool = False,
 ) -> Core[List[str]]:
     """The run itself, without the callbacks up() wraps it in."""
     from sustained.exceptions import MigrationError
@@ -252,6 +260,7 @@ def run_up(
                     renames=renames,
                     table_renames=table_renames,
                     type_casts=type_casts,
+                    assert_algorithm=assert_algorithm,
                 )
                 if generated is not None:
                     # The generated statements are known only now, after
@@ -503,6 +512,7 @@ def plan(
     type_casts: Optional[Dict[str, str]] = None,
     ignore_undeclared: bool = True,
     snapshot: Optional["Snapshot"] = None,
+    assert_algorithm: bool = False,
 ) -> Core[Optional[Migration]]:
     """
     The migration a diff of the models produces. The async driver's
@@ -510,13 +520,17 @@ def plan(
     ask whether a table holds a row, so a table it cannot read counts as
     one that holds rows there. The snapshot read for the replay is not
     passed on: the diff reads the replay itself.
+
+    With assert_algorithm, the server facts are read after the diff, and
+    the migration's statements take the ALGORITHM and LOCK clause the
+    impact rules predict from them (asserted_migration()).
     """
     from sustained.autogenerate import declared_schemas
 
     source: Tuple[Connection, Optional["Snapshot"]] = yield DiffSource(
         declared_schemas(models)
     )
-    return plan_migration(
+    generated = plan_migration(
         source[0],
         models,
         m._dialect,
@@ -530,10 +544,16 @@ def plan(
         ignore_undeclared=ignore_undeclared,
         snapshot=snapshot,
     )
+    if generated is None or not assert_algorithm or m._dialect is not Dialects.MYSQL:
+        return generated
+    context = yield ReadContext()
+    return asserted_migration(generated, m._dialect, m._compiler, context)
 
 
 def impact(
-    m: MigratorBase, models: Optional[List[Type["Model"]]] = None
+    m: MigratorBase,
+    models: Optional[List[Type["Model"]]] = None,
+    assert_algorithm: bool = False,
 ) -> Core["ImpactReport"]:
     """
     The pending run, plus the migration the models generate, analyzed
@@ -548,7 +568,7 @@ def impact(
         raise DialectError(f"Impact analysis does not cover {m._dialect.name} yet.")
     run = yield from bookkeeping.pending(m)
     if models:
-        generated = yield from plan(m, list(models))
+        generated = yield from plan(m, list(models), assert_algorithm=assert_algorithm)
         if generated is not None:
             run = run + [generated]
     context = yield ReadContext()

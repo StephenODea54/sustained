@@ -56,12 +56,12 @@ Each statement runs inside a savepoint. A statement that fails leaves its facts 
 ## `Migrator.impact()`
 
 ```python
-Migrator.impact(models=None) -> ImpactReport
-await AsyncMigrator.impact(models=None) -> ImpactReport
+Migrator.impact(models=None, assert_algorithm=False) -> ImpactReport
+await AsyncMigrator.impact(models=None, assert_algorithm=False) -> ImpactReport
 ```
 {: .sig #migrator-impact}
 
-The impact of the run `up()` would make: every pending migration, then the migration the models generate when `models` is given. The generated migration is diffed against the schema as it is now, before the pending migrations run, as `plan()` diffs it. A callable step renders no SQL and is left out. Nothing is written.
+The impact of the run `up()` would make: every pending migration, then the migration the models generate when `models` is given. The generated migration is diffed against the schema as it is now, before the pending migrations run, as `plan()` diffs it, and `assert_algorithm` writes the clauses `plan()` writes on it. A callable step renders no SQL and is left out. Nothing is written.
 
 The context comes from `read_context()` on the migrator's connection, or `async_read_context()` on its adapter. Both raise `DialectError` on a dialect the analysis does not cover, before any statement runs.
 

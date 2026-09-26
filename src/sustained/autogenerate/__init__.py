@@ -312,6 +312,7 @@ def autogenerate(
     type_casts: Optional[Dict[str, str]] = None,
     ignore_undeclared: bool = False,
     snapshot: Optional[Snapshot] = None,
+    assert_algorithm: bool = False,
 ) -> Optional[Migration]:
     """
     Diffs the database against the models and builds a Migration for the
@@ -337,6 +338,11 @@ def autogenerate(
             so one read can feed several calls with different options.
             The connection still answers the row checks that decide
             whether a table is empty.
+        assert_algorithm: On MySQL and MariaDB, write the ALGORITHM and
+            LOCK clause the impact rules predict on each ALTER TABLE,
+            CREATE INDEX, and DROP INDEX, as Migrator.plan() describes.
+            The server facts are read from the connection with
+            sustained.impact.read_context(). Other dialects ignore it.
     """
     compiler = Dialects.get_compiler(dialect)
     renames = renames or {}
@@ -395,9 +401,16 @@ def autogenerate(
 
     if not state.up_steps:
         return None
-    return Migration(
+    migration = Migration(
         id=id,
         up=state.up_steps,
         down=state.down_steps if state.reversible and state.down_steps else None,
         transactional=state.transactional,
     )
+    if not assert_algorithm or dialect is not Dialects.MYSQL:
+        return migration
+    from sustained.impact import read_context
+    from sustained.migrations.planning import asserted_migration
+
+    context = read_context(connection, dialect)
+    return asserted_migration(migration, dialect, compiler, context)

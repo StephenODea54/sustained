@@ -469,6 +469,7 @@ class AsyncMigrator(MigratorBase):
         table_renames: Optional[Dict[str, str]] = None,
         type_casts: Optional[Dict[str, str]] = None,
         unrehearsed: bool = False,
+        assert_algorithm: bool = False,
     ) -> List[str]:
         """
         Applies pending migrations in order, stopping after the target id
@@ -532,6 +533,7 @@ class AsyncMigrator(MigratorBase):
                 table_renames=table_renames,
                 type_casts=type_casts,
                 unrehearsed=unrehearsed,
+                assert_algorithm=assert_algorithm,
             )
         )
 
@@ -546,6 +548,7 @@ class AsyncMigrator(MigratorBase):
         table_renames: Optional[Dict[str, str]] = None,
         type_casts: Optional[Dict[str, str]] = None,
         trace: bool = False,
+        assert_algorithm: bool = False,
     ) -> Rehearsal:
         """
         Runs every pending migration up, then back down, inside one
@@ -592,6 +595,7 @@ class AsyncMigrator(MigratorBase):
                 table_renames=table_renames,
                 type_casts=type_casts,
                 trace=trace,
+                assert_algorithm=assert_algorithm,
             )
         )
 
@@ -605,6 +609,7 @@ class AsyncMigrator(MigratorBase):
         table_renames: Optional[Dict[str, str]] = None,
         type_casts: Optional[Dict[str, str]] = None,
         ignore_undeclared: bool = True,
+        assert_algorithm: bool = False,
     ) -> Optional[Migration]:
         """
         Diffs the database against the models and returns the migration
@@ -622,6 +627,10 @@ class AsyncMigrator(MigratorBase):
         database may hold tables that hand-written migrations created.
         Pass allow_drops=True to generate the drops instead, or
         ignore_undeclared=False to refuse to generate while they exist.
+
+        assert_algorithm writes the ALGORITHM and LOCK clauses
+        Migrator.plan() describes, from the server facts read through the
+        adapter.
         """
         return await self._drive(
             runs.plan(
@@ -634,11 +643,14 @@ class AsyncMigrator(MigratorBase):
                 table_renames=table_renames,
                 type_casts=type_casts,
                 ignore_undeclared=ignore_undeclared,
+                assert_algorithm=assert_algorithm,
             )
         )
 
     async def impact(
-        self, models: Optional[List[Type["Model"]]] = None
+        self,
+        models: Optional[List[Type["Model"]]] = None,
+        assert_algorithm: bool = False,
     ) -> "ImpactReport":
         """
         The impact of the run up() would make, with the server facts read
@@ -646,7 +658,7 @@ class AsyncMigrator(MigratorBase):
         migration is diffed as plan() diffs it here, from a replay of one
         schema read.
         """
-        return await self._drive(runs.impact(self, models))
+        return await self._drive(runs.impact(self, models, assert_algorithm))
 
     async def drift(
         self,

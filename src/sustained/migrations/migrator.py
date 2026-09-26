@@ -462,6 +462,7 @@ class Migrator(MigratorBase):
         table_renames: Optional[dict[str, str]] = None,
         type_casts: Optional[dict[str, str]] = None,
         unrehearsed: bool = False,
+        assert_algorithm: bool = False,
     ) -> List[str]:
         """
         Applies pending migrations in order, stopping after the target id
@@ -526,6 +527,7 @@ class Migrator(MigratorBase):
                 table_renames=table_renames,
                 type_casts=type_casts,
                 unrehearsed=unrehearsed,
+                assert_algorithm=assert_algorithm,
             )
         )
 
@@ -540,6 +542,7 @@ class Migrator(MigratorBase):
         table_renames: Optional[dict[str, str]] = None,
         type_casts: Optional[dict[str, str]] = None,
         trace: bool = False,
+        assert_algorithm: bool = False,
     ) -> Rehearsal:
         """
         Runs every pending migration up, then back down, inside one
@@ -621,6 +624,7 @@ class Migrator(MigratorBase):
                 table_renames=table_renames,
                 type_casts=type_casts,
                 trace=trace,
+                assert_algorithm=assert_algorithm,
             )
         )
 
@@ -683,6 +687,7 @@ class Migrator(MigratorBase):
         type_casts: Optional[dict[str, str]] = None,
         ignore_undeclared: bool = True,
         snapshot: Optional["Snapshot"] = None,
+        assert_algorithm: bool = False,
     ) -> Optional[Migration]:
         """
         Diffs the database against the models and returns the migration
@@ -698,6 +703,18 @@ class Migrator(MigratorBase):
         Pass a snapshot from read_schema() to plan against it instead of
         reading the schema again. The snapshot is not changed, so one
         read can feed several plans.
+
+        On MySQL and MariaDB, assert_algorithm=True writes the ALGORITHM
+        and LOCK clause the impact rules predict on each generated ALTER
+        TABLE, CREATE INDEX, and DROP INDEX whose prediction is INSTANT,
+        NOCOPY with LOCK=NONE, or INPLACE with LOCK=NONE, with confidence
+        known, on a table that existed before the migration. The server
+        then refuses the statement instead of running it with a slower
+        algorithm or a stronger lock. The rules read the server facts
+        from the connection after the diff, as impact() reads them, and
+        write no clause when the version could not be read. The clause
+        changes the statements, so a rehearsal row recorded without it
+        does not cover a run with it. Other dialects ignore the option.
         """
         return self._drive(
             runs.plan(
@@ -711,10 +728,15 @@ class Migrator(MigratorBase):
                 type_casts=type_casts,
                 ignore_undeclared=ignore_undeclared,
                 snapshot=snapshot,
+                assert_algorithm=assert_algorithm,
             )
         )
 
-    def impact(self, models: Optional[List[Type["Model"]]] = None) -> "ImpactReport":
+    def impact(
+        self,
+        models: Optional[List[Type["Model"]]] = None,
+        assert_algorithm: bool = False,
+    ) -> "ImpactReport":
         """
         The impact of the run up() would make: every pending migration,
         plus the migration the models generate when models are given,
@@ -728,12 +750,13 @@ class Migrator(MigratorBase):
         not get, for example on a missing privilege, falls back to the
         dialect's support floor or the worst case. The generated
         migration is diffed against the schema as it is now, before the
-        pending migrations run, as plan() is. Nothing is written.
+        pending migrations run, as plan() is, and assert_algorithm
+        writes the clauses plan() describes on it. Nothing is written.
 
         Raises DialectError on a dialect the analysis does not cover
         yet.
         """
-        return self._drive(runs.impact(self, models))
+        return self._drive(runs.impact(self, models, assert_algorithm))
 
     def read_schema(self, models: List[Type["Model"]]) -> "Snapshot":
         """

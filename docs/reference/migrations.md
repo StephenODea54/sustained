@@ -236,6 +236,7 @@ These methods take the same options:
 | `table_renames` | `None` | `{'old': 'new'}`. |
 | `type_casts` | `None` | `{'table.col': 'col::integer'}`, a `USING` hint. Postgres only. |
 | `ignore_undeclared` | `True` | Leave objects the models do not declare alone. `False` refuses to generate while any exist. |
+| `assert_algorithm` | `False` | On MySQL and MariaDB, write the `ALGORITHM` and `LOCK` clause the impact rules predict on each generated ALTER TABLE, CREATE INDEX, and DROP INDEX whose prediction is `INSTANT`, `NOCOPY, LOCK=NONE`, or `INPLACE, LOCK=NONE` with confidence `known`, on a table that existed before the migration. The server facts are read after the diff. Changes the SQL text, so a rehearsal without it does not cover a run with it. See [Asserting the algorithm](/impact#asserting-the-algorithm). |
 
 Pass every model you manage, because these methods compare the whole database against the whole list, and nothing keeps a table up to date when its model is missing from the list. The comparison always excludes the tracking table.
 
@@ -638,11 +639,13 @@ diff_schema(connection, models, dialect=Dialects.DEFAULT, exclude_tables=('susta
 Changes nothing and reports every difference, drops included. Pass `snapshot` to compare against a schema you already read with `introspect_schema()`, and the diff then does not touch the connection. The diff applies the rename hints to that snapshot in place, so the snapshot shows you the same renamed schema the diff compares against.
 
 ```python
-autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_changed_columns=False, exclude_tables=..., renames=None, table_renames=None, type_casts=None, ignore_undeclared=False, snapshot=None) -> Migration | None
+autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_changed_columns=False, exclude_tables=..., renames=None, table_renames=None, type_casts=None, ignore_undeclared=False, snapshot=None, assert_algorithm=False) -> Migration | None
 ```
 {: .sig #autogenerate}
 
 Builds the migration a diff asks for. Pass `snapshot` to build it from a schema you already read with `introspect_schema()`. The rename hints apply to a copy, so the same snapshot can feed several calls. Refuses to generate the lossy differences, and refuses to run at all while the database contains objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`. A CHECK constraint that no model declares never causes a refusal. It comes back as a note on the diff instead, because engines rewrite check expressions and the comparison cannot justify a refusal.
+
+`assert_algorithm=True` reads the server facts from the connection with `sustained.impact.read_context()` and writes the clauses the `assert_algorithm` option of `plan()` writes.
 
 ```python
 introspect_schema(connection, dialect=Dialects.DEFAULT, schemas=()) -> dict[str, IntrospectedTable]

@@ -22,6 +22,7 @@ from sustained.analysis import (
     normalize_statement,
     summarize,
 )
+from sustained.cli.config import _assert_algorithm
 from sustained.cli.output import (
     JsonValue,
     _count,
@@ -69,9 +70,15 @@ def _model_plans(migrator: Migrator, config: ModuleType) -> Optional[_ModelPlans
     if not models:
         return None
     snapshot = migrator.read_schema(list(models))
+    asserted = _assert_algorithm(config)
     return _ModelPlans(
-        migrator.plan(list(models), allow_drops=True, snapshot=snapshot),
-        migrator.plan(list(models), snapshot=snapshot),
+        migrator.plan(
+            list(models),
+            allow_drops=True,
+            snapshot=snapshot,
+            assert_algorithm=asserted,
+        ),
+        migrator.plan(list(models), snapshot=snapshot, assert_algorithm=asserted),
     )
 
 

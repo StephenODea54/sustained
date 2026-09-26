@@ -1,12 +1,14 @@
 """
 The ALGORITHM and LOCK a statement runs with: the clause the server
 would pick, the clause the statement spells, whether the server refuses
-the pair, and the clause that asserts the pick.
+the pair, and the clause that asserts the pick. `asserted_statements()`
+writes that clause into the statements of a generated migration.
 """
 
 from __future__ import annotations
 
 from typing import (
+    TYPE_CHECKING,
     List,
     Optional,
     Sequence,
@@ -35,7 +37,19 @@ from sustained.impact.rules.mysql.locks import (
     NOCOPY_NONE,
     Online,
     blocks,
+    parse_label,
 )
+from sustained.impact.state import RunState
+
+if TYPE_CHECKING:
+    from sustained.impact.context import EngineContext
+    from sustained.impact.model import StatementImpact
+
+# The clauses asserted: the ones that let reads and writes go on while
+# the statement runs.
+ONLINE = (INSTANT, NOCOPY_NONE, INPLACE_NONE)
+
+_ASSERTED = ("alter_table", "create_index", "drop_index")
 
 
 def assertion(
@@ -63,6 +77,72 @@ def assertion(
     if kind == "alter_table":
         return f"{text}, {', '.join(parts)}"
     return f"{text} {' '.join(parts)}"
+
+
+def asserted_statements(
+    statements: Sequence[str], context: "EngineContext"
+) -> List[str]:
+    """
+    The statements, in order, with the ALGORITHM and LOCK clause that
+    `assertion()` writes on each ALTER TABLE, CREATE INDEX, and DROP
+    INDEX that spells neither, whose predicted clause is `INSTANT`,
+    `NOCOPY, LOCK=NONE`, or `INPLACE, LOCK=NONE` with confidence
+    `known`, and whose table existed before the statements. Every other
+    statement is returned as it is, and so is every statement when the
+    context holds no version read from the server. A MigrationStatement
+    keeps its migration, its transaction flag, its destructive mark,
+    and its intent.
+    """
+    from sustained.analysis import MigrationStatement
+    from sustained.dialects import Dialects
+    from sustained.impact.analyzer import analyze
+
+    if "version" not in context.read:
+        return list(statements)
+    report = analyze(statements, Dialects.MYSQL, context)
+    mariadb = report.profile == "mariadb"
+    state = RunState()
+    found: List[str] = []
+    for statement, impact in zip(statements, report.statements):
+        asserted = _asserted(impact, state, mariadb)
+        if asserted is None:
+            found.append(statement)
+        elif isinstance(statement, MigrationStatement):
+            found.append(
+                MigrationStatement(
+                    asserted,
+                    statement.migration_id,
+                    statement.transactional,
+                    statement.destructive,
+                    statement.intent,
+                )
+            )
+        else:
+            found.append(asserted)
+        if impact.parsed is not None:
+            state.record(impact.parsed, True)
+    return found
+
+
+def _asserted(
+    impact: "StatementImpact", state: RunState, mariadb: bool
+) -> Optional[str]:
+    """The statement with its asserted clause, or None to leave it."""
+    parsed = impact.parsed
+    if parsed is None or parsed.kind not in _ASSERTED or parsed.table is None:
+        return None
+    if parsed.options.get("algorithm") or parsed.options.get("lock"):
+        return None
+    if impact.confidence is not Confidence.KNOWN or state.is_new(parsed.table):
+        return None
+    # The clause is about the table the statement names. A foreign
+    # key's parent table gets the exclusive metadata lock, which is no
+    # clause.
+    clauses = [parse_label(t.lock) for t in impact.tables if t.lock is not None]
+    online = [c for c in clauses if c is not None]
+    if len(online) != 1 or online[0].label not in ONLINE:
+        return None
+    return assertion(impact.statement, parsed.kind, online[0], mariadb)
 
 
 def _drop_index_as_alter(statement: str) -> Optional[str]:

@@ -12,6 +12,7 @@ from typing import (
 )
 
 from sustained.cli.config import (
+    _assert_algorithm,
     _close_quietly,
     _migrator_on,
 )
@@ -52,7 +53,7 @@ def _cmd_impact(
     migrator: Migrator, args: argparse.Namespace, config: ModuleType
 ) -> int:
     models = list(getattr(config, "models", None) or []) or None
-    report = migrator.impact(models)
+    report = migrator.impact(models, assert_algorithm=_assert_algorithm(config))
     if args.json:
         _print_json(report_data(report))
     else:
@@ -162,7 +163,11 @@ def _cmd_rehearse(
     scratch = factory is not None
     note: Optional[str] = None
     if factory is None:
-        results = migrator.rehearse(models=models, trace=args.trace)
+        results = migrator.rehearse(
+            models=models,
+            trace=args.trace,
+            assert_algorithm=_assert_algorithm(config),
+        )
         key, recorded = results.key, results.recorded
         if recorded and results.ok:
             note = "rehearsal row recorded"
@@ -170,7 +175,10 @@ def _cmd_rehearse(
         connection = factory()
         try:
             results = _migrator_on(connection, config).rehearse(
-                scratch=True, models=models, trace=args.trace
+                scratch=True,
+                models=models,
+                trace=args.trace,
+                assert_algorithm=_assert_algorithm(config),
             )
         finally:
             _close_quietly(connection)
@@ -205,6 +213,7 @@ def _cmd_migrate(
         allow_out_of_order=args.allow_out_of_order,
         models=models,
         unrehearsed=args.unrehearsed,
+        assert_algorithm=_assert_algorithm(config),
     )
     if not applied:
         print("Nothing to apply.")

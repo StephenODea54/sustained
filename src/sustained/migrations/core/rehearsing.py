@@ -63,6 +63,7 @@ def rehearse(
     table_renames: Optional[Dict[str, str]],
     type_casts: Optional[Dict[str, str]],
     trace: bool = False,
+    assert_algorithm: bool = False,
 ) -> Core[Rehearsal]:
     if not scratch:
         _check_rehearsable(m._dialect)
@@ -106,6 +107,7 @@ def rehearse(
                 table_renames=table_renames,
                 type_casts=type_casts,
                 trace=trace,
+                assert_algorithm=assert_algorithm,
             ),
         )
         results, drift, report = pinned
@@ -155,6 +157,7 @@ def _rehearse_pinned(
     table_renames: Optional[Dict[str, str]],
     type_casts: Optional[Dict[str, str]],
     trace: bool,
+    assert_algorithm: bool = False,
 ) -> Core[Tuple[List[RehearsalResult], Optional[Migration], Optional["ImpactReport"]]]:
     """
     The run inside the rehearsal transaction, which it takes back itself
@@ -219,6 +222,7 @@ def _rehearse_pinned(
                 renames=renames,
                 table_renames=table_renames,
                 type_casts=type_casts,
+                assert_algorithm=assert_algorithm,
             )
             if drift is not None:
                 reached.append(drift)

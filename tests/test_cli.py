@@ -1264,6 +1264,33 @@ class MigrateModelsCliTestCase(CliBase):
         self.assertNotIn("schema matches the models", out)
 
 
+class AssertAlgorithmCliTestCase(CliBase):
+    """The config module's `assert_algorithm` reaches each diff."""
+
+    _config = MigrateModelsCliTestCase._config
+    _run = MigrateModelsCliTestCase._run
+
+    def _calls(self, method, name, *argv):
+        # The call is what counts: impact refuses SQLite after it.
+        original = getattr(Migrator, method)
+        with mock.patch.object(
+            Migrator, method, autospec=True, side_effect=original
+        ) as spy:
+            self._run(name, *argv)
+        return [call.kwargs.get("assert_algorithm") for call in spy.call_args_list]
+
+    def test_each_command_passes_the_attribute(self):
+        for extra, expected in (("assert_algorithm = True\n", True), ("", False)):
+            name = self._config(extra)
+            with self.subTest(assert_algorithm=expected):
+                self.assertEqual(self._calls("plan", name, "plan"), [expected] * 2)
+                self.assertEqual(self._calls("impact", name, "impact"), [expected])
+                self.assertEqual(self._calls("rehearse", name, "rehearse"), [expected])
+                self.assertEqual(self._calls("up", name, "migrate"), [expected])
+            sys.modules.pop(name, None)
+            os.remove(os.path.join(self.dir.name, "cli.db"))
+
+
 class CallbackCliTestCase(CliBase):
     """The config module's hooks around the migrate command."""
 

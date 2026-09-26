@@ -4,7 +4,8 @@ support.json row claims the `impact` cover and runs InnoDB: the server
 facts read_context() reads, Migrator.impact() on a live connection, the
 parent-table metadata locks the rules predict for foreign keys, checked
 by holding a read on the parent in a second session,
-rehearse(scratch=True, trace=True), and the ground truth for every rule:
+rehearse(scratch=True, trace=True), the clauses assert_algorithm writes
+on the migration the models generate, and the ground truth for every rule:
 each rule fixture runs under the algorithm probe, and the clause the
 server accepts must match what the rule predicted for that server's
 version and settings.
@@ -22,10 +23,13 @@ from sustained.impact.rules import Probe, mysql, profile_for
 from sustained.impact.rules.mysql.trace import attempts, observe, refused, tables_plan
 from sustained.introspect.runner import run_plan
 from sustained.migrations import Migration, Migrator
+from sustained.model import Model
+from sustained.schema import Index, Integer, String
 
 from . import harness
 
 TABLES = (
+    "sustained_rehearsals",
     "it_impact_child",
     "it_impact_orders",
     "it_impact_notes",
@@ -300,6 +304,63 @@ class InnodbImpactCase(unittest.TestCase):
             "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'it_impact_orders'"
         )
         self.assertEqual(sorted(c for (c,) in columns), ["id", "note"])
+
+    def test_assert_algorithm_writes_the_clause_the_server_accepts(self):
+        self.orders()
+        orders = type(
+            "Orders",
+            (Model,),
+            {
+                "tableName": "it_impact_orders",
+                "tableColumns": {
+                    "id": Integer(primary_key=True),
+                    "note": String(20),
+                    "extra": Integer(),
+                },
+                "indexes": [Index("it_impact_note_ix", "note")],
+                "_dialect": self.DIALECT,
+            },
+        )
+        notes = type(
+            "Notes",
+            (Model,),
+            {
+                "tableName": "it_impact_notes",
+                "tableColumns": {"id": Integer(primary_key=True), "body": String(20)},
+                "indexes": [Index("it_impact_body_ix", "body")],
+                "_dialect": self.DIALECT,
+            },
+        )
+        migrator = Migrator(
+            self.connection, [], dialect=self.DIALECT, table="it_impact_migrations"
+        )
+        models = [orders, notes]
+        plain = migrator.plan(models)
+        planned = migrator.plan(models, assert_algorithm=True)
+        self.connection.rollback()
+        index = (
+            "ALGORITHM=NOCOPY LOCK=NONE"
+            if self.PROFILE == "mariadb"
+            else "ALGORITHM=INPLACE LOCK=NONE"
+        )
+        changed = [
+            (before, after)
+            for before, after in zip(plain.up, planned.up)
+            if before != after
+        ]
+        self.assertEqual(len(changed), 2, planned.up)
+        (added,) = [a for b, a in changed if "ADD COLUMN" in b]
+        self.assertTrue(added.endswith(", ALGORITHM=INSTANT"), added)
+        (built,) = [a for b, a in changed if "CREATE INDEX" in b]
+        self.assertTrue(built.endswith(index), built)
+        # The table the migration creates, and its index, are left.
+        self.assertFalse(
+            [s for s in planned.up if "it_impact_notes" in s and "ALGORITHM" in s]
+        )
+        applied = migrator.up(models=models, assert_algorithm=True)
+        self.assertEqual(len(applied), 1)
+        self.assertIsNone(migrator.plan(models))
+        self.connection.rollback()
 
     def test_each_rule_fixture_does_what_its_rule_predicts(self):
         profile = profile_for(self.DIALECT, self.PROFILE)

@@ -80,7 +80,7 @@ from sustained.impact.rules.mysql.locks import (
     queues,
     timeout_statement,
 )
-from sustained.impact.rules.mysql.online import assertion
+from sustained.impact.rules.mysql.online import asserted_statements, assertion
 from sustained.impact.rules.mysql.statements import (
     STATEMENTS,
 )
@@ -146,6 +146,7 @@ __all__ = [
     "NOCOPY_NONE",
     "Online",
     "ROW_LOCKS",
+    "asserted_statements",
     "assertion",
     "blocks",
     "bounded",

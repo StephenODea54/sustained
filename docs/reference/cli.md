@@ -73,6 +73,7 @@ A `migrate` that fails part way leaves the migrations it already applied in plac
 | `tracking_table_options` | no | `TableOptions` | `None` |
 | `guards` | no | `list[Guard]` from `sustained.guards` | `[]` |
 | `get_rehearsal_connection` | no | `() -> Connection`, a scratch database | `None` |
+| `assert_algorithm` | no | `bool`; `plan`, `impact`, `migrate`, and `rehearse` pass it to the diff of `models` | `False` |
 | `before_migrate` | no | `(connection) -> None` | not called |
 | `after_migrate` | no | `(connection, applied) -> None` | not called |
 | `on_error` | no | `(connection, migration_id, error) -> None` | not called |

@@ -20,6 +20,10 @@ The config module names the pieces the migrator needs:
   `rehearse` then uses instead of the real one (optional)
 - `guards`: a list of rules over the statements a run would apply; see
   sustained.guards (optional)
+- `assert_algorithm`: True to write the predicted ALGORITHM and LOCK
+  clause on the statements generated from the models on MySQL and
+  MariaDB, as `Migrator.plan(assert_algorithm=True)` does, in `plan`,
+  `impact`, `migrate`, and `rehearse` (optional)
 - `before_migrate(connection)`, `after_migrate(connection, applied)`, and
   `on_error(connection, migration_id, error)`: callbacks around the
   `migrate` command; `on_error` also runs when `down` fails (optional)

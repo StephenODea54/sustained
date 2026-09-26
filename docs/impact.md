@@ -501,6 +501,21 @@ For each ALTER TABLE, CREATE INDEX, or DROP INDEX the rules read as `INSTANT`, o
 
 With the clause, the server refuses the statement when it cannot run it that way. Without it, the server falls back to a slower algorithm or a stronger lock, as when a table has used its instant row versions. MySQL refuses a LOCK clause beside `ALGORITHM=INSTANT`, so the instant form names the algorithm alone. MariaDB's DROP INDEX takes no clause, so there the finding offers the `ALTER TABLE ... DROP INDEX` form.
 
+`assert_algorithm=True` writes that clause on the migration the models generate, so the server refuses a statement it cannot run as predicted instead of falling back. `plan()`, `up()`, `rehearse()`, and `impact()` on either migrator take it, and so does `sustained.autogenerate.autogenerate()`. For the command line, set `assert_algorithm = True` in the config module, and `plan`, `impact`, `migrate`, and `rehearse` pass it on. The rules read the server facts from the connection after the diff, as `impact()` reads them. A statement takes the clause when all of these hold:
+
+- it is an ALTER TABLE, CREATE INDEX, or DROP INDEX that spells neither `ALGORITHM` nor `LOCK`
+- the rules predict `INSTANT`, `NOCOPY, LOCK=NONE`, or `INPLACE, LOCK=NONE` for it, with confidence `known`
+- its table existed before the migration
+
+A prediction of `COPY` or of a `SHARED` or `EXCLUSIVE` lock is left without a clause, and so is every statement when the read could not get the server's version. The down step is left as generated. Other dialects ignore the option.
+
+```python
+migration = migrator.plan([Order], assert_algorithm=True)
+applied = migrator.up(models=[Order], assert_algorithm=True)
+```
+
+The clause changes the SQL text, so a rehearsal row recorded without `assert_algorithm` does not cover a run with it, and a run with it needs a rehearsal with it. A scratch rehearsal predicts from the scratch tables, so a scratch table with a different row format, FULLTEXT indexes, or instant row versions from the real table can predict another clause, and its row then covers other statements.
+
 A statement that spells `ALGORITHM` or `LOCK` is read with them. A heavier algorithm or a stronger lock runs as asked. MySQL runs a `LOCK` clause without `ALGORITHM` in place, never instant. An algorithm or a LOCK level the change cannot run with draws a `mysql.refused` or `mariadb.refused` finding with severity `warn`, since the server refuses the statement, and the table is reported with no lock.
 
 A statement that copies the table while writes wait names an online schema change tool, such as gh-ost or pt-online-schema-change, which copies the table without blocking writes.

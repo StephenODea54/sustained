@@ -60,6 +60,11 @@ def _load_config(module_name: str) -> ModuleType:
             pass
 
 
+def _assert_algorithm(config: ModuleType) -> bool:
+    """Whether the config module asks for asserted ALGORITHM and LOCK clauses."""
+    return bool(getattr(config, "assert_algorithm", False))
+
+
 def _close_quietly(connection: object) -> None:
     if hasattr(connection, "close"):
         try:
