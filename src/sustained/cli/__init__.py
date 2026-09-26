@@ -28,6 +28,10 @@ The config module names the pieces the migrator needs:
   `sqlite_stat1` has no row count for when the impact analysis reads
   the database, in `plan`, `impact`, `migrate`, and `script --annotate`,
   as the `--exact-counts` flag of those commands does (optional)
+- `online`: True to generate the online form of the models' migration,
+  as `Migrator.up(online=True)` does, in `plan`, `impact`, `migrate`,
+  and `rehearse`, as the `--online` flag of those commands does
+  (optional)
 - `preflight`: 'warn' or 'refuse' to read, before `migrate` applies
   anything, the other sessions a statement of the run would wait
   behind, as `Migrator.up(preflight=...)` does, and as `migrate
@@ -148,18 +152,30 @@ def _build_parser() -> argparse.ArgumentParser:
         )
         return sub
 
-    counts_rows(
-        command(
-            "plan",
-            "Show the pending migrations, the problems, and the model drift.",
-            machine_readable=True,
+    def generates(sub: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        sub.add_argument(
+            "--online",
+            action="store_true",
+            help="Generate the models' migration in its online form (Postgres).",
+        )
+        return sub
+
+    generates(
+        counts_rows(
+            command(
+                "plan",
+                "Show the pending migrations, the problems, and the model drift.",
+                machine_readable=True,
+            )
         )
     )
-    impact = counts_rows(
-        command(
-            "impact",
-            "Show the locks, blocking, and work of each statement in the run.",
-            machine_readable=True,
+    impact = generates(
+        counts_rows(
+            command(
+                "impact",
+                "Show the locks, blocking, and work of each statement in the run.",
+                machine_readable=True,
+            )
         )
     )
     impact.add_argument(
@@ -175,10 +191,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # Ordered as they are used: plan reads, rehearse proves, migrate applies.
-    rehearse = command(
-        "rehearse",
-        "Run the pending migrations up and back down, then roll it all back.",
-        machine_readable=True,
+    rehearse = generates(
+        command(
+            "rehearse",
+            "Run the pending migrations up and back down, then roll it all back.",
+            machine_readable=True,
+        )
     )
     rehearse.add_argument(
         "--trace",
@@ -186,7 +204,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Observe the locks and rewrites of each statement (Postgres, MySQL, MariaDB).",
     )
 
-    migrate = counts_rows(command("migrate", "Apply pending migrations in order."))
+    migrate = generates(
+        counts_rows(command("migrate", "Apply pending migrations in order."))
+    )
     migrate.add_argument("--target", help="Stop after this migration id.")
     migrate.add_argument(
         "--no-validate", action="store_true", help="Skip validation before the run."

@@ -429,7 +429,11 @@ class InnodbImpactCase(unittest.TestCase):
         self.assertFalse(
             [s for s in planned.up if "it_impact_notes" in s and "ALGORITHM" in s]
         )
-        applied = migrator.up(models=models, assert_algorithm=True)
+        # online=True asserts the algorithm, and splits nothing here.
+        online = migrator.plan_migrations(models, online=True)
+        self.connection.rollback()
+        self.assertEqual([m.up for m in online], [planned.up])
+        applied = migrator.up(models=models, online=True)
         self.assertEqual(len(applied), 1)
         self.assertIsNone(migrator.plan(models))
         self.connection.rollback()

@@ -18,11 +18,11 @@ Guide: [Schema and Migrations](/schema#command-line).
 
 | Command | Options | Does |
 | --- | --- | --- |
-| `plan` | `--json`, `--exact-counts` | Shows the pending migrations, the problems, and the model drift. |
-| `impact` | `--json`, `--exact-counts`, `--live`, `--older-than SECONDS` | Shows the locks, blocking, and work of each statement in the run. `--live` adds the sessions each statement would wait behind now. |
+| `plan` | `--json`, `--exact-counts`, `--online` | Shows the pending migrations, the problems, and the model drift. |
+| `impact` | `--json`, `--exact-counts`, `--live`, `--older-than SECONDS`, `--online` | Shows the locks, blocking, and work of each statement in the run. `--live` adds the sessions each statement would wait behind now. |
 | `status` | `--json` | Shows every migration's state: applied, pending, or changed. |
-| `rehearse` | `--json`, `--trace` | Runs the pending migrations up and back down, then rolls it all back. |
-| `migrate` | `--target ID`, `--no-validate`, `--allow-out-of-order`, `--unrehearsed`, `--exact-counts`, `--preflight warn\|refuse` | Applies pending migrations in order. |
+| `rehearse` | `--json`, `--trace`, `--online` | Runs the pending migrations up and back down, then rolls it all back. |
+| `migrate` | `--target ID`, `--no-validate`, `--allow-out-of-order`, `--unrehearsed`, `--exact-counts`, `--preflight warn\|refuse`, `--online` | Applies pending migrations in order. |
 | `down` | `--steps N` (default 1) or `--to ID` | Reverts applied migrations, newest first. |
 | `validate` | `--json` | Checks the tracking table against the migrations. |
 | `repair` | | Fixes tracking rows after failures or intentional edits. |
@@ -77,6 +77,7 @@ A `migrate` that fails part way leaves the migrations it already applied in plac
 | `guards` | no | `list[Guard]` from `sustained.guards` | `[]` |
 | `get_rehearsal_connection` | no | `() -> Connection`, a scratch database | `None` |
 | `assert_algorithm` | no | `bool`; `plan`, `impact`, `migrate`, and `rehearse` pass it to the diff of `models` | `False` |
+| `online` | no | `bool`; `plan`, `impact`, `migrate`, and `rehearse` generate the online form of the migrations the models need, as `--online` does. See [Online migrations](/impact#online-migrations) | `False` |
 | `exact_counts` | no | `bool`; `plan`, `impact`, `migrate`, and `script --annotate` count the rows of each SQLite table `sqlite_stat1` has no row count for, as `--exact-counts` does | `False` |
 | `preflight` | no | `'warn'` or `'refuse'`; `migrate` reads the sessions the run would wait behind before it applies anything, as `--preflight` does | `None` |
 | `preflight_older_than` | no | `float`, seconds; the age from which the preflight lists an open transaction, in `migrate` and `impact --live`, unless `--older-than` is given | `60` |

@@ -1285,10 +1285,47 @@ class AssertAlgorithmCliTestCase(CliBase):
         for extra, expected in (("assert_algorithm = True\n", True), ("", False)):
             name = self._config(extra)
             with self.subTest(assert_algorithm=expected):
-                self.assertEqual(self._calls("plan", name, "plan"), [expected] * 2)
+                self.assertEqual(
+                    self._calls("plan_migrations", name, "plan"), [expected] * 2
+                )
                 self.assertEqual(self._calls("impact", name, "impact"), [expected])
                 self.assertEqual(self._calls("rehearse", name, "rehearse"), [expected])
                 self.assertEqual(self._calls("up", name, "migrate"), [expected])
+            sys.modules.pop(name, None)
+            os.remove(os.path.join(self.dir.name, "cli.db"))
+
+
+class OnlineCliTestCase(CliBase):
+    """`--online` and the config module's `online` reach each diff."""
+
+    _config = MigrateModelsCliTestCase._config
+    _run = MigrateModelsCliTestCase._run
+
+    def _calls(self, method, name, *argv):
+        original = getattr(Migrator, method)
+        with mock.patch.object(
+            Migrator, method, autospec=True, side_effect=original
+        ) as spy:
+            self._run(name, *argv)
+        return [call.kwargs.get("online") for call in spy.call_args_list]
+
+    def test_each_command_passes_the_flag_or_the_attribute(self):
+        cases = (("", (), False), ("", ("--online",), True))
+        cases += (("online = True\n", (), True),)
+        for extra, flag, expected in cases:
+            name = self._config(extra)
+            with self.subTest(extra=extra, flag=flag):
+                self.assertEqual(
+                    self._calls("plan_migrations", name, "plan", *flag),
+                    [expected] * 2,
+                )
+                self.assertEqual(
+                    self._calls("impact", name, "impact", *flag), [expected]
+                )
+                self.assertEqual(
+                    self._calls("rehearse", name, "rehearse", *flag), [expected]
+                )
+                self.assertEqual(self._calls("up", name, "migrate", *flag), [expected])
             sys.modules.pop(name, None)
             os.remove(os.path.join(self.dir.name, "cli.db"))
 

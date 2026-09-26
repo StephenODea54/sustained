@@ -56,12 +56,12 @@ Each statement runs inside a savepoint. A statement that fails leaves its facts 
 ## `Migrator.impact()`
 
 ```python
-Migrator.impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0) -> ImpactReport
-await AsyncMigrator.impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0) -> ImpactReport
+Migrator.impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0, online=False) -> ImpactReport
+await AsyncMigrator.impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0, online=False) -> ImpactReport
 ```
 {: .sig #migrator-impact}
 
-The impact of the run `up()` would make: every pending migration, then the migration the models generate when `models` is given. The generated migration is diffed against the schema as it is now, before the pending migrations run, as `plan()` diffs it, and `assert_algorithm` writes the clauses `plan()` writes on it. A callable step renders no SQL and is left out. Nothing is written.
+The impact of the run `up()` would make: every pending migration, then the migration the models generate when `models` is given. The generated migration is diffed against the schema as it is now, before the pending migrations run, as `plan()` diffs it, and `assert_algorithm` writes the clauses `plan()` writes on it. With `online=True`, the models generate the migrations `plan_migrations(models, online=True)` returns, and each is analyzed in turn. A callable step renders no SQL and is left out. Nothing is written.
 
 The context comes from `read_context()` on the migrator's connection, or `async_read_context()` on its adapter, with `exact_counts` passed on. With `live=True`, the report's `preflight` is the [live preflight](#preflight) of the analyzed statements, with `older_than` passed on. Both raise `DialectError` on a dialect the analysis does not cover, and with `live=True` on a dialect without a preflight, before any statement runs.
 
@@ -154,8 +154,8 @@ await async_preflight(adapter, dialect, statements, older_than=60.0, context=Non
 The sessions the statements would wait behind on the server now, and the other transactions open at least `older_than` seconds, from a blocking connection or an async adapter. A statement with `impact` attached is read from it. The others are analyzed with `context`, which is read from the connection when it is not given. The connection's own session is never listed, and no session is ended. Both raise `ValueError` for a dialect without a preflight: `Dialects.POSTGRES`, `Dialects.MYSQL`, and `Dialects.MSSQL` have one.
 
 ```python
-Migrator.preflight(models=None, older_than=60.0, exact_counts=False) -> Preflight
-await AsyncMigrator.preflight(models=None, older_than=60.0, exact_counts=False) -> Preflight
+Migrator.preflight(models=None, older_than=60.0, exact_counts=False, online=False) -> Preflight
+await AsyncMigrator.preflight(models=None, older_than=60.0, exact_counts=False, online=False) -> Preflight
 ```
 {: .sig #migrator-preflight}
 

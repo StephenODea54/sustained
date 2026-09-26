@@ -3,6 +3,7 @@
 import json
 import unittest
 
+from sustained.analysis import destructive_statements, with_intent
 from sustained.autogenerate import autogenerate, autogenerate_migrations
 from sustained.dialects import Dialects
 from sustained.impact import EngineContext, Severity, analyze
@@ -215,16 +216,16 @@ class SplitTestCase(unittest.TestCase):
                 'ALTER TABLE "orders" VALIDATE CONSTRAINT "orders_customer_id_fkey"',
                 'ALTER TABLE "orders" VALIDATE CONSTRAINT "ck_status"',
                 'ALTER TABLE "orders" VALIDATE CONSTRAINT "fk_orders_ref"',
-                'ALTER TABLE "orders" ADD CONSTRAINT "orders_email_not_null" '
+                'ALTER TABLE "orders" ADD CONSTRAINT "orders_email_not_null_check" '
                 'CHECK ("email" IS NOT NULL) NOT VALID',
-                'ALTER TABLE "orders" VALIDATE CONSTRAINT "orders_email_not_null"',
+                'ALTER TABLE "orders" VALIDATE CONSTRAINT "orders_email_not_null_check"',
                 'ALTER TABLE "orders" ALTER COLUMN "email" SET NOT NULL',
-                'ALTER TABLE "orders" DROP CONSTRAINT "orders_email_not_null"',
-                'ALTER TABLE "orders" ADD CONSTRAINT "orders_status_not_null" '
+                'ALTER TABLE "orders" DROP CONSTRAINT "orders_email_not_null_check"',
+                'ALTER TABLE "orders" ADD CONSTRAINT "orders_status_not_null_check" '
                 'CHECK ("status" IS NOT NULL) NOT VALID',
-                'ALTER TABLE "orders" VALIDATE CONSTRAINT "orders_status_not_null"',
+                'ALTER TABLE "orders" VALIDATE CONSTRAINT "orders_status_not_null_check"',
                 'ALTER TABLE "orders" ALTER COLUMN "status" SET NOT NULL',
-                'ALTER TABLE "orders" DROP CONSTRAINT "orders_status_not_null"',
+                'ALTER TABLE "orders" DROP CONSTRAINT "orders_status_not_null_check"',
             ],
         )
 
@@ -250,6 +251,15 @@ class SplitTestCase(unittest.TestCase):
             kinds[-4:],
             ["add_check", "validate_constraint", "set_not_null", "drop_constraint"],
         )
+
+    def test_the_temporary_check_drop_is_not_labelled_destructive(self):
+        self.assertEqual(destructive_statements(self.online.up), [])
+        drop = self.online.up[-1]
+        self.assertTrue(drop.intent.get("transient"))
+        # The same text without the mark is a constraint drop.
+        self.assertEqual(len(destructive_statements([str(drop)])), 1)
+        plain = with_intent(str(drop), "drop_constraint", "orders", name="x")
+        self.assertEqual(len(destructive_statements([plain])), 1)
 
     def test_the_analysis_finds_no_danger_but_the_backfills(self):
         tables = {

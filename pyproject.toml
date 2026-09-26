@@ -59,7 +59,7 @@ max-complexity = 27
 
 [tool.ruff.lint.pylint]
 max-branches = 26
-max-args = 14
+max-args = 15
 max-statements = 93
 
 [tool.mypy]

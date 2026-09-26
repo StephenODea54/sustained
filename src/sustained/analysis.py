@@ -252,8 +252,13 @@ def _removes_data(statement: str) -> bool:
     Whether one statement removes something the schema cannot give back,
     by the rules `destructive_statements()` gives.
     """
-    if isinstance(statement, MigrationStatement) and statement.destructive:
-        return True
+    if isinstance(statement, MigrationStatement):
+        if statement.destructive:
+            return True
+        intent = statement.intent
+        if intent is not None and intent.kind == "drop_constraint":
+            if intent.get("transient"):
+                return False
     return any(
         _DESTRUCTIVE_RE.search(form) or _ALTER_DROP_RE.search(form)
         for form in scannable_forms(statement)
@@ -271,7 +276,10 @@ def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
     A dropped constraint removes no rows, but re-adding it needs the data
     to still satisfy it. A plain DROP SCHEMA refuses a schema that holds
     anything, so only the CASCADE form is labelled. Drops of indexes and
-    keys are not labelled.
+    keys are not labelled. A generated drop of a constraint the same
+    migration added for its own use, such as the check the online route
+    to SET NOT NULL adds and drops, is not labelled either: its intent is
+    `drop_constraint` with `transient=True`.
 
     A MigrationStatement marked `destructive`, such as a narrowing type
     change the diff generated, is labelled whatever its text says.

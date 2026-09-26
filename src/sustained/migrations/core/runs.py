@@ -27,6 +27,7 @@ from typing import (
 
 from sustained.dialects import Dialects
 from sustained.impact.preflight import OLDER_THAN
+from sustained.migrations import planning
 from sustained.migrations.checks import (
     _changed_down_message,
     _changed_since_applied,
@@ -148,12 +149,15 @@ class RunReads(NamedTuple):
     What up() reads from the server around the run: `assert_algorithm`
     writes the predicted ALGORITHM and LOCK clauses on the generated
     migration, `exact_counts` passes on to the context read, and
-    `preflight` is the live preflight check, or None for none.
+    `preflight` is the live preflight check, or None for none. `online`
+    generates the online form of the migration, as
+    autogenerate_migrations() describes.
     """
 
     assert_algorithm: bool = False
     exact_counts: bool = False
     preflight: Optional[PreflightCheck] = None
+    online: bool = False
 
 
 def up(
@@ -283,7 +287,7 @@ def run_up(
                 next_seq += 1
                 applied_now.append(migration.id)
             if models is not None:
-                generated = yield from plan(
+                generated = yield from plan_migrations(
                     m,
                     models,
                     allow_drops=allow_drops,
@@ -293,37 +297,41 @@ def run_up(
                     table_renames=table_renames,
                     type_casts=type_casts,
                     assert_algorithm=reads.assert_algorithm,
+                    online=reads.online,
                 )
-                if generated is not None:
+                if generated:
                     # The generated statements are known only now, after
                     # the registered migrations left the schema they diff
                     # against, so both gates run a second time before the
-                    # one migration they could not see. The registered
+                    # migrations they could not see. The registered
                     # migrations are already applied and committed by
                     # then, so a block here reports what it stopped after.
-                    final_run = registered_run + [generated]
+                    final_run = registered_run + generated
                     checked = yield from guard_run(
                         m, final_run, warned, dangers, reads.exact_counts
                     )
+                    generated_ids = {g.id for g in generated}
                     yield from check_preflight(
                         m,
-                        [s for s in checked if s.migration_id == generated.id],
+                        [s for s in checked if s.migration_id in generated_ids],
                         reads.preflight,
                         shown,
                     )
                     yield from bookkeeping.require_rehearsal_row(
                         m, records, final_run, unrehearsed, target
                     )
-                    # The migration joins the registered list only after
-                    # it applied. A failed one left there would run again
-                    # on the next up() of a long-lived migrator, and would
-                    # run alongside a fresh diff of the same models.
-                    yield from apply(
-                        m, generated, next_seq, update=False, generated=True
-                    )
-                    m._migrations.append(generated)
-                    next_seq += 1
-                    applied_now.append(generated.id)
+                    for migration in generated:
+                        # A migration joins the registered list only after
+                        # it applied. A failed one left there would run
+                        # again on the next up() of a long-lived migrator,
+                        # and would run alongside a fresh diff of the same
+                        # models.
+                        yield from apply(
+                            m, migration, next_seq, update=False, generated=True
+                        )
+                        m._migrations.append(migration)
+                        next_seq += 1
+                        applied_now.append(migration.id)
             for migration in repeatables_now:
                 record = records_by_id.get(migration.id)
                 yield from apply(m, migration, next_seq, update=record is not None)
@@ -654,6 +662,53 @@ def plan(
     return asserted_migration(generated, m._dialect, m._compiler, context)
 
 
+def plan_migrations(
+    m: MigratorBase,
+    models: List[Type["Model"]],
+    allow_drops: bool = False,
+    ignore_changed_columns: bool = False,
+    migration_id: Optional[str] = None,
+    renames: Optional[Dict[str, str]] = None,
+    table_renames: Optional[Dict[str, str]] = None,
+    type_casts: Optional[Dict[str, str]] = None,
+    ignore_undeclared: bool = True,
+    snapshot: Optional["Snapshot"] = None,
+    assert_algorithm: bool = False,
+    online: bool = False,
+) -> Core[List[Migration]]:
+    """
+    The migrations a diff of the models produces, as plan() plans the
+    one, with online passed on to autogenerate_migrations(). On MySQL,
+    online asks for the clauses assert_algorithm writes, and the server
+    facts are read once for every migration.
+    """
+    from sustained.autogenerate import declared_schemas
+
+    source: Tuple[Connection, Optional["Snapshot"]] = yield DiffSource(
+        declared_schemas(models)
+    )
+    generated = planning.plan_migrations(
+        source[0],
+        models,
+        m._dialect,
+        m._own_tables(),
+        allow_drops=allow_drops,
+        ignore_changed_columns=ignore_changed_columns,
+        migration_id=migration_id,
+        renames=renames,
+        table_renames=table_renames,
+        type_casts=type_casts,
+        ignore_undeclared=ignore_undeclared,
+        snapshot=snapshot,
+        online=online,
+    )
+    asserting = assert_algorithm or online
+    if not generated or not asserting or m._dialect is not Dialects.MYSQL:
+        return generated
+    context = yield ReadContext()
+    return [asserted_migration(g, m._dialect, m._compiler, context) for g in generated]
+
+
 def impact(
     m: MigratorBase,
     models: Optional[List[Type["Model"]]] = None,
@@ -661,6 +716,7 @@ def impact(
     exact_counts: bool = False,
     live: bool = False,
     older_than: float = OLDER_THAN,
+    online: bool = False,
 ) -> Core["ImpactReport"]:
     """
     The pending run, plus the migration the models generate, analyzed
@@ -678,9 +734,11 @@ def impact(
         raise DialectError(f"The live preflight does not cover {m._dialect.name}.")
     run = yield from bookkeeping.pending(m)
     if models:
-        generated = yield from plan(m, list(models), assert_algorithm=assert_algorithm)
-        if generated is not None:
-            run = run + [generated]
+        run = run + (
+            yield from plan_migrations(
+                m, list(models), assert_algorithm=assert_algorithm, online=online
+            )
+        )
     context = yield ReadContext(exact_counts)
     report = analyze(run_statements(run, m._compiler), m._dialect, context)
     if not live:
@@ -694,10 +752,16 @@ def preflight(
     models: Optional[List[Type["Model"]]] = None,
     older_than: float = OLDER_THAN,
     exact_counts: bool = False,
+    online: bool = False,
 ) -> Core["Preflight"]:
     """The preflight of the run impact() analyzes."""
     report = yield from impact(
-        m, models, exact_counts=exact_counts, live=True, older_than=older_than
+        m,
+        models,
+        exact_counts=exact_counts,
+        live=True,
+        older_than=older_than,
+        online=online,
     )
     assert report.preflight is not None
     return report.preflight

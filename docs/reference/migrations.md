@@ -117,19 +117,19 @@ statuses() -> list[tuple[str, str]]
 `(id, state)`, where state is `applied`, `pending`, or `changed`. `changed` marks a repeatable whose contents differ from its last run.
 
 ```python
-impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0) -> ImpactReport
-preflight(models=None, older_than=60.0, exact_counts=False) -> Preflight
+impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0, online=False) -> ImpactReport
+preflight(models=None, older_than=60.0, exact_counts=False, online=False) -> Preflight
 ```
 {: .sig #impact}
 
-The impact of the run `up()` would make on a live database: the locks each statement takes, what they block, the work each does, and findings with safer forms. With `models`, the migration they generate is analyzed after the pending ones. The analysis writes nothing. `exact_counts=True` counts the rows of each SQLite table `sqlite_stat1` has no row count for. `live=True` adds the report's `preflight`: the sessions each statement would wait behind now, and the transactions open `older_than` seconds or longer. `preflight()` returns that read alone. Raises `DialectError` on a dialect the analysis does not cover, which is Presto and Athena, and with `live=True`, or from `preflight()`, on SQLite and DuckDB too. See [Impact reference](/reference/impact#migrator-impact) and [Live preflight](/reference/impact#preflight).
+The impact of the run `up()` would make on a live database: the locks each statement takes, what they block, the work each does, and findings with safer forms. With `models`, the migrations they generate are analyzed after the pending ones, and `online` splits them as `plan_migrations()` does. The analysis writes nothing. `exact_counts=True` counts the rows of each SQLite table `sqlite_stat1` has no row count for. `live=True` adds the report's `preflight`: the sessions each statement would wait behind now, and the transactions open `older_than` seconds or longer. `preflight()` returns that read alone. Raises `DialectError` on a dialect the analysis does not cover, which is Presto and Athena, and with `live=True`, or from `preflight()`, on SQLite and DuckDB too. See [Impact reference](/reference/impact#migrator-impact) and [Live preflight](/reference/impact#preflight).
 
 `pending()`, `status()`, `statuses()`, and `validate()` read the tracking table without creating or upgrading it, on `Migrator` and `AsyncMigrator` alike, so they run on a read-only replica. A database with no tracking table reads as one with nothing applied.
 
 ### Running
 
 ```python
-up(target=None, validate=True, allow_out_of_order=False, models=None, unrehearsed=False, preflight=None, ...) -> list[str]
+up(target=None, validate=True, allow_out_of_order=False, models=None, unrehearsed=False, preflight=None, online=False, ...) -> list[str]
 ```
 {: .sig #up}
 
@@ -199,6 +199,13 @@ The migration that `up(models=[...])` would generate, or `None` when the schema 
 `plan()` also takes `snapshot`, a schema that `read_schema()` returned. The plan then diffs that snapshot and does not read the schema again, and the snapshot is left unchanged. The `plan` command reads the schema once this way and diffs it twice: once with drops for the drift section, and once without them for the guards and the rehearsal check. The connection still answers the check for rows in a table that gets a new NOT NULL column.
 
 ```python
+plan_migrations(models, ..., online=False) -> list[Migration]
+```
+{: .sig #plan_migrations}
+
+The migrations that `up(models=[...])` would generate, as a list that is empty when the schema is current. It takes `plan()`'s arguments, `snapshot` included on `Migrator`, and without `online` the list holds the one migration `plan()` returns. `AsyncMigrator.plan_migrations()` takes no `snapshot`.
+
+```python
 read_schema(models) -> dict[str, IntrospectedTable]
 ```
 {: .sig #read_schema}
@@ -210,7 +217,7 @@ up(models=[...], ...) -> list[str]
 ```
 {: .sig #up-models}
 
-Generates that migration, registers it, and applies it along with every other pending migration.
+Generates that migration, registers it, and applies it along with every other pending migration. With `online=True`, it generates and applies each migration `plan_migrations(models, online=True)` returns, in order.
 
 ```python
 drift(models, renames=None, table_renames=None) -> list[str]
@@ -237,6 +244,7 @@ These methods take the same options:
 | `table_renames` | `None` | `{'old': 'new'}`. |
 | `type_casts` | `None` | `{'table.col': 'col::integer'}`, a `USING` hint. Postgres only. |
 | `ignore_undeclared` | `True` | Leave objects the models do not declare alone. `False` refuses to generate while any exist. |
+| `online` | `False` | On PostgreSQL, split the work into `<id>`, which runs in one transaction and changes only the catalog, and `<id>_online`, which has `transactional=False` and holds the backfills, `CREATE INDEX CONCURRENTLY`, `VALIDATE CONSTRAINT`, the check route to `SET NOT NULL`, and the drops. On MySQL and MariaDB, it turns on `assert_algorithm`. Other dialects ignore it. `plan()` and `sync()` do not take it; `plan_migrations()` does. See [Online migrations](/impact#online-migrations). |
 | `assert_algorithm` | `False` | On MySQL and MariaDB, write the `ALGORITHM` and `LOCK` clause the impact rules predict on each generated ALTER TABLE, CREATE INDEX, and DROP INDEX whose prediction is `INSTANT`, `NOCOPY, LOCK=NONE`, or `INPLACE, LOCK=NONE` with confidence `known`, on a table that existed before the migration. The server facts are read after the diff. Changes the SQL text, so a rehearsal without it does not cover a run with it. See [Asserting the algorithm](/impact#asserting-the-algorithm). |
 
 Pass every model you manage, because these methods compare the whole database against the whole list, and nothing keeps a table up to date when its model is missing from the list. The comparison always excludes the tracking table.
@@ -244,11 +252,11 @@ Pass every model you manage, because these methods compare the whole database ag
 ### Rehearsing
 
 ```python
-rehearse(scratch=False, models=None, ..., trace=False) -> Rehearsal
+rehearse(scratch=False, models=None, ..., trace=False, online=False) -> Rehearsal
 ```
 {: .sig #rehearse}
 
-`rehearse()` applies every pending migration, runs the down steps back down, and rolls the whole run back. It returns an empty `Rehearsal` when nothing is pending. With `models`, the migration generated from those models joins the run without being registered, and the remaining arguments are the diff options above.
+`rehearse()` applies every pending migration, runs the down steps back down, and rolls the whole run back. It returns an empty `Rehearsal` when nothing is pending. With `models`, the migration generated from those models joins the run without being registered, and the remaining arguments are the diff options above. With `online=True` on PostgreSQL, the statements of `<id>_online` run inside the rehearsal transaction with `CONCURRENTLY` removed, and a traced rehearsal leaves them untraced.
 
 `rehearse()` reads the schema before the run and again after the down sweep, so it reports a down step that runs without taking its change back. The comparison covers tables and columns, but not indexes, constraints, or column defaults.
 

@@ -220,7 +220,7 @@ A migration with `transactional=False` releases each lock when its statement end
 On PostgreSQL, the diff can generate the remedies in place of the direct statements. `sustained.autogenerate.autogenerate_migrations(..., online=True)` splits the migration the models generate into two:
 
 - The migration named with the generated id runs in one transaction and changes only the catalog. A new column goes in nullable and without its `UNIQUE` or `REFERENCES` clause. A new foreign key or check goes in `NOT VALID`, and so does the foreign key a new column's `REFERENCES` declares.
-- The migration named `<id>_online` has `transactional=False`, so each of its statements commits on its own and releases its locks when it ends. It runs, in this order: the backfills, as one `UPDATE ... WHERE c IS NULL` each; `CREATE INDEX CONCURRENTLY` for each new or changed index, and for a new column's `UNIQUE` a unique index built concurrently and attached with `ADD CONSTRAINT ... UNIQUE USING INDEX`; a foreign key `NOT VALID` that points at a key built in the same migration, which cannot go in before the key exists; `VALIDATE CONSTRAINT` for each constraint added `NOT VALID`; `SET NOT NULL` through a check, as `ADD CONSTRAINT <table>_<column>_not_null CHECK (c IS NOT NULL) NOT VALID`, `VALIDATE CONSTRAINT`, `SET NOT NULL`, and `DROP CONSTRAINT`; and the drops `allow_drops` generates, with `DROP INDEX CONCURRENTLY` for an index.
+- The migration named `<id>_online` has `transactional=False`, so each of its statements commits on its own and releases its locks when it ends. It runs, in this order: the backfills, as one `UPDATE ... WHERE c IS NULL` each; `CREATE INDEX CONCURRENTLY` for each new or changed index, and for a new column's `UNIQUE` a unique index built concurrently and attached with `ADD CONSTRAINT ... UNIQUE USING INDEX`; a foreign key `NOT VALID` that points at a key built in the same migration, which cannot go in before the key exists; `VALIDATE CONSTRAINT` for each constraint added `NOT VALID`; `SET NOT NULL` through a check, as `ADD CONSTRAINT <table>_<column>_not_null_check CHECK (c IS NOT NULL) NOT VALID`, `VALIDATE CONSTRAINT`, `SET NOT NULL`, and `DROP CONSTRAINT`; and the drops `allow_drops` generates, with `DROP INDEX CONCURRENTLY` for an index.
 
 A migration with no statement is left out, so a run that only adds an index generates `<id>_online` alone. A constraint that a new column declares takes the name PostgreSQL gives it, such as `orders_code_key` or `orders_customer_id_fkey`, so the schema reads the same as after the direct form. The down step of `<id>_online` undoes its statements in the reverse order, with `DROP INDEX CONCURRENTLY` for an index, and leaves the schema the first migration made. It holds no statement when `<id>_online` only validates or backfills, and it is missing when `<id>_online` drops a column or a table. The tracking row of a generated migration without a transaction stores `"transactional": false` beside its statements, so a later `down()` runs its down step outside a transaction too.
 
@@ -234,17 +234,27 @@ The NOT NULL example from [Transaction windows](#transaction-windows) becomes:
 20260926_orders_region_online  no transaction
   UPDATE "orders" SET "region" = 'us' WHERE "region" IS NULL
     orders  ROW EXCLUSIVE  blocks writes  rows  statement  [pg.write_rows]
-  ALTER TABLE "orders" ADD CONSTRAINT "orders_region_not_null" CHECK ("region" IS NOT NULL) NOT VALID
+  ALTER TABLE "orders" ADD CONSTRAINT "orders_region_not_null_check" CHECK ("region" IS NOT NULL) NOT VALID
     orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.add_check.not_valid]
-  ALTER TABLE "orders" VALIDATE CONSTRAINT "orders_region_not_null"
+  ALTER TABLE "orders" VALIDATE CONSTRAINT "orders_region_not_null_check"
     orders  SHARE UPDATE EXCLUSIVE  blocks ddl  scan  statement  [pg.validate_constraint]
   ALTER TABLE "orders" ALTER COLUMN "region" SET NOT NULL
     orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.set_not_null.proven]
-  ALTER TABLE "orders" DROP CONSTRAINT "orders_region_not_null"
+  ALTER TABLE "orders" DROP CONSTRAINT "orders_region_not_null_check"
     orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.drop_constraint]
 ```
 
 The backfill stays one `UPDATE`, which holds its row locks until it ends. On a large table its `pg.write_rows` finding stays `danger`, and a batched backfill is still a migration you write. A statement of `<id>_online` that fails leaves the statements before it committed, and the migration's failed row stops the next `up()` until `repair()`. A failed `CREATE INDEX CONCURRENTLY` also leaves an invalid index behind, which has to be dropped before a retry.
+
+`up()`, `rehearse()`, `impact()`, and `preflight()` on either migrator take `online=True` with `models`, and `plan_migrations()` returns the list of migrations the models generate. `plan()` and `autogenerate()` return one migration and take no `online`. For the command line, pass `--online` to `plan`, `impact`, `rehearse`, or `migrate`, or set `online = True` in the config module.
+
+```python
+migrations = migrator.plan_migrations([Order], online=True)
+migrator.rehearse(models=[Order], online=True)
+applied = migrator.up(models=[Order], online=True)
+```
+
+`up()` applies `<id>`, then `<id>_online`, and adds each to the migrator's list after it applies. The guards and the preflight read both before either runs. A rehearsal runs the statements of `<id>_online` inside its transaction with `CONCURRENTLY` removed, since `CREATE INDEX CONCURRENTLY` refuses a transaction block, and its row covers the run `up()` makes with the same models. A traced rehearsal does not trace those statements, so their impact stays static. The drop of the check the `SET NOT NULL` route adds is not labelled by `destructive_statements()`, since the check exists only for that route.
 
 On MySQL and MariaDB, `online=True` does what `assert_algorithm=True` does; see [Asserting the algorithm](#asserting-the-algorithm). Other dialects ignore it.
 

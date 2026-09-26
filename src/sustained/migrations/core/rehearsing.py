@@ -27,6 +27,7 @@ from sustained.migrations.core.requests import (
 )
 from sustained.migrations.core.tracing import Tracer, check_traceable
 from sustained.migrations.migration import AppliedRecord, Migration, MigrationStep
+from sustained.migrations.planning import rehearsed_form
 from sustained.migrations.rehearsal import (
     REHEARSAL_FAILED,
     Rehearsal,
@@ -64,6 +65,7 @@ def rehearse(
     type_casts: Optional[Dict[str, str]],
     trace: bool = False,
     assert_algorithm: bool = False,
+    online: bool = False,
 ) -> Core[Rehearsal]:
     if not scratch:
         _check_rehearsable(m._dialect)
@@ -90,14 +92,13 @@ def rehearse(
         # skips its commit and a nested transaction block takes a
         # savepoint.
         pinned: Tuple[
-            List[RehearsalResult], Optional[Migration], Optional["ImpactReport"]
+            List[RehearsalResult], List[Migration], Optional["ImpactReport"]
         ] = yield from run_in(
             PinnedTransaction,
             _rehearse_pinned(
                 m,
                 pending,
-                {r.id: r for r in record_list},
-                _next_seq(record_list),
+                record_list,
                 before,
                 models,
                 allow_drops=allow_drops,
@@ -108,12 +109,13 @@ def rehearse(
                 type_casts=type_casts,
                 trace=trace,
                 assert_algorithm=assert_algorithm,
+                online=online,
             ),
         )
-        results, drift, report = pinned
+        results, drifts, report = pinned
         # What the row covers: the pending set, plus the generated
-        # migration when the diff produced one.
-        attempted = list(pending) + ([drift] if drift is not None else [])
+        # migrations when the diff produced any.
+        attempted = list(pending) + drifts
         # The rehearsal row is written after the rollback, in its own
         # committed transaction, and still inside the lock: everything
         # the rehearsal itself wrote has just been taken back.
@@ -125,7 +127,7 @@ def rehearse(
                 yield from bookkeeping.record_rehearsals(
                     m,
                     _passed_rehearsal_keys(
-                        record_list, pending, key, drift is not None, m._compiler
+                        record_list, pending, key, bool(drifts), m._compiler
                     ),
                 )
             else:
@@ -146,8 +148,7 @@ def rehearse(
 def _rehearse_pinned(
     m: MigratorBase,
     pending: List[Migration],
-    records: Dict[str, AppliedRecord],
-    seq: int,
+    record_list: List[AppliedRecord],
     before: Optional[Dict[str, "IntrospectedTable"]],
     models: Optional[List[Type["Model"]]],
     allow_drops: bool,
@@ -158,13 +159,16 @@ def _rehearse_pinned(
     type_casts: Optional[Dict[str, str]],
     trace: bool,
     assert_algorithm: bool = False,
-) -> Core[Tuple[List[RehearsalResult], Optional[Migration], Optional["ImpactReport"]]]:
+    online: bool = False,
+) -> Core[Tuple[List[RehearsalResult], List[Migration], Optional["ImpactReport"]]]:
     """
     The run inside the rehearsal transaction, which it takes back itself
-    at the end whatever happened. Returns the results, the migration the
-    diff against the models generated, if any, and with `trace` the
-    run's impact as the server showed it.
+    at the end whatever happened. Returns the results, the migrations the
+    diff against the models generated, and with `trace` the run's impact
+    as the server showed it.
     """
+    records = {r.id: r for r in record_list}
+    seq = _next_seq(record_list)
     m._rehearsing = True
     try:
         yield BeginPinned()
@@ -206,14 +210,14 @@ def _rehearse_pinned(
         # objects the generated migration creates.
         yield from apply_each([x for x in pending if not x.repeatable])
         landed: Dict[str, List[str]] = {}
-        drift: Optional[Migration] = None
+        drifts: List[Migration] = []
         if models is not None and up_error is None:
             # The diff is taken here, inside the rehearsal, so it
             # sees the schema the pending migrations just left. The
-            # generated migration joins the run without being
+            # generated migrations join the run without being
             # registered: nothing outside the rehearsal should see a
             # migration the rollback is about to take back.
-            drift = yield from runs.plan(
+            drifts = yield from runs.plan_migrations(
                 m,
                 models,
                 allow_drops=allow_drops,
@@ -223,33 +227,38 @@ def _rehearse_pinned(
                 table_renames=table_renames,
                 type_casts=type_casts,
                 assert_algorithm=assert_algorithm,
+                online=online,
             )
-            if drift is not None:
+            applied = 0
+            for drift in drifts:
                 reached.append(drift)
-                if not drift.transactional:
-                    # A generated SQLite rebuild says
-                    # transactional=False, and its pragmas are
-                    # ignored inside the rehearsal transaction.
+                # A generated migration without a transaction runs in
+                # the form rehearsed_form() gives. A generated SQLite
+                # rebuild has none: its pragmas are ignored inside the
+                # rehearsal transaction, so it is reported as unproved.
+                form = (
+                    drift if drift.transactional else rehearsed_form(drift, m._dialect)
+                )
+                if form is None:
                     skipped.append(drift)
-                else:
-                    try:
-                        yield from runs.apply(
-                            m, drift, seq, update=False, generated=True
-                        )
-                    except Exception as error:
-                        up_error = (drift.id, str(error))
-                    else:
-                        seq += 1
-                        ran.append(drift)
-                        # The renames have already run, so the
-                        # schema holds the new names. Passing the
-                        # hints again would ask to rename objects
-                        # that are gone.
-                        landed[drift.id] = yield from runs.drift(
-                            m,
-                            models,
-                            ignore_changed_columns=ignore_changed_columns,
-                        )
+                    continue
+                try:
+                    yield from _apply_generated(m, form, seq, traced=form is drift)
+                except Exception as error:
+                    up_error = (drift.id, str(error))
+                    break
+                seq += 1
+                ran.append(form)
+                applied += 1
+            if drifts and applied == len(drifts):
+                # The renames have already run, so the schema holds the
+                # new names. Passing the hints again would ask to rename
+                # objects that are gone.
+                landed[drifts[-1].id] = yield from runs.drift(
+                    m,
+                    models,
+                    ignore_changed_columns=ignore_changed_columns,
+                )
         if up_error is None:
             yield from apply_each([x for x in pending if x.repeatable])
         m._tracer = None
@@ -265,11 +274,29 @@ def _rehearse_pinned(
         results = _rehearsal_results(
             ran, up_error, outcomes, landed, reverted
         ) + _skipped_results(skipped)
-        return results, drift, report
+        return results, drifts, report
     finally:
         m._rehearsing = False
         m._tracer = None
         yield from roll_back_rehearsal(m)
+
+
+def _apply_generated(
+    m: MigratorBase, migration: Migration, seq: int, traced: bool
+) -> Core[None]:
+    """
+    Applies a generated migration in the rehearsal. A form other than
+    the migration itself runs untraced: its statements are not the ones
+    the report predicts, so an observation of them would read as a
+    mismatch.
+    """
+    tracer = m._tracer
+    if not traced:
+        m._tracer = None
+    try:
+        yield from runs.apply(m, migration, seq, update=False, generated=True)
+    finally:
+        m._tracer = tracer
 
 
 def snapshot(m: MigratorBase) -> Core[Optional[Dict[str, "IntrospectedTable"]]]:

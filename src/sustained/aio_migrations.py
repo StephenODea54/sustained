@@ -479,6 +479,7 @@ class AsyncMigrator(MigratorBase):
         assert_algorithm: bool = False,
         exact_counts: bool = False,
         preflight: Union[None, str, PreflightCheck] = None,
+        online: bool = False,
     ) -> List[str]:
         """
         Applies pending migrations in order, stopping after the target id
@@ -537,6 +538,9 @@ class AsyncMigrator(MigratorBase):
         older_than) sets another age. The read is a snapshot: a session
         may take a lock after it. A dialect without a live preflight
         reads nothing. No session is ended.
+
+        online=True generates and applies the migrations
+        Migrator.up(online=True) does.
         """
         return await self._drive(
             runs.up(
@@ -553,7 +557,10 @@ class AsyncMigrator(MigratorBase):
                 type_casts=type_casts,
                 unrehearsed=unrehearsed,
                 reads=runs.RunReads(
-                    assert_algorithm, exact_counts, runs.preflight_check(preflight)
+                    assert_algorithm,
+                    exact_counts,
+                    runs.preflight_check(preflight),
+                    online,
                 ),
             )
         )
@@ -570,6 +577,7 @@ class AsyncMigrator(MigratorBase):
         type_casts: Optional[Dict[str, str]] = None,
         trace: bool = False,
         assert_algorithm: bool = False,
+        online: bool = False,
     ) -> Rehearsal:
         """
         Runs every pending migration up, then back down, inside one
@@ -603,6 +611,9 @@ class AsyncMigrator(MigratorBase):
 
         With trace=True, the result's `impact` holds the run's impact as
         the server showed it, as Migrator.rehearse() describes.
+
+        online=True rehearses the migrations up(online=True) generates,
+        as Migrator.rehearse() describes.
         """
         return await self._drive(
             rehearsing.rehearse(
@@ -617,6 +628,7 @@ class AsyncMigrator(MigratorBase):
                 type_casts=type_casts,
                 trace=trace,
                 assert_algorithm=assert_algorithm,
+                online=online,
             )
         )
 
@@ -668,6 +680,41 @@ class AsyncMigrator(MigratorBase):
             )
         )
 
+    async def plan_migrations(
+        self,
+        models: List[Type["Model"]],
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[Dict[str, str]] = None,
+        table_renames: Optional[Dict[str, str]] = None,
+        type_casts: Optional[Dict[str, str]] = None,
+        ignore_undeclared: bool = True,
+        assert_algorithm: bool = False,
+        online: bool = False,
+    ) -> List[Migration]:
+        """
+        The migrations up(models=[...]) would generate, as a list that is
+        empty when the schema is up to date. Mirrors
+        Migrator.plan_migrations(), with the schema read plan() makes
+        here.
+        """
+        return await self._drive(
+            runs.plan_migrations(
+                self,
+                models,
+                allow_drops=allow_drops,
+                ignore_changed_columns=ignore_changed_columns,
+                migration_id=migration_id,
+                renames=renames,
+                table_renames=table_renames,
+                type_casts=type_casts,
+                ignore_undeclared=ignore_undeclared,
+                assert_algorithm=assert_algorithm,
+                online=online,
+            )
+        )
+
     async def impact(
         self,
         models: Optional[List[Type["Model"]]] = None,
@@ -675,6 +722,7 @@ class AsyncMigrator(MigratorBase):
         exact_counts: bool = False,
         live: bool = False,
         older_than: float = 60.0,
+        online: bool = False,
     ) -> "ImpactReport":
         """
         The impact of the run up() would make, with the server facts read
@@ -683,7 +731,15 @@ class AsyncMigrator(MigratorBase):
         schema read.
         """
         return await self._drive(
-            runs.impact(self, models, assert_algorithm, exact_counts, live, older_than)
+            runs.impact(
+                self,
+                models,
+                assert_algorithm,
+                exact_counts,
+                live,
+                older_than,
+                online=online,
+            )
         )
 
     async def preflight(
@@ -691,12 +747,15 @@ class AsyncMigrator(MigratorBase):
         models: Optional[List[Type["Model"]]] = None,
         older_than: float = 60.0,
         exact_counts: bool = False,
+        online: bool = False,
     ) -> "Preflight":
         """
         The sessions the run up() would make would wait behind, read
         through the adapter. Mirrors Migrator.preflight().
         """
-        return await self._drive(runs.preflight(self, models, older_than, exact_counts))
+        return await self._drive(
+            runs.preflight(self, models, older_than, exact_counts, online)
+        )
 
     async def drift(
         self,

@@ -22,7 +22,7 @@ from sustained.analysis import (
     normalize_statement,
     summarize,
 )
-from sustained.cli.config import _assert_algorithm, _exact_counts
+from sustained.cli.config import _assert_algorithm, _exact_counts, _online
 from sustained.cli.output import (
     JsonValue,
     _count,
@@ -52,16 +52,19 @@ from sustained.migrations import (
 
 class _ModelPlans(NamedTuple):
     """
-    The two migrations plan reads from the config module's models, both
-    diffed against one schema read. `preview` includes the drops, and
-    `run` is what migrate would generate.
+    The two plans plan reads from the config module's models, both
+    diffed against one schema read, each a list of the migrations it
+    generates. `preview` includes the drops, and `run` is what migrate
+    would generate.
     """
 
-    preview: Optional[Migration]
-    run: Optional[Migration]
+    preview: List[Migration]
+    run: List[Migration]
 
 
-def _model_plans(migrator: Migrator, config: ModuleType) -> Optional[_ModelPlans]:
+def _model_plans(
+    migrator: Migrator, config: ModuleType, args: argparse.Namespace
+) -> Optional[_ModelPlans]:
     """
     Both model plans from one read of the schema, or None when the config
     module names no models.
@@ -71,14 +74,18 @@ def _model_plans(migrator: Migrator, config: ModuleType) -> Optional[_ModelPlans
         return None
     snapshot = migrator.read_schema(list(models))
     asserted = _assert_algorithm(config)
+    online = _online(config, args)
     return _ModelPlans(
-        migrator.plan(
+        migrator.plan_migrations(
             list(models),
             allow_drops=True,
             snapshot=snapshot,
             assert_algorithm=asserted,
+            online=online,
         ),
-        migrator.plan(list(models), snapshot=snapshot, assert_algorithm=asserted),
+        migrator.plan_migrations(
+            list(models), snapshot=snapshot, assert_algorithm=asserted, online=online
+        ),
     )
 
 
@@ -92,18 +99,13 @@ def _drift_statements(
     Drops are included: a preview reports every difference, including
     tables and columns the models no longer declare, which migrate does
     not generate. The statements print in full, so a drop reads as a drop
-    without a separate label. Each statement carries the preview's
-    migration id, so the impact analysis reads them as one migration.
+    without a separate label. Each statement carries the id of its
+    migration in the preview, so the impact analysis reads the
+    migrations apart.
     """
     if plans is None:
         return None
-    preview = plans.preview
-    if preview is None:
-        return []
-    return [
-        MigrationStatement(sql, preview.id, preview.transactional)
-        for sql in migration_sql(preview, "up", migrator.compiler)
-    ]
+    return _generated_statements(migrator, plans.preview)
 
 
 def _migrate_drift_statements(
@@ -116,16 +118,19 @@ def _migrate_drift_statements(
     This is the drift preview without the drops: migrate generates none
     unless it is called from Python with allow_drops=True. The guards read
     this set, so a verdict names a statement the run would run. Each
-    statement carries the generated migration's id, so a rule that reads
-    migration boundaries sees these as one migration of their own.
+    statement carries its generated migration's id, so a rule that reads
+    migration boundaries sees each generated migration as one of its own.
     """
     if plans is None:
         return None
-    migration = plans.run
-    if migration is None:
-        return []
+    return _generated_statements(migrator, plans.run)
+
+
+def _generated_statements(migrator: Migrator, migrations: List[Migration]) -> List[str]:
+    """Each generated migration's up statements, with its id and flag."""
     return [
         MigrationStatement(sql, migration.id, migration.transactional)
+        for migration in migrations
         for sql in migration_sql(migration, "up", migrator.compiler)
     ]
 
@@ -149,9 +154,9 @@ def _rehearsal_row_covers(migrator: Migrator, plans: Optional[_ModelPlans]) -> b
     records = migrator.read_applied_records()
     if migrator.run_outcome(records, pending) == REHEARSAL_PASSED:
         return True
-    if plans is None or plans.run is None:
+    if plans is None or not plans.run:
         return False
-    return migrator.run_outcome(records, pending + [plans.run]) == REHEARSAL_PASSED
+    return migrator.run_outcome(records, pending + plans.run) == REHEARSAL_PASSED
 
 
 def _print_pending(summaries: List[PendingSummary]) -> None:
@@ -331,7 +336,7 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
         for m in migrator.pending()
     ]
     problems = migrator.validate(raise_on_problems=False)
-    plans = _model_plans(migrator, config)
+    plans = _model_plans(migrator, config, args)
     drift = _drift_statements(migrator, plans)
     context = (
         read_context(migrator.connection, migrator.dialect, _exact_counts(config, args))

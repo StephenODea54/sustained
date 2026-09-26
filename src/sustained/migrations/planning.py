@@ -6,6 +6,7 @@ execute.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import (
     TYPE_CHECKING,
@@ -80,6 +81,85 @@ def plan_migration(
         ignore_undeclared=ignore_undeclared,
         snapshot=snapshot,
     )
+
+
+def plan_migrations(
+    connection: Connection,
+    models: List[Type["Model"]],
+    dialect: Dialects,
+    exclude_tables: Tuple[str, ...],
+    allow_drops: bool = False,
+    ignore_changed_columns: bool = False,
+    migration_id: Optional[str] = None,
+    renames: Optional[Dict[str, str]] = None,
+    table_renames: Optional[Dict[str, str]] = None,
+    type_casts: Optional[Dict[str, str]] = None,
+    ignore_undeclared: bool = True,
+    snapshot: Optional["Snapshot"] = None,
+    online: bool = False,
+) -> List[Migration]:
+    """
+    The migrations a diff of the models against the database produces,
+    as plan_migration() plans them, with online passed on to
+    autogenerate_migrations() on PostgreSQL. The migrators write the
+    MySQL clauses online asks for themselves, after the diff, so the
+    diff is never asked for them.
+    """
+    from sustained.autogenerate import autogenerate_migrations
+
+    return autogenerate_migrations(
+        connection,
+        models,
+        id=generated_id(migration_id),
+        dialect=dialect,
+        allow_drops=allow_drops,
+        ignore_changed_columns=ignore_changed_columns,
+        exclude_tables=exclude_tables,
+        renames=renames,
+        table_renames=table_renames,
+        type_casts=type_casts,
+        ignore_undeclared=ignore_undeclared,
+        snapshot=snapshot,
+        online=online and dialect is Dialects.POSTGRES,
+    )
+
+
+# CONCURRENTLY after CREATE [UNIQUE] INDEX or DROP INDEX.
+_CONCURRENTLY_RE = re.compile(
+    r"^((?:CREATE\s+(?:UNIQUE\s+)?|DROP\s+)INDEX)\s+CONCURRENTLY\b",
+    re.IGNORECASE,
+)
+
+
+def rehearsed_form(migration: Migration, dialect: Dialects) -> Optional[Migration]:
+    """
+    The form of a generated migration without a transaction that a
+    rehearsal runs inside its transaction: on PostgreSQL, the same
+    statements with CONCURRENTLY taken out of CREATE INDEX and DROP
+    INDEX, which PostgreSQL refuses inside a transaction block, and with
+    the same id. None on another dialect, where such a migration is
+    reported as not rehearsable, and for a callable step.
+    """
+    if dialect is not Dialects.POSTGRES or callable(migration.up):
+        return None
+    down = migration.down
+    if callable(down):
+        return None
+    return Migration(
+        migration.id,
+        up=[_CONCURRENTLY_RE.sub(r"\1", s) for s in _statements(migration.up)],
+        down=(
+            None
+            if down is None
+            else [_CONCURRENTLY_RE.sub(r"\1", s) for s in _statements(down)]
+        ),
+    )
+
+
+def _statements(step: object) -> List[str]:
+    """A generated step's statements; the diff writes a list of strings."""
+    assert isinstance(step, list)
+    return [str(s) for s in step]
 
 
 def asserted_migration(

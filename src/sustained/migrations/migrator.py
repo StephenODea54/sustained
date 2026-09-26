@@ -466,6 +466,7 @@ class Migrator(MigratorBase):
         assert_algorithm: bool = False,
         exact_counts: bool = False,
         preflight: Union[None, str, PreflightCheck] = None,
+        online: bool = False,
     ) -> List[str]:
         """
         Applies pending migrations in order, stopping after the target id
@@ -529,6 +530,13 @@ class Migrator(MigratorBase):
         older_than) sets another age. The read is a snapshot: a session
         may take a lock after it. A dialect without a live preflight
         reads nothing. No session is ended.
+
+        On PostgreSQL, online=True generates the migration in two, as
+        plan_migrations() describes: `<id>` in one transaction with the
+        catalog changes, then `<id>_online` outside a transaction with
+        the backfills, concurrent index builds, validations, and drops.
+        Both apply in that order, and the gates read both. On MySQL and
+        MariaDB, online=True does what assert_algorithm=True does.
         """
         return self._drive(
             runs.up(
@@ -545,7 +553,10 @@ class Migrator(MigratorBase):
                 type_casts=type_casts,
                 unrehearsed=unrehearsed,
                 reads=runs.RunReads(
-                    assert_algorithm, exact_counts, runs.preflight_check(preflight)
+                    assert_algorithm,
+                    exact_counts,
+                    runs.preflight_check(preflight),
+                    online,
                 ),
             )
         )
@@ -562,6 +573,7 @@ class Migrator(MigratorBase):
         type_casts: Optional[dict[str, str]] = None,
         trace: bool = False,
         assert_algorithm: bool = False,
+        online: bool = False,
     ) -> Rehearsal:
         """
         Runs every pending migration up, then back down, inside one
@@ -633,6 +645,13 @@ class Migrator(MigratorBase):
         rehearsal leaves out, and a callable step, keep their predicted
         facts. Tracing raises DialectError on any dialect other than
         POSTGRES, MYSQL, and MSSQL.
+
+        online=True rehearses the migrations up(online=True) generates.
+        The one without a transaction, `<id>_online`, runs inside the
+        rehearsal transaction with CONCURRENTLY taken out of its CREATE
+        INDEX and DROP INDEX statements, which is what PostgreSQL can run
+        there, and it is not traced. The row a passing run records
+        covers the statements up() runs, CONCURRENTLY included.
         """
         return self._drive(
             rehearsing.rehearse(
@@ -647,6 +666,7 @@ class Migrator(MigratorBase):
                 type_casts=type_casts,
                 trace=trace,
                 assert_algorithm=assert_algorithm,
+                online=online,
             )
         )
 
@@ -754,6 +774,55 @@ class Migrator(MigratorBase):
             )
         )
 
+    def plan_migrations(
+        self,
+        models: List[Type["Model"]],
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[dict[str, str]] = None,
+        table_renames: Optional[dict[str, str]] = None,
+        type_casts: Optional[dict[str, str]] = None,
+        ignore_undeclared: bool = True,
+        snapshot: Optional["Snapshot"] = None,
+        assert_algorithm: bool = False,
+        online: bool = False,
+    ) -> List[Migration]:
+        """
+        The migrations up(models=[...]) would generate, as a list that is
+        empty when the schema is up to date. The arguments are plan()'s,
+        and without online the list holds the one migration plan()
+        returns.
+
+        On PostgreSQL, online=True splits the work in two, as
+        sustained.autogenerate.autogenerate_migrations() does. `<id>`
+        runs in one transaction and changes only the catalog: new
+        columns go in nullable and without UNIQUE or REFERENCES, and new
+        foreign keys and checks go in NOT VALID. `<id>_online` runs with
+        transactional=False and holds the backfills, CREATE INDEX
+        CONCURRENTLY, VALIDATE CONSTRAINT, SET NOT NULL through a
+        validated check, and the drops, in that order. Either is left
+        out when it would hold no statement. On MySQL and MariaDB,
+        online=True does what assert_algorithm=True does. Other dialects
+        ignore it.
+        """
+        return self._drive(
+            runs.plan_migrations(
+                self,
+                models,
+                allow_drops=allow_drops,
+                ignore_changed_columns=ignore_changed_columns,
+                migration_id=migration_id,
+                renames=renames,
+                table_renames=table_renames,
+                type_casts=type_casts,
+                ignore_undeclared=ignore_undeclared,
+                snapshot=snapshot,
+                assert_algorithm=assert_algorithm,
+                online=online,
+            )
+        )
+
     def impact(
         self,
         models: Optional[List[Type["Model"]]] = None,
@@ -761,6 +830,7 @@ class Migrator(MigratorBase):
         exact_counts: bool = False,
         live: bool = False,
         older_than: float = 60.0,
+        online: bool = False,
     ) -> "ImpactReport":
         """
         The impact of the run up() would make: every pending migration,
@@ -788,11 +858,22 @@ class Migrator(MigratorBase):
         server, as preflight() reads it, into the report's `preflight`,
         with older_than passed on.
 
+        online=True analyzes the migrations plan_migrations(online=True)
+        generates in place of the one plan() generates.
+
         Raises DialectError on a dialect the analysis does not cover
         yet, and with live=True on a dialect without a live preflight.
         """
         return self._drive(
-            runs.impact(self, models, assert_algorithm, exact_counts, live, older_than)
+            runs.impact(
+                self,
+                models,
+                assert_algorithm,
+                exact_counts,
+                live,
+                older_than,
+                online=online,
+            )
         )
 
     def preflight(
@@ -800,20 +881,24 @@ class Migrator(MigratorBase):
         models: Optional[List[Type["Model"]]] = None,
         older_than: float = 60.0,
         exact_counts: bool = False,
+        online: bool = False,
     ) -> "Preflight":
         """
         The sessions the run up() would make would wait behind on the
         server now: each other session whose table lock, granted or
         asked for, conflicts with a lock a statement of the run takes,
         and each other transaction open older_than seconds or longer.
-        The run is the one impact() analyzes, with models as there. See
+        The run is the one impact() analyzes, with models and online as
+        there. See
         sustained.impact.preflight. Nothing is written, and no session is
         ended.
 
         Raises DialectError on a dialect without a live preflight, which
         PostgreSQL, MySQL, MariaDB, and SQL Server have.
         """
-        return self._drive(runs.preflight(self, models, older_than, exact_counts))
+        return self._drive(
+            runs.preflight(self, models, older_than, exact_counts, online)
+        )
 
     def read_schema(self, models: List[Type["Model"]]) -> "Snapshot":
         """

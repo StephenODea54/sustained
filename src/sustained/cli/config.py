@@ -77,6 +77,14 @@ def _exact_counts(config: ModuleType, args: argparse.Namespace) -> bool:
     )
 
 
+def _online(config: ModuleType, args: argparse.Namespace) -> bool:
+    """
+    Whether the models generate the online form of their migration: the
+    command's --online flag, or the config module's online attribute.
+    """
+    return bool(getattr(args, "online", False) or getattr(config, "online", False))
+
+
 def _preflight(
     config: ModuleType, args: argparse.Namespace
 ) -> Optional[PreflightCheck]:

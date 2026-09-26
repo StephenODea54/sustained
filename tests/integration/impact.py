@@ -15,6 +15,7 @@ from sustained.dialects import Dialects
 from sustained.exceptions import PreflightBlocked
 from sustained.impact import (
     Evidence,
+    Severity,
     Work,
     analyze,
     async_preflight,
@@ -26,6 +27,8 @@ from sustained.impact.rules import profile_for
 from sustained.impact.rules.postgres.trace import observe, sighting_plan, tables_plan
 from sustained.introspect.runner import run_plan
 from sustained.migrations import Migration, Migrator
+from sustained.model import Model
+from sustained.schema import Check, Index, Integer, String
 
 from . import aio_lifecycle, harness
 
@@ -389,6 +392,184 @@ class ImpactCase(unittest.TestCase):
             [s.tables for s in report.statements],
             [s.tables for s in blocking.statements],
         )
+
+    def online_models(self):
+        parts = type(
+            "Parts",
+            (Model,),
+            {
+                "tableName": "it_impact_parts",
+                "tableColumns": {
+                    "id": Integer(primary_key=True),
+                    "code": String(10),
+                },
+                "_dialect": self.DIALECT,
+            },
+        )
+        orders = type(
+            "Orders",
+            (Model,),
+            {
+                "tableName": "it_impact_orders",
+                "tableColumns": {
+                    "id": Integer(primary_key=True),
+                    "note": String(10),
+                    "status": String(10, nullable=False, backfill="new"),
+                    "part_id": Integer(references="it_impact_parts.id"),
+                    "ref": String(10, unique=True),
+                },
+                "indexes": [Index("it_impact_note_ix", "note")],
+                "tableConstraints": [Check("it_impact_note_ck", "note <> ''")],
+                "_dialect": self.DIALECT,
+            },
+        )
+        return [parts, orders]
+
+    def online_schema(self):
+        # PostgreSQL 18 also stores each NOT NULL as a row of contype 'n'.
+        constraints = self.fetch(
+            "SELECT conname, contype, convalidated FROM pg_constraint "
+            "WHERE conrelid = 'it_impact_orders'::regclass AND contype <> 'n' "
+            "ORDER BY conname"
+        )
+        indexes = self.fetch(
+            "SELECT c.relname, i.indisvalid FROM pg_index i "
+            "JOIN pg_class c ON c.oid = i.indexrelid "
+            "WHERE i.indrelid = 'it_impact_orders'::regclass ORDER BY c.relname"
+        )
+        columns = self.fetch(
+            "SELECT attname, attnotnull FROM pg_attribute "
+            "WHERE attrelid = 'it_impact_orders'::regclass AND attnum > 0 "
+            "AND NOT attisdropped ORDER BY attname"
+        )
+        return constraints, indexes, columns
+
+    def test_an_online_run_applies_two_migrations_and_reverts_them(self):
+        self.orders()
+        models = self.online_models()
+        migrator = self.migrator([])
+        applied = migrator.up(
+            models=models, migration_id="002_online_orders", online=True
+        )
+        self.assertEqual(applied, ["002_online_orders", "002_online_orders_online"])
+        self.assertEqual(migrator.plan_migrations(models, online=True), [])
+        self.connection.rollback()
+        constraints, indexes, columns = self.online_schema()
+        self.assertEqual(
+            constraints,
+            [
+                ("it_impact_note_ck", "c", True),
+                ("it_impact_orders_part_id_fkey", "f", True),
+                ("it_impact_orders_pkey", "p", True),
+                ("it_impact_orders_ref_key", "u", True),
+            ],
+        )
+        self.assertEqual(
+            indexes,
+            [
+                ("it_impact_note_ix", True),
+                ("it_impact_orders_pkey", True),
+                ("it_impact_orders_ref_key", True),
+            ],
+        )
+        self.assertIn(("status", True), columns)
+        # On 18, the column's NOT NULL takes the name the direct form gives it.
+        named = self.fetch(
+            "SELECT conname FROM pg_constraint WHERE contype = 'n' "
+            "AND conrelid = 'it_impact_orders'::regclass ORDER BY conname"
+        )
+        self.assertIn(
+            named,
+            [
+                [],
+                [
+                    ("it_impact_orders_id_not_null",),
+                    ("it_impact_orders_status_not_null",),
+                ],
+            ],
+        )
+        self.assertEqual(
+            self.fetch("SELECT count(*) FROM it_impact_orders WHERE status = 'new'"),
+            [(50,)],
+        )
+        # A migrator that never saw the diff reverts both from their rows.
+        reverted = self.migrator([]).down(steps=2)
+        self.assertEqual(reverted, ["002_online_orders_online", "002_online_orders"])
+        self.connection.rollback()
+        constraints, indexes, columns = self.online_schema()
+        self.assertEqual(constraints, [("it_impact_orders_pkey", "p", True)])
+        self.assertEqual(indexes, [("it_impact_orders_pkey", True)])
+        self.assertEqual(columns, [("id", True), ("note", False)])
+        self.assertEqual(self.fetch("SELECT to_regclass('it_impact_parts')"), [(None,)])
+
+    def test_an_online_rehearsal_covers_the_online_run(self):
+        self.orders()
+        models = self.online_models()
+        migrator = self.migrator([])
+        results = migrator.rehearse(
+            models=models, migration_id="002_online_orders", online=True
+        )
+        self.assertTrue(results.ok)
+        self.assertEqual(
+            [(r.id, r.up_ok, r.down_ok) for r in results],
+            [
+                ("002_online_orders", True, True),
+                ("002_online_orders_online", True, True),
+            ],
+        )
+        run = migrator.plan_migrations(
+            models, migration_id="002_online_orders", online=True
+        )
+        self.assertEqual(
+            migrator.run_outcome(migrator.applied_records(), run), "passed"
+        )
+        self.connection.rollback()
+        # The rehearsal rolled everything back.
+        self.assertEqual(self.online_schema()[1], [("it_impact_orders_pkey", True)])
+
+    def test_an_async_online_run_applies_the_same_migrations(self):
+        if self.NAME not in aio_lifecycle.ADAPTERS:
+            self.skipTest(f"{self.NAME} has no async adapter")
+        self.orders()
+        models = self.online_models()
+
+        async def run():
+            adapter, close = await aio_lifecycle.ADAPTERS[self.NAME]()
+            try:
+                migrator = AsyncMigrator(
+                    adapter,
+                    [],
+                    dialect=self.DIALECT,
+                    table="it_impact_migrations",
+                    rehearsal_table="it_impact_rehearsals",
+                )
+                rehearsal = await migrator.rehearse(
+                    models=models, migration_id="002_online_orders", online=True
+                )
+                applied = await migrator.up(
+                    models=models, migration_id="002_online_orders", online=True
+                )
+                return rehearsal, applied, await migrator.down(steps=2)
+            finally:
+                await close()
+
+        rehearsal, applied, reverted = asyncio.run(run())
+        self.assertTrue(rehearsal.ok)
+        self.assertEqual(applied, ["002_online_orders", "002_online_orders_online"])
+        self.assertEqual(reverted, applied[::-1])
+        self.assertEqual(self.online_schema()[1], [("it_impact_orders_pkey", True)])
+
+    def test_online_impact_reads_the_run_as_two_migrations(self):
+        self.orders()
+        report = self.migrator([]).impact(models=self.online_models(), online=True)
+        self.connection.rollback()
+        ddl, online = report.migrations
+        self.assertEqual(online.migration_id, f"{ddl.migration_id}_online")
+        self.assertEqual((ddl.transactional, online.transactional), (True, False))
+        self.assertFalse(online.held_to_commit)
+        # Only the backfill, one UPDATE of every row, is left a danger.
+        dangers = {f.rule for f in report.findings if f.severity is Severity.DANGER}
+        self.assertLessEqual(dangers, {"pg.write_rows"})
 
     def test_each_rule_fixture_does_what_its_rule_predicts(self):
         profile = profile_for(self.DIALECT)

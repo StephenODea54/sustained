@@ -110,10 +110,12 @@ def not_null_route(
     SET NOT NULL through a check: the check goes in NOT VALID, which
     reads no rows, VALIDATE CONSTRAINT reads them under a lock that lets
     reads and writes go on, SET NOT NULL then reads the valid check
-    instead of the rows, and the check is dropped. `set_not_null` is the
+    instead of the rows, and the check is dropped. The drop's intent has
+    `transient=True`, so destructive_statements() does not label it: the
+    check existed only for this route. `set_not_null` is the
     compiler's SET NOT NULL statement for the column.
     """
-    check = constraint_name(bare_table, column, "not_null")
+    check = constraint_name(bare_table, column, "not_null_check")
     check_sql = compiler.quote_ddl_identifier(check)
     column_sql = compiler.quote_ddl_identifier(column)
     return [
@@ -134,6 +136,7 @@ def not_null_route(
             "drop_constraint",
             table,
             name=check,
+            transient=True,
         ),
     ]
 
