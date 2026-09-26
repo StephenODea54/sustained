@@ -12,6 +12,7 @@ from typing import (
     Tuple,
 )
 
+from sustained.dialects import Dialects
 from sustained.impact.context import (
     EngineContext,
 )
@@ -22,6 +23,7 @@ from sustained.impact.model import (
     Severity,
     Work,
 )
+from sustained.impact.recognizer.definitions import not_null_column
 from sustained.impact.rules import Effect, Facts, Outcome, Rule, common
 from sustained.impact.rules.postgres.catalog import (
     ADD_CHECK,
@@ -42,6 +44,7 @@ from sustained.impact.rules.postgres.catalog import (
     DROP_CONSTRAINT,
     RENAME,
     SET_NOT_NULL,
+    SET_NOT_NULL_PROVEN,
     TABLE_CATALOG,
     TABLE_PARAMETERS,
 )
@@ -60,6 +63,7 @@ from sustained.impact.rules.postgres.remedies import (
 from sustained.impact.rules.postgres.statements import (
     foreign_key_effect,
 )
+from sustained.impact.tokens import tokenize
 
 ActionHandler = Callable[[Facts, Action], Outcome]
 
@@ -197,9 +201,32 @@ def _constraint_columns(
     return found.primary_key
 
 
+def _proven_not_null(facts: Facts, table: str, column: str) -> bool:
+    """
+    Whether a valid check of the form `column IS NOT NULL`, which the
+    run added or the schema read holds, proves the column has no NULL.
+    pg_get_constraintdef() writes NOT VALID after a check not yet
+    validated, so a check read with it proves nothing.
+    """
+    if facts.state.proves_not_null(table, column):
+        return True
+    found = facts.context.table(facts.state.original(table))
+    if found is None:
+        return False
+    for expression in found.checks.values():
+        tested = not_null_column(tokenize(expression, Dialects.POSTGRES))
+        if tested is not None and tested.lower() == column.lower():
+            return True
+    return False
+
+
 def _set_not_null(facts: Facts, action: Action) -> Outcome:
     table = common.table(facts)
     column = action.column or "?"
+    if _proven_not_null(facts, table, column):
+        return Outcome(
+            (Effect(SET_NOT_NULL_PROVEN, table, ACCESS_EXCLUSIVE, Work.CATALOG),)
+        )
     check = f"{last_part(table)}_{column}_not_null"[:63]
     t, c, k = ident(table), ident(column), ident(check)
     remedy = (

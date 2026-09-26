@@ -49,8 +49,8 @@ FIXTURE_SCHEMA = Snapshot(
                 )
             },
             indexes={"ix": IntrospectedIndex(("c",), True, name="ix")},
-            checks={"ck": "c > 0"},
-            check_names={"ck": "ck"},
+            checks={"ck": "c > 0", "name_present": "((name IS NOT NULL))"},
+            check_names={"ck": "ck", "name_present": "name_present"},
             name="t",
         ),
     }

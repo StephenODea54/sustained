@@ -445,6 +445,7 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 | `ALTER COLUMN ... TYPE` | `ACCESS EXCLUSIVE` | rewrite | `pg.alter_column_type` |
 | `ALTER COLUMN ... TYPE`, binary coercible | `ACCESS EXCLUSIVE` | catalog | `pg.alter_column_type.binary_coercible` |
 | `SET NOT NULL` | `ACCESS EXCLUSIVE` | scan | `pg.set_not_null` |
+| `SET NOT NULL` on a column a valid `CHECK (c IS NOT NULL)` proves | `ACCESS EXCLUSIVE` | catalog | `pg.set_not_null.proven` |
 | `DROP NOT NULL`, `SET DEFAULT`, `DROP DEFAULT`, `SET STORAGE` | `ACCESS EXCLUSIVE` | catalog | `pg.alter_column.catalog` |
 | `SET STATISTICS` | `SHARE UPDATE EXCLUSIVE` | catalog | `pg.set_statistics` |
 | `ADD CHECK` | `ACCESS EXCLUSIVE` | scan | `pg.add_check` |
@@ -488,7 +489,7 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 
 A type change is binary coercible when PostgreSQL skips the rewrite: `varchar(n)` to a longer `varchar` or to `text`, `numeric(p,s)` to a wider precision at the same scale, and `timestamp` to `timestamptz` when the `TimeZone` setting is UTC. The rule needs the column's current type, which a generated statement's intent gives, and which the schema read gives for a hand-written statement. Without either, the change reads as a rewrite with confidence `likely`. Without the `TimeZone` setting, `timestamp` to `timestamptz` also reads as a rewrite with confidence `likely`.
 
-A `SET NOT NULL` skips its scan when a valid check constraint already proves the column holds no NULL. The remedy for a scan on a populated table is that route: add the check `NOT VALID`, validate it, set `NOT NULL`, and drop the check.
+A `SET NOT NULL` skips its scan when a valid check constraint already proves the column holds no NULL. The remedy for a scan on a populated table is that route: add the check `NOT VALID`, validate it, set `NOT NULL`, and drop the check. The analysis reads the route as catalog work: a check whose expression is `c IS NOT NULL`, with or without parentheses around it, proves the column once the run adds it without `NOT VALID` or validates it, until the run drops the check or the column. A check the schema read holds proves it too, unless PostgreSQL reports it `NOT VALID`.
 
 The tables at the other end of a foreign key come from the schema read. Without it, a `DROP TABLE` or a `DROP CONSTRAINT` reports only the table it names, and a `DROP INDEX` reports its table as `(table of index ix)`.
 

@@ -59,6 +59,11 @@ SET_NOT_NULL = Rule(
     _ALTER_TABLE,
     ("ALTER TABLE t ALTER COLUMN c SET NOT NULL",),
 )
+SET_NOT_NULL_PROVEN = Rule(
+    "pg.set_not_null.proven",
+    _ALTER_TABLE,
+    ("ALTER TABLE t ALTER COLUMN name SET NOT NULL",),
+)
 COLUMN_CATALOG = Rule(
     "pg.alter_column.catalog",
     _ALTER_TABLE,
@@ -225,7 +230,9 @@ WRITE_ROWS = Rule(
     ("UPDATE t SET c = 0 WHERE c IS NULL", "DELETE FROM t WHERE c < 0"),
 )
 INSERT_ROWS = Rule(
-    "pg.insert", DOCS + "sql-insert.html", ("INSERT INTO t (id, c) VALUES (100, 100)",)
+    "pg.insert",
+    DOCS + "sql-insert.html",
+    ("INSERT INTO t (id, c, name) VALUES (100, 100, 'n')",),
 )
 REINDEX = Rule("pg.reindex", DOCS + "sql-reindex.html", ("REINDEX TABLE t",))
 REINDEX_CONCURRENTLY = Rule(
@@ -282,6 +289,7 @@ FIXTURE_SCHEMA = (
     "INSERT INTO t SELECT g, g, 'n' || g, 1 FROM generate_series(1, 20) g",
     "CREATE UNIQUE INDEX ix ON t (c)",
     "ALTER TABLE t ADD CONSTRAINT ck CHECK (c > 0) NOT VALID",
+    "ALTER TABLE t ADD CONSTRAINT name_present CHECK (name IS NOT NULL)",
     "CREATE FUNCTION f() RETURNS trigger LANGUAGE plpgsql "
     "AS 'BEGIN RETURN NEW; END'",
     "CREATE TRIGGER tr BEFORE UPDATE ON t FOR EACH ROW EXECUTE FUNCTION f()",

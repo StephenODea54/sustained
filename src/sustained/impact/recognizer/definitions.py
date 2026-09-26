@@ -33,6 +33,27 @@ from sustained.impact.tokens import (
 )
 
 
+def not_null_column(tokens: Sequence[Token]) -> Optional[str]:
+    """
+    The column a check expression of the form `column IS NOT NULL`
+    tests, with any parentheses around it, or None for another
+    expression.
+    """
+    while (
+        len(tokens) > 2
+        and tokens[0].kind == PUNCT
+        and tokens[0].text == "("
+        and tokens[-1].kind == PUNCT
+        and tokens[-1].text == ")"
+    ):
+        tokens = tokens[1:-1]
+    if len(tokens) != 4 or tokens[0].name is None:
+        return None
+    if not all(t.is_word(w) for t, w in zip(tokens[1:], ("IS", "NOT", "NULL"))):
+        return None
+    return tokens[0].name
+
+
 class Definitions(Cursor):
     """The column and constraint definitions of CREATE TABLE and ALTER TABLE."""
 
@@ -69,7 +90,9 @@ class Definitions(Cursor):
             self.foreign_key_tail()
         elif self.accept("CHECK"):
             options["constraint"] = "check"
-            self.group()
+            tested = not_null_column(self.group())
+            if tested is not None:
+                options["not_null"] = tested
         elif self.accept("EXCLUDE"):
             options["constraint"] = "exclude"
             if self.accept("USING"):

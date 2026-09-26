@@ -282,5 +282,86 @@ class PartitionTestCase(unittest.TestCase):
         self.assertEqual(newer.findings, ())
 
 
+class ProvenNotNullTestCase(unittest.TestCase):
+    CHECK = "ALTER TABLE t ADD CONSTRAINT k CHECK (c IS NOT NULL)"
+    SET = "ALTER TABLE t ALTER COLUMN c SET NOT NULL"
+
+    def work(self, *statements, context=None):
+        """The work and rule of the last statement of a run."""
+        found = analyze(list(statements), PG, context).statements[-1]
+        (only,) = found.tables
+        return only.work, only.rule
+
+    def test_a_valid_check_the_run_added_proves_it(self):
+        self.assertEqual(
+            self.work(self.CHECK, self.SET),
+            (Work.CATALOG, "pg.set_not_null.proven"),
+        )
+
+    def test_a_not_valid_check_proves_it_once_validated(self):
+        added = f"{self.CHECK} NOT VALID"
+        self.assertEqual(self.work(added, self.SET), (Work.SCAN, "pg.set_not_null"))
+        self.assertEqual(
+            self.work(added, "ALTER TABLE t VALIDATE CONSTRAINT k", self.SET),
+            (Work.CATALOG, "pg.set_not_null.proven"),
+        )
+
+    def test_a_dropped_check_proves_nothing(self):
+        for drop in (
+            "ALTER TABLE t DROP CONSTRAINT k",
+            "ALTER TABLE t DROP COLUMN c",
+        ):
+            with self.subTest(drop):
+                self.assertEqual(
+                    self.work(self.CHECK, drop, self.SET),
+                    (Work.SCAN, "pg.set_not_null"),
+                )
+
+    def test_a_check_of_another_column_or_table_proves_nothing(self):
+        self.assertEqual(
+            self.work("ALTER TABLE t ADD CHECK (d IS NOT NULL)", self.SET),
+            (Work.SCAN, "pg.set_not_null"),
+        )
+        self.assertEqual(
+            self.work("ALTER TABLE u ADD CHECK (c IS NOT NULL)", self.SET),
+            (Work.SCAN, "pg.set_not_null"),
+        )
+
+    def test_the_check_follows_a_rename(self):
+        self.assertEqual(
+            self.work(
+                self.CHECK,
+                "ALTER TABLE t RENAME TO t2",
+                "ALTER TABLE t2 ALTER COLUMN c SET NOT NULL",
+            ),
+            (Work.CATALOG, "pg.set_not_null.proven"),
+        )
+
+    def test_a_valid_check_in_the_schema_proves_it(self):
+        self.assertEqual(
+            self.work(
+                "ALTER TABLE t ALTER COLUMN name SET NOT NULL",
+                context=FIXTURE_CONTEXT,
+            ),
+            (Work.CATALOG, "pg.set_not_null.proven"),
+        )
+
+    def test_a_not_valid_check_in_the_schema_proves_nothing(self):
+        schema = Snapshot(
+            {
+                "t": IntrospectedTable(
+                    {"c": IntrospectedColumn("integer", True, False)},
+                    checks={"k": "((c IS NOT NULL)) NOT VALID"},
+                    check_names={"k": "k"},
+                    name="t",
+                )
+            }
+        )
+        context = EngineContext("postgres", (18,), schema=schema)
+        self.assertEqual(
+            self.work(self.SET, context=context), (Work.SCAN, "pg.set_not_null")
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

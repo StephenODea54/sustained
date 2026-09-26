@@ -9,6 +9,9 @@ The rules read each statement against what came before it in the run:
   name, so its size is the size of the table it was.
 - An index created earlier in the run names its table, which a later
   `DROP INDEX` leaves unsaid.
+- A check of the form `column IS NOT NULL` that the run added, and
+  validated or added without `NOT VALID`, proves the column holds no
+  NULL, so a later `SET NOT NULL` on Postgres reads no rows.
 - A lock timeout set earlier covers the statements after it, as far as
   its scope reaches (`TimeoutScope`).
 - Session settings, such as MySQL's `foreign_key_checks`, change what
@@ -22,9 +25,9 @@ Names compare case-insensitively, as the recognizer's docstring asks.
 from __future__ import annotations
 
 import re
-from typing import Callable, Dict, Optional, Set
+from typing import Callable, Dict, Optional, Set, Tuple
 
-from sustained.impact.model import ParsedStatement
+from sustained.impact.model import Action, ParsedStatement
 
 # A timeout of zero, however spelled, turns the timeout off, and so
 # does DEFAULT, which falls back to the server's setting.
@@ -103,6 +106,9 @@ class RunState:
         self.created: Set[str] = set()
         self.renamed: Dict[str, str] = {}
         self.indexes: Dict[str, str] = {}
+        # The checks of the form `column IS NOT NULL` the run added, by
+        # table and check name: the column, and whether the check is valid.
+        self.not_null_checks: Dict[str, Dict[str, Tuple[str, bool]]] = {}
         self.settings: Dict[str, str] = {}
         self.timeouts = TimeoutScope()
 
@@ -117,6 +123,14 @@ class RunState:
     def index_table(self, index: str) -> Optional[str]:
         """The table of an index the run created, or None."""
         return self.indexes.get(index.lower())
+
+    def proves_not_null(self, table: str, column: str) -> bool:
+        """
+        Whether a valid check the run added proves the column holds no
+        NULL.
+        """
+        checks = self.not_null_checks.get(table.lower(), {})
+        return (column.lower(), True) in checks.values()
 
     def record(self, parsed: ParsedStatement, transactional: bool) -> None:
         """Takes in what the statement changes, after the rules read it."""
@@ -134,15 +148,35 @@ class RunState:
                 self.rename(str(old), str(new))
         elif kind == "alter_table" and parsed.table:
             for action in parsed.actions:
+                self.record_checks(parsed.table, action)
                 if action.kind == "rename_to":
                     self.rename(parsed.table, str(action.options["new"]))
         elif kind == "set":
             self.record_settings(parsed, transactional)
 
+    def record_checks(self, table: str, action: Action) -> None:
+        """Takes in the `IS NOT NULL` checks an ALTER TABLE action changes."""
+        checks = self.not_null_checks.setdefault(table.lower(), {})
+        name = str(action.options.get("name") or "").lower()
+        if action.kind == "add_constraint" and action.options.get("not_null"):
+            column = str(action.options["not_null"]).lower()
+            checks[name] = (column, not action.options.get("not_valid"))
+        elif action.kind == "validate_constraint" and name in checks:
+            checks[name] = (checks[name][0], True)
+        elif action.kind == "drop_constraint":
+            checks.pop(name, None)
+        elif action.kind == "drop_column" and action.column:
+            dropped = action.column.lower()
+            for check, (column, _) in list(checks.items()):
+                if column == dropped:
+                    del checks[check]
+
     def rename(self, old: str, new: str) -> None:
         # A rename keeps the old schema when the new name has none.
         if "." in old and "." not in new:
             new = f"{old.rsplit('.', 1)[0]}.{new}"
+        if old.lower() in self.not_null_checks:
+            self.not_null_checks[new.lower()] = self.not_null_checks.pop(old.lower())
         if old.lower() in self.created:
             self.created.discard(old.lower())
             self.created.add(new.lower())

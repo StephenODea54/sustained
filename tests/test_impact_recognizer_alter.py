@@ -164,6 +164,9 @@ class AlterTableTestCase(RecognizerTestCase):
                 {"references": "app.u", "not_valid": True},
             ),
             ("ADD CHECK (a > 0) NOT VALID", "check", {"not_valid": True}),
+            ("ADD CHECK (a IS NOT NULL)", "check", {"not_null": "a"}),
+            ("ADD CHECK (((a IS NOT NULL)))", "check", {"not_null": "a"}),
+            ('ADD CHECK ("A" IS NOT NULL)', "check", {"not_null": "A"}),
             (
                 "ADD CONSTRAINT ex EXCLUDE USING gist (r WITH &&)",
                 "exclude",
@@ -177,6 +180,18 @@ class AlterTableTestCase(RecognizerTestCase):
                 self.assertEqual(added.options["constraint"], constraint)
                 for key, value in expected.items():
                     self.assertEqual(added.options[key], value)
+
+    def test_a_check_of_another_expression_names_no_column(self):
+        for expression in (
+            "a > 0",
+            "a IS NULL",
+            "a IS NOT NULL AND b IS NOT NULL",
+            "(a) OR (b) IS NOT NULL",
+            "f(a) IS NOT NULL",
+        ):
+            with self.subTest(expression):
+                added = action(f"ALTER TABLE t ADD CHECK ({expression})")
+                self.assertNotIn("not_null", added.options)
 
     def test_mysql_keys_and_indexes(self):
         unique = action("ALTER TABLE t ADD UNIQUE KEY uq_a (a)", MYSQL)
