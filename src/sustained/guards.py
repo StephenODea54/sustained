@@ -481,13 +481,15 @@ def no_rewrite(
 
 def lock_timeout_required() -> Guard:
     """
-    Blocks a statement whose lock would queue reads or writes with no
+    Blocks a statement whose lock would queue other sessions with no
     lock timeout in scope: the statements the analysis gives a
-    `<profile>.lock_timeout` finding, such as `pg.lock_timeout`. It
-    reads timeout scopes as `no_lock_without_timeout()` does, and covers
-    every such lock where that rule reads only ALTER TABLE and DROP
-    TABLE. A timeout the connection already has covers the whole run
-    when the migrator read it.
+    `<profile>.lock_timeout` finding, such as `pg.lock_timeout` or, on
+    MySQL, `mysql.lock_timeout` for a statement with no
+    `lock_wait_timeout` in scope. On Postgres it reads timeout scopes as
+    `no_lock_without_timeout()` does, and covers every such lock where
+    that rule reads only ALTER TABLE and DROP TABLE. A timeout the
+    connection already has covers the whole run when the migrator read
+    it.
     """
 
     def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:

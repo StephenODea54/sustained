@@ -3,7 +3,7 @@ rehearsal runs on a scratch database."""
 
 from sustained.dialects import Dialects
 
-from . import lifecycle, queries, transactions, writes
+from . import impact_innodb, lifecycle, queries, transactions, writes
 
 
 class MysqlLifecycle(lifecycle.ServerCase):
@@ -27,3 +27,8 @@ class MysqlWrites(writes.WritesCase):
 class MysqlTransactions(transactions.TransactionsCase):
     NAME = "mysql"
     DIALECT = Dialects.MYSQL
+
+
+class MysqlImpact(impact_innodb.InnodbImpactCase):
+    NAME = "mysql"
+    PROFILE = "mysql"

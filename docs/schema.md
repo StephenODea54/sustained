@@ -794,7 +794,7 @@ Both commands exit 3. There is no `--force` flag, so to run the statement you fi
 | `max_statements(n)` | block | Every statement past the limit |
 | `max_blocking(limit, over_rows=None, over_bytes=None)` | block | A statement that blocks more than `limit` on a table past the size thresholds |
 | `no_rewrite(over_rows=None, over_bytes=None)` | block | A statement that rewrites a table past the size thresholds |
-| `lock_timeout_required()` | block | A lock that would queue reads or writes with no lock timeout in scope |
+| `lock_timeout_required()` | block | A lock that would queue other sessions with no lock timeout in scope: `lock_timeout` on PostgreSQL, `lock_wait_timeout` on MySQL and MariaDB |
 | `no_unknown_impact()` | block | A statement the impact analysis cannot read |
 
 Every one is a factory, so they all read the same at the call site. `no_table_rewrite()` warns where the others block, because whether a change rewrites the table depends on the engine, its version, and whether the two types coerce. Read it against your own engine rather than trusting it.

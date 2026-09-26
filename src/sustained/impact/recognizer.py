@@ -158,6 +158,7 @@ ACTION_KINDS = frozenset(
         "engine",
         "convert_charset",
         "force",
+        "table_option",
     }
 )
 
@@ -1264,6 +1265,17 @@ class _Parser:
     def action_force(self) -> Action:
         return Action("force", None, _frozen({}))
 
+    def action_table_option(self) -> Action:
+        """
+        A MySQL table option, such as COMMENT = 'text' or AUTO_INCREMENT
+        = 100: name, the option in lower case, and value.
+        """
+        name = self.tokens[self.pos - 1].value.lower()
+        self.accept_op("=")
+        return Action(
+            "table_option", None, _frozen({"name": name, "value": self.value()})
+        )
+
     # --- column definitions --------------------------------------------
 
     def column_action(self, kind: str) -> Action:
@@ -1306,7 +1318,8 @@ class _Parser:
         statement leaves it unsaid), default, default_volatility,
         default_function, default_certain, generated (`stored`,
         `virtual`, or `identity`), identity, references, unique,
-        primary_key, check, and position (MySQL FIRST or AFTER).
+        primary_key, check, position (MySQL FIRST or AFTER), and comment
+        when the definition gives one.
         """
         type_tokens = self.column_type()
         options: _Options = {
@@ -1418,7 +1431,7 @@ class _Parser:
         elif self.accept_any("AUTO_INCREMENT", "AUTOINCREMENT"):
             options["identity"] = True
         elif self.accept("COMMENT"):
-            self.value()
+            options["comment"] = self.value()
         elif self.accept("FIRST"):
             options["position"] = "first"
         elif self.accept("AFTER"):
@@ -1687,7 +1700,9 @@ class _Parser:
         scope = self.accept_any("SESSION", "LOCAL", "GLOBAL", "PERSIST", "PERSIST_ONLY")
         settings = [self.assignment(scope)]
         while self.accept_punct(","):
-            settings.append(self.assignment(None))
+            # MySQL applies a leading GLOBAL or SESSION to every
+            # assignment after it that names no scope of its own.
+            settings.append(self.assignment(scope))
         return ParsedStatement("set", options=_frozen({"settings": tuple(settings)}))
 
     def assignment(self, scope: Optional[str]) -> Tuple[str, str, str]:
@@ -1836,6 +1851,10 @@ _ACTIONS: Dict[str, _ActionHandler] = {
     "DISABLE": _Parser.action_disable,
     "ENGINE": _Parser.action_engine,
     "CONVERT": _Parser.action_convert,
+    "COMMENT": _Parser.action_table_option,
+    "AUTO_INCREMENT": _Parser.action_table_option,
+    "ROW_FORMAT": _Parser.action_table_option,
+    "KEY_BLOCK_SIZE": _Parser.action_table_option,
     "FORCE": _Parser.action_force,
 }
 

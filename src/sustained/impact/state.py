@@ -12,7 +12,9 @@ The rules read each statement against what came before it in the run:
 - A lock timeout set earlier covers the statements after it, as far as
   its scope reaches (`TimeoutScope`).
 - Session settings, such as MySQL's `foreign_key_checks`, change what
-  later statements do.
+  later statements do. A `SET GLOBAL` or `SET PERSIST` leaves the
+  session's own value as it was, and so does a user variable, so none
+  of them counts.
 
 Names compare case-insensitively, as the recognizer's docstring asks.
 """
@@ -20,7 +22,7 @@ Names compare case-insensitively, as the recognizer's docstring asks.
 from __future__ import annotations
 
 import re
-from typing import Dict, Optional, Set
+from typing import Callable, Dict, Optional, Set
 
 from sustained.impact.model import ParsedStatement
 
@@ -29,6 +31,9 @@ from sustained.impact.model import ParsedStatement
 _NO_TIMEOUT_RE = re.compile(r"(0+(\.0*)?\s*(us|ms|s|min|h|d)?|default)", re.IGNORECASE)
 
 _UNSET = object()
+
+# The SET scopes that leave the session's own value unchanged.
+_NOT_THE_SESSION = frozenset({"global", "persist", "persist_only", "user"})
 
 
 def sets_a_timeout(value: str) -> bool:
@@ -81,11 +86,20 @@ class RunState:
     """
     The facts a run has built up so far. `timeout_setting` is the lower
     case name of the engine's lock timeout setting, such as
-    `lock_timeout`.
+    `lock_timeout`, and `bounded` says whether a value of it bounds the
+    wait. `local_scope` is False on an engine where `SET LOCAL` means
+    the session, as on MySQL.
     """
 
-    def __init__(self, timeout_setting: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        timeout_setting: Optional[str] = None,
+        bounded: Callable[[str], bool] = sets_a_timeout,
+        local_scope: bool = True,
+    ) -> None:
         self.timeout_setting = timeout_setting
+        self.bounded = bounded
+        self.local_scope = local_scope
         self.created: Set[str] = set()
         self.renamed: Dict[str, str] = {}
         self.indexes: Dict[str, str] = {}
@@ -136,6 +150,10 @@ class RunState:
 
     def record_settings(self, parsed: ParsedStatement, transactional: bool) -> None:
         for scope, name, value in parsed.items("settings"):
+            if scope in _NOT_THE_SESSION:
+                continue
+            if scope == "local" and not self.local_scope:
+                scope = "session"
             self.settings[name] = value
             if name == self.timeout_setting:
-                self.timeouts.set(scope, transactional, sets_a_timeout(value))
+                self.timeouts.set(scope, transactional, self.bounded(value))

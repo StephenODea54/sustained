@@ -34,7 +34,12 @@ JsonValue = Union[
 ]
 """What the data functions return: what json.dumps accepts."""
 
-_TITLES = {"postgres": "PostgreSQL"}
+_TITLES = {"postgres": "PostgreSQL", "mysql": "MySQL", "mariadb": "MariaDB"}
+
+
+def title(profile: str) -> str:
+    """A profile's engine as people write it, such as `PostgreSQL`."""
+    return _TITLES.get(profile, profile)
 
 
 def statement_data(impact: StatementImpact) -> Dict[str, JsonValue]:
@@ -90,6 +95,7 @@ def _migration_data(migration: MigrationImpact) -> Dict[str, JsonValue]:
     return {
         "id": migration.migration_id,
         "transactional": migration.transactional,
+        "held_to_commit": migration.held_to_commit,
         "statements": [
             {"sql": s.statement, **statement_data(s)} for s in migration.statements
         ],
@@ -165,7 +171,7 @@ def _finding_lines(finding: Finding, indent: str) -> List[str]:
 
 
 def _window_lines(migration: MigrationImpact, indent: str = "  ") -> List[str]:
-    if not migration.transactional:
+    if not migration.held_to_commit:
         return []
     lines = []
     for window in migration.windows:
@@ -236,10 +242,10 @@ def summary(report: ImpactReport) -> str:
     unknown = sum(1 for s in report.statements if s.confidence is Confidence.UNKNOWN)
     if unknown:
         parts.append(f"{unknown} unknown")
-    title = _TITLES.get(report.profile, report.profile)
+    engine = title(report.profile)
     version = version_text(report.version)
     assumed = "" if "version" in report.read else "assumed "
-    basis = f"{report.evidence} ({assumed}{title} {version})"
+    basis = f"{report.evidence} ({assumed}{engine} {version})"
     return f"{', '.join(parts)}. Evidence: {basis}"
 
 

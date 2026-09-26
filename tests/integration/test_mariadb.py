@@ -2,7 +2,7 @@
 
 from sustained.dialects import Dialects
 
-from . import lifecycle, queries, transactions, writes
+from . import impact_innodb, lifecycle, queries, transactions, writes
 
 
 class MariadbLifecycle(lifecycle.ServerCase):
@@ -26,3 +26,8 @@ class MariadbWrites(writes.WritesCase):
 class MariadbTransactions(transactions.TransactionsCase):
     NAME = "mariadb"
     DIALECT = Dialects.MYSQL
+
+
+class MariadbImpact(impact_innodb.InnodbImpactCase):
+    NAME = "mariadb"
+    PROFILE = "mariadb"

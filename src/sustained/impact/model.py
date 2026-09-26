@@ -313,7 +313,10 @@ class MigrationImpact(NamedTuple):
     """
     The impact of one migration: its statements, the locks it holds,
     the windows those locks make, and findings about the migration as a
-    whole, such as a deadlock risk.
+    whole, such as a deadlock risk. `held_to_commit` says whether the
+    locks last until the migration commits, which needs a transaction
+    and an engine whose DDL does not commit on its own; otherwise each
+    statement is a window of its own.
     """
 
     migration_id: Optional[str]
@@ -322,6 +325,7 @@ class MigrationImpact(NamedTuple):
     locks: Tuple[Lock, ...] = ()
     windows: Tuple[Window, ...] = ()
     findings: Tuple[Finding, ...] = ()
+    held_to_commit: bool = False
 
 
 class ImpactReport(NamedTuple):

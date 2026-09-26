@@ -81,9 +81,9 @@ class ReportTestCase(unittest.TestCase):
 
     def test_a_dialect_without_rules_is_refused(self):
         self.assertTrue(supported(PG))
-        self.assertFalse(supported(Dialects.MYSQL))
+        self.assertFalse(supported(Dialects.MSSQL))
         with self.assertRaises(ValueError):
-            analyze(["DROP TABLE a"], Dialects.MYSQL)
+            analyze(["DROP TABLE a"], Dialects.MSSQL)
 
 
 class SeverityTestCase(unittest.TestCase):

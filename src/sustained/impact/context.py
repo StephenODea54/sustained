@@ -47,15 +47,27 @@ if TYPE_CHECKING:
 FLOORS: Mapping[str, Tuple[int, ...]] = MappingProxyType(
     {
         "postgres": (12,),
+        "mysql": (8, 0, 19),
+        "mariadb": (10, 6),
     }
 )
 
 
 class TableStats(NamedTuple):
-    """One table's size, as estimates; None where it was not read."""
+    """
+    One table's size, as estimates, and the storage facts the InnoDB
+    rules read; None where it was not read. `row_format` is the InnoDB
+    row format in upper case, such as `DYNAMIC` or `COMPRESSED`.
+    `row_versions` counts the instant column changes MySQL has recorded
+    since the table was last rebuilt, and `fulltext` says whether the
+    table has a FULLTEXT index.
+    """
 
     rows: Optional[int] = None
     bytes: Optional[int] = None
+    row_format: Optional[str] = None
+    row_versions: Optional[int] = None
+    fulltext: Optional[bool] = None
 
 
 class EngineContext(NamedTuple):

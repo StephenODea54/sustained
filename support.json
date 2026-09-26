@@ -47,7 +47,7 @@
         "dsn_env": "SUSTAINED_TEST_MYSQL_LATEST_DSN",
         "dsn": "mysql://root:sustained@127.0.0.1:53406/sustained"
       },
-      "covers": ["queries", "writes", "transactions", "migrations"],
+      "covers": ["queries", "writes", "transactions", "migrations", "impact"],
       "note": "No transactional DDL, so rehearse needs scratch=True. ALTER TABLE DROP CONSTRAINT sets the floor."
     },
     {
@@ -70,7 +70,7 @@
         "dsn_env": "SUSTAINED_TEST_MARIADB_LATEST_DSN",
         "dsn": "mysql://root:sustained@127.0.0.1:53407/sustained"
       },
-      "covers": ["queries", "writes", "transactions", "migrations"],
+      "covers": ["queries", "writes", "transactions", "migrations", "impact"],
       "note": "Same dialect as MySQL. SKIP LOCKED sets the floor. JSON columns read back through their json_valid check."
     },
     {

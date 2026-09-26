@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Impact reference
-description: "Reference for sustained.impact: analyze(), read_context(), the impact attached for guards, rehearse(trace=True), the ImpactReport model, EngineContext, thresholds, and the report's text and JSON forms."
+description: "Reference for sustained.impact: analyze(), read_context(), the rule profiles, the impact attached for guards, rehearse(trace=True), the ImpactReport model, EngineContext, thresholds, and the report's text and JSON forms."
 ---
 
 These names live in `sustained.impact`, except where a section names another module.
@@ -17,14 +17,22 @@ analyze(statements, dialect, context=None, thresholds=Thresholds()) -> ImpactRep
 
 The impact of the statements a run would apply, in run order. `statements` is the same `Sequence[str]` guards receive. A `MigrationStatement` names its migration and its transaction flag, and consecutive statements with the same id and flag form one migration. A plain `str` reads as a statement of an unnamed migration inside a transaction.
 
-Without a `context`, the rules assume the dialect's support floor, and the report's evidence is `static`. `analyze()` connects to no database. It raises `ValueError` for a dialect without impact rules.
+Without a `context`, the rules assume the dialect's support floor, and the report's evidence is `static`. The context's `profile` picks the rules on a dialect with more than one profile: `mysql` or `mariadb` on `Dialects.MYSQL`. Without a context, MySQL is assumed, and the first migration gets an `impact.assumed_profile` finding. `analyze()` connects to no database. It raises `ValueError` for a dialect without impact rules.
 
 ```python
 supported(dialect) -> bool
 ```
 {: .sig #supported}
 
-Whether the analysis has rules for the dialect. Only `Dialects.POSTGRES` has rules.
+Whether the analysis has rules for the dialect. `Dialects.POSTGRES` and `Dialects.MYSQL` have rules.
+
+```python
+profile_for(dialect, name=None) -> Profile | None
+profiles_for(dialect) -> tuple[Profile, ...]
+```
+{: .sig #profile_for}
+
+These live in `sustained.impact.rules`. `profile_for()` returns the dialect's rule profile named `name`, or its first profile when `name` is `None` or names none of them, and `None` for a dialect without rules. `profiles_for()` returns every profile of the dialect, the one assumed without a server first: `postgres` on `Dialects.POSTGRES`, and `mysql` then `mariadb` on `Dialects.MYSQL`.
 
 ## `read_context()`
 
@@ -34,7 +42,7 @@ await async_read_context(adapter, dialect) -> EngineContext
 ```
 {: .sig #read_context}
 
-The server facts the dialect's rules read, from a blocking connection or an async adapter. On PostgreSQL that is the version from `server_version_num`, the `TimeZone` and `lock_timeout` settings, each table's estimated rows and total bytes, and the schema of the connection's own schema. Nothing is written.
+The server facts the dialect's rules read, from a blocking connection or an async adapter. On PostgreSQL that is the version from `server_version_num`, the `TimeZone` and `lock_timeout` settings, each table's estimated rows and total bytes, and the schema of the connection's own schema. On MySQL and MariaDB it is `VERSION()`, which also sets the context's profile to `mysql` or `mariadb`, the `foreign_key_checks` and `lock_wait_timeout` settings, each table's estimated rows, bytes, and row format, which tables have a FULLTEXT index, on MySQL 8.0.29 and later each table's instant row versions, and the schema of the current database. Nothing is written.
 
 Each statement runs inside a savepoint. A statement that fails leaves its facts out of `read`, and the read goes on. Both raise `ValueError` for a dialect without impact rules.
 
@@ -91,7 +99,7 @@ ImpactReport(profile, version, evidence, migrations, read=frozenset())
 ```
 {: .sig}
 
-`profile` is the rule profile, such as `'postgres'`. `version` is the server version the rules assumed, as a tuple of ints. `evidence` is what the report rests on. `migrations` is a tuple of `MigrationImpact`, in run order. `read` is the context's `read`: the facts that came from the server.
+`profile` is the rule profile: `'postgres'`, `'mysql'`, or `'mariadb'`. `version` is the server version the rules assumed, as a tuple of ints. `evidence` is what the report rests on. `migrations` is a tuple of `MigrationImpact`, in run order. `read` is the context's `read`: the facts that came from the server.
 
 | Member | Returns |
 | --- | --- |
@@ -102,11 +110,11 @@ ImpactReport(profile, version, evidence, migrations, read=frozenset())
 ## `MigrationImpact`
 
 ```python
-MigrationImpact(migration_id, transactional, statements, locks=(), windows=(), findings=())
+MigrationImpact(migration_id, transactional, statements, locks=(), windows=(), findings=(), held_to_commit=False)
 ```
 {: .sig}
 
-One migration: its id, or `None` for statements with no migration, its transaction flag, a tuple of `StatementImpact`, the `Lock`s it holds, the `Window`s those locks make, and findings about the migration as a whole, such as `window.held` and `window.lock_order`.
+One migration: its id, or `None` for statements with no migration, its transaction flag, a tuple of `StatementImpact`, the `Lock`s it takes, the `Window`s those locks make, and findings about the migration as a whole, such as `window.held` and `window.lock_order`. `held_to_commit` is true when the locks last until the migration commits: inside a transaction, on an engine whose DDL does not commit on its own. Otherwise each statement is a window of its own.
 
 `Lock(table, lock, blocks, statement)` is one lock that blocks something. `statement` is the position of the statement that took it, counting from 1 within the migration.
 
@@ -142,7 +150,10 @@ The analysis itself raises these findings:
 | `impact.unknown` | `info` | The recognizer could not read the statement. The message gives the reason. |
 | `impact.intent_mismatch` | `warn` | A generated statement's text reads as something other than its intent. The analysis follows the text. |
 | `impact.mismatch` | `warn` | A traced rehearsal saw the server take another lock than the rules predicted, copy a file the rules did not predict, or copy none where they predicted a rewrite or an index build. |
+| `impact.assumed_profile` | `info` | No context was given on a dialect with more than one profile, so the first was assumed. |
 | `pg.lock_timeout` | `warn` | A lock that blocks writes or more waits with no `lock_timeout` in scope, from a `SET` earlier in the run or from the connection's settings. |
+| `mysql.lock_timeout`, `mariadb.lock_timeout` | `warn` | A statement that takes the exclusive metadata lock runs with no `lock_wait_timeout` below a day in scope. |
+| `mysql.refused`, `mariadb.refused` | `warn` | The statement spells an `ALGORITHM` or `LOCK` the change cannot run with, so the server refuses it. |
 | `window.held` | `warn` | A table stays blocked until the commit across heavier work from a later statement. |
 | `window.lock_order` | `warn` | One migration blocks reads and writes on more than one table at once. |
 
@@ -175,9 +186,9 @@ EngineContext(profile, version, edition=None, settings={}, tables={}, schema=Non
 ```
 {: .sig}
 
-The server facts the rules read: the profile, the version as a tuple of ints, the edition, settings such as `TimeZone` and `lock_timeout`, a mapping of lower case table name to `TableStats`, the schema `Snapshot`, and `read`, the names of the facts that came from a server: `version`, `settings`, `sizes`, and `schema`. With `read` empty, the report's evidence is `static`, and `catalog` otherwise. `read_context()` builds one from a connection.
+The server facts the rules read: the profile, the version as a tuple of ints, the edition, settings such as `TimeZone` and `lock_timeout`, a mapping of lower case table name to `TableStats`, the schema `Snapshot`, and `read`, the names of the facts that came from a server: `version`, `settings`, `sizes`, and `schema`, and on MySQL and MariaDB also `fulltext` and `row_versions`. With `read` empty, the report's evidence is `static`, and `catalog` otherwise. `read_context()` builds one from a connection.
 
-`read_context()` keys each table as `schema.table`, and also by its bare name when the search path finds it under that name. `stats(table)` returns a table's `TableStats`, or unknown stats for a table the read did not see.
+`read_context()` keys each table as `schema.table`, and also by its bare name when the search path finds it under that name, or on MySQL and MariaDB when it is in the current database. `stats(table)` returns a table's `TableStats`, or unknown stats for a table the read did not see.
 
 These methods read the schema, and return `None` or an empty tuple when the schema was not read or does not hold what they look for. A dotted name finds a table by its last part, since the read covers one schema.
 
@@ -190,7 +201,7 @@ These methods read the schema, and return `None` or an empty tuple when the sche
 | `referenced_by(table, columns=None)` | The other tables whose foreign keys point at the table; with `columns`, only the keys that point at one of them |
 | `foreign_key_target(table, name)` | The table the named foreign key points at |
 
-`TableStats(rows=None, bytes=None)` holds one table's size estimates. On PostgreSQL, `rows` is `None` for a table that was never vacuumed or analyzed.
+`TableStats(rows=None, bytes=None, row_format=None, row_versions=None, fulltext=None)` gives one table's size estimates and the storage facts the InnoDB rules read, each `None` where it was not read. On PostgreSQL, `rows` is `None` for a table that was never vacuumed or analyzed. `row_format` is the InnoDB row format in upper case, such as `DYNAMIC` or `COMPRESSED`. `row_versions` counts the instant column changes MySQL has recorded since the table was last rebuilt. `fulltext` says whether the table has a FULLTEXT index.
 
 ## Report forms
 
@@ -208,7 +219,7 @@ report_data(report) -> dict
 ```
 {: .sig #report_data}
 
-The report as plain data that `json.dumps` accepts, with the keys `profile`, `version` (a string such as `"12"`), `evidence`, `read` (a sorted list), `migrations`, and `counts`. Each migration has `id`, `transactional`, `statements`, `locks`, `windows`, and `findings`. Each statement is `{"sql": ...}` merged with `statement_data()`.
+The report as plain data that `json.dumps` accepts, with the keys `profile`, `version` (a string such as `"12"`), `evidence`, `read` (a sorted list), `migrations`, and `counts`. Each migration has `id`, `transactional`, `held_to_commit`, `statements`, `locks`, `windows`, and `findings`. Each statement is `{"sql": ...}` merged with `statement_data()`.
 
 ```python
 statement_data(impact) -> dict

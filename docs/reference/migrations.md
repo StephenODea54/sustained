@@ -507,7 +507,7 @@ lock_timeout_required() -> Guard
 ```
 {: .sig #lock_timeout_required}
 
-Blocks a statement with a `<profile>.lock_timeout` finding, such as `pg.lock_timeout`: a lock that would queue reads or writes with no lock timeout in scope. Timeout scopes read as they do for `no_lock_without_timeout()`, and a timeout the connection already has covers the run when `up()` read it.
+Blocks a statement with a `<profile>.lock_timeout` finding, such as `pg.lock_timeout`, or `mysql.lock_timeout` and `mariadb.lock_timeout` on MySQL and MariaDB: a lock that would queue other sessions with no lock timeout in scope. On PostgreSQL, timeout scopes read as they do for `no_lock_without_timeout()`. On MySQL and MariaDB, the timeout is `lock_wait_timeout`, and a `SET` of it in any session scope covers the rest of the run. A timeout the connection already has covers the run when `up()` read it.
 
 ```python
 no_unknown_impact() -> Guard

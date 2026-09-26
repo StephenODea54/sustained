@@ -52,8 +52,8 @@ from sustained.impact.model import (
     Work,
 )
 from sustained.impact.recognizer import recognize
-from sustained.impact.rules import Effect, Facts, Profile, profile_for
-from sustained.impact.state import RunState, sets_a_timeout
+from sustained.impact.rules import Effect, Facts, Profile, profile_for, profiles_for
+from sustained.impact.state import RunState
 from sustained.impact.window import aggregate
 
 if TYPE_CHECKING:
@@ -133,12 +133,16 @@ def analyze(
     migration inside a transaction.
 
     Without a context, the rules assume the dialect's support floor and
-    say so in the report's evidence. Raises ValueError for a dialect
-    that has no impact rules yet.
+    say so in the report's evidence. The context's profile picks between
+    the profiles of a dialect that has more than one, such as MySQL and
+    MariaDB; without a context the first is assumed, and the first
+    migration gets an `impact.assumed_profile` finding that says so.
+    Raises ValueError for a dialect that has no impact rules yet.
     """
-    profile = profile_for(dialect)
+    profile = profile_for(dialect, context.profile if context else None)
     if profile is None:
         raise ValueError(f"Impact analysis does not cover {dialect.name} yet.")
+    guessed = context is None and len(profiles_for(dialect)) > 1
     if context is None:
         context = assumed(profile.name)
     evidence = Evidence.CATALOG if context.read else Evidence.STATIC
@@ -147,6 +151,10 @@ def analyze(
         run.migration(migration_id, transactional, group)
         for migration_id, transactional, group in _groups(statements)
     )
+    if guessed and migrations:
+        first, *rest = migrations
+        note = _assumed_profile(profile, profiles_for(dialect))
+        migrations = (first._replace(findings=first.findings + (note,)), *rest)
     return ImpactReport(
         profile.name, context.version, evidence, migrations, context.read
     )
@@ -206,11 +214,13 @@ class _Run:
         self.context = context
         self.thresholds = thresholds
         self.evidence = evidence
-        self.state = RunState(profile.timeout_setting)
+        self.state = RunState(
+            profile.timeout_setting, profile.bounded, profile.local_scope
+        )
         # A timeout the connection already has, from the role, the
         # database, or the connection string, covers the whole run.
         configured = context.settings.get(profile.timeout_setting)
-        if configured is not None and sets_a_timeout(configured):
+        if configured is not None and profile.bounded(configured):
             self.state.timeouts.session = True
 
     def migration(
@@ -225,7 +235,7 @@ class _Run:
         )
         locks, windows, findings = aggregate(impacts, spans)
         return MigrationImpact(
-            migration_id, transactional, impacts, locks, windows, findings
+            migration_id, transactional, impacts, locks, windows, findings, spans
         )
 
     def statement(
@@ -302,8 +312,8 @@ class _Run:
         return self.profile.blocks(effect.lock)
 
     def queues(self, effect: Effect) -> bool:
-        """Whether the effect's table lock would queue reads or writes."""
-        return effect.waits and self.profile.blocks(effect.lock) >= Blocks.WRITES
+        """Whether waiting for the effect's lock would queue other sessions."""
+        return effect.waits and self.profile.waits_in_queue(effect.lock)
 
     def merge(self, group: Sequence[Effect], held_to_commit: bool) -> TableImpact:
         rank = self.profile.lock_rank
@@ -386,6 +396,20 @@ class _Run:
             (self.profile.timeout_statement(transactional),),
             self.profile.timeout_source,
         )
+
+
+def _assumed_profile(profile: Profile, profiles: Sequence[Profile]) -> Finding:
+    from sustained.impact.context import FLOORS, version_text
+    from sustained.impact.report import title
+
+    others = " or ".join(title(p.name) for p in profiles if p is not profile)
+    return Finding(
+        "impact.assumed_profile",
+        Severity.INFO,
+        f"no server was read, so the rules assume {title(profile.name)} "
+        f"{version_text(FLOORS[profile.name])}; for a {others} server, pass a "
+        "context read from it",
+    )
 
 
 def _mismatch(intent: Intent, parsed: ParsedStatement) -> Finding:

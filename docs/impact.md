@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Statement impact
-description: "Read what each migration statement does to a live PostgreSQL database while it runs: the locks it takes, what they block, whether it rewrites the table, and the safer form."
+description: "Read what each migration statement does to a live PostgreSQL, MySQL, or MariaDB database while it runs: the locks it takes, what they block, whether it rewrites the table, and the safer form."
 ---
 
 A migration can be valid, reversible, and free of drops, and still take the application down while it runs. A `CREATE INDEX` on a large table stops every write to it until the build finishes. An `ALTER TABLE` that needs `ACCESS EXCLUSIVE` waits behind the longest open transaction, and every query on the table waits behind the `ALTER TABLE`.
@@ -13,7 +13,7 @@ The impact analysis reads the statements a run would apply and reports, for each
 - how long it holds each lock: a moment, the whole statement, or until the migration commits
 - a safer form of the statement, when the engine has one
 
-The analysis covers PostgreSQL 12 and later. It reads the statement text, the intent Sustained attaches to the statements it generates, and, when it has a connection, the server's version, settings, and table sizes.
+The analysis covers PostgreSQL 12 and later, and InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later. It reads the statement text, the intent Sustained attaches to the statements it generates, and, when it has a connection, the server's version, settings, and table sizes.
 
 ## Running it
 
@@ -36,6 +36,8 @@ $ sustained impact
 
 2 statements, 1 danger, 2 warn. Evidence: catalog (PostgreSQL 16.4)
 ```
+
+On MySQL and MariaDB the same report names the algorithm and lock level the server runs each ALTER TABLE with; see [MySQL and MariaDB](#mysql-and-mariadb).
 
 `sustained impact` exits 0 when it prints the report and 1 on a failure, including a dialect the analysis does not cover. It never blocks a run. `--json` prints the report as one object; see [JSON output](/reference/cli#json-output).
 
@@ -87,7 +89,7 @@ The last line counts the statements and findings and says what the answer rests 
 | `writes` | INSERT, UPDATE, and DELETE wait. Reads proceed. |
 | `reads_and_writes` | Every query on the table waits. |
 
-**Lock** is the engine's own name for the lock, as `pg_locks.mode` reports it without the `Lock` suffix, such as `ACCESS EXCLUSIVE`, `SHARE`, or `SHARE UPDATE EXCLUSIVE`.
+**Lock** is the engine's own name for the lock. On PostgreSQL it is the mode `pg_locks.mode` reports, without the `Lock` suffix, such as `ACCESS EXCLUSIVE`, `SHARE`, or `SHARE UPDATE EXCLUSIVE`. On MySQL and MariaDB it is the `ALGORITHM` and `LOCK` clause the server accepts for the statement, such as `INSTANT` or `INPLACE, LOCK=NONE`, or `MDL EXCLUSIVE` and `IX` for statements that take no such clause.
 
 **Work**, ordered from lightest to heaviest:
 
@@ -118,7 +120,7 @@ Work that blocks writes, or reads and writes, is rated against the table's size:
 
 A static report reads no sizes, so blocking work is `warn`. `analyze()` takes a `Thresholds(rows, bytes)` to move the limits.
 
-A lock that blocks writes or more, with no lock timeout in scope, draws a `pg.lock_timeout` finding whatever the table's size. The statement waits for its lock behind the longest open transaction on the table, and every query that conflicts with the lock waits behind the statement. The remedy is `SET LOCAL lock_timeout` inside a transaction, or `SET lock_timeout` outside one. A `LOCK TABLE ... NOWAIT` never waits, so it draws no timeout finding. A `lock_timeout` the connection already has, from the role, the database, or the connection string, covers the whole run.
+On PostgreSQL, a lock that blocks writes or more, with no lock timeout in scope, draws a `pg.lock_timeout` finding whatever the table's size. The statement waits for its lock behind the longest open transaction on the table, and every query that conflicts with the lock waits behind the statement. The remedy is `SET LOCAL lock_timeout` inside a transaction, or `SET lock_timeout` outside one. A `LOCK TABLE ... NOWAIT` never waits, so it draws no timeout finding. A `lock_timeout` the connection already has, from the role, the database, or the connection string, covers the whole run. MySQL and MariaDB draw the same finding, as `mysql.lock_timeout` or `mariadb.lock_timeout`, for every statement that takes the exclusive metadata lock; see [Lock timeouts on MySQL and MariaDB](#lock-timeouts-on-mysql-and-mariadb).
 
 ## Server facts
 
@@ -132,7 +134,19 @@ A lock that blocks writes or more, with no lock timeout in scope, draws a `pg.lo
 | Table sizes | `pg_class.reltuples` and `pg_total_relation_size()` | The severity of blocking work |
 | Schema | the schema read `plan()` uses | The current type of a column a hand-written type change names, the table an index to drop is on, and the tables at the other end of a foreign key a statement drops or re-creates |
 
-The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
+On MySQL and MariaDB the read is this:
+
+| Fact | Read from | Used for |
+| --- | --- | --- |
+| Version and engine | `VERSION()` | Whether the MySQL or the MariaDB rules apply, and rules that depend on the version, such as instant `DROP COLUMN` on MySQL 8.0.29 and later |
+| `foreign_key_checks` | `@@foreign_key_checks` | Whether `ADD FOREIGN KEY` copies the table |
+| `lock_wait_timeout` | `@@lock_wait_timeout` | Whether a timeout covers the run before any `SET` |
+| Table sizes and row format | `information_schema.TABLES` | The severity of blocking work, and whether a `COMPRESSED` table rules out an instant change |
+| FULLTEXT indexes | `information_schema.STATISTICS` | Whether `ADD COLUMN` copies or rebuilds the table, and whether a FULLTEXT index is the table's first |
+| Instant row versions | `information_schema.INNODB_TABLES.TOTAL_ROW_VERSIONS`, MySQL 8.0.29 and later | Whether the table has instant changes left |
+| Schema | the schema read `plan()` uses | A column's current definition, which columns are indexed, and the table at the other end of a foreign key |
+
+The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. On MySQL and MariaDB it is InnoDB's estimate, which `ANALYZE TABLE` refreshes, and which InnoDB also refreshes on its own after a tenth of the rows change. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
 
 A statement that fails, for example for lack of a privilege, leaves its facts out, and the rules fall back to the support floor or the worst case for them. Each statement runs inside a savepoint, so a failure does not abort the connection's open transaction. The report's `read` lists the facts that came from the server, and the last line of the text report says `assumed` before the version when the version was not read.
 
@@ -168,7 +182,7 @@ The NOT NULL flow the diff generates is one such case: it adds the column, backf
   warn    orders stays blocked for reads_and_writes from statement 1 until the migration commits, across the rows work of statement 2; move that work to a migration of its own
 ```
 
-A migration with `transactional=False` releases each lock when its statement ends, so each statement is a window of its own and the report prints no `window` line.
+A migration with `transactional=False` releases each lock when its statement ends, so each statement is a window of its own and the report prints no `window` line. MySQL and MariaDB commit each DDL statement on its own, so there every statement is a window of its own too. `MigrationImpact.held_to_commit`, and the `held_to_commit` key in the JSON output, say whether a migration's locks last until its commit.
 
 ## What the analysis carries through a run
 
@@ -177,7 +191,8 @@ The analysis reads the run in order, and each statement changes what it knows ab
 - **A table the run created is empty.** No other session can see it yet, so work on it blocks nothing and draws no findings. A plain `CREATE INDEX` on a table created earlier in the run is not flagged.
 - **A renamed table keeps its identity.** A later statement that names the new name reads the size of the original table.
 - **An index the run created is known.** A `DROP INDEX` names the table the run created the index on. For an index that already exists, the schema read names its table.
-- **A lock timeout stays in scope** for as long as PostgreSQL keeps it: `SET LOCAL` until the migration commits, and `SET` for the rest of the session. A timeout the connection already has is in scope from the first statement. `no_lock_without_timeout()` reads the same scope from the statements alone.
+- **A lock timeout stays in scope** for as long as PostgreSQL keeps it: `SET LOCAL` until the migration commits, and `SET` for the rest of the session. A timeout the connection already has is in scope from the first statement. `no_lock_without_timeout()` reads the same scope from the statements alone. On MySQL and MariaDB, `SET`, `SET SESSION`, and `SET LOCAL` all set the session's value for the rest of the run.
+- **Session settings change later statements.** After `SET foreign_key_checks = 0`, a MySQL or MariaDB `ADD FOREIGN KEY` is read as the in-place form that checks no rows. `SET GLOBAL` and `SET PERSIST` leave the session's own value unchanged, so they change nothing the analysis reads.
 
 ## Generated statements
 
@@ -233,7 +248,7 @@ guards = [
 | --- | --- |
 | `max_blocking(limit, over_rows=None, over_bytes=None, assume_small=False)` | A statement that blocks more than `limit` on a table past the thresholds. `limit` is `nothing`, `ddl`, `writes`, or `reads_and_writes`. |
 | `no_rewrite(over_rows=None, over_bytes=None, assume_small=False)` | A statement whose work on a table past the thresholds is `rewrite`, or `unknown`, which ranks above it |
-| `lock_timeout_required()` | A statement with a `pg.lock_timeout` finding: a lock that would queue reads or writes, with no timeout in scope |
+| `lock_timeout_required()` | A statement with a `pg.lock_timeout`, `mysql.lock_timeout`, or `mariadb.lock_timeout` finding: a lock that would queue other sessions, with no timeout in scope |
 | `no_unknown_impact()` | A statement with confidence `unknown` |
 
 With neither `over_rows` nor `over_bytes`, every table counts. With either, a table counts when its estimated rows or bytes pass one of them. A table whose size the threshold needs is not known counts as past it, the worst case, unless the rule is given `assume_small=True`. A table the run created earlier blocks nothing and is never rewritten, so it never counts. Only `no_unknown_impact()` blocks a statement the analysis cannot read; the other three pass it, since the analysis names no table for it.
@@ -361,3 +376,110 @@ The integration suite checks every rule against PostgreSQL 14 and 18. It creates
 | A lock that blocks writes or more, with no timeout | `SET LOCAL lock_timeout = '5s'` before it |
 
 `CONCURRENTLY` needs a migration of its own with `transactional=False`, because PostgreSQL refuses that form inside a transaction block. See [Migrations without a transaction](/schema#migrations-without-a-transaction).
+
+## MySQL and MariaDB
+
+The rules cover InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later. The two servers share the `MYSQL` dialect. The `VERSION()` string the server returns names which one it is, and the analysis applies the `mysql` or the `mariadb` rules to match. Rule ids start with `mysql.` or `mariadb.`. Without a server read, `analyze()` assumes MySQL 8.0.19, and the first migration gets an `impact.assumed_profile` finding that says to pass a context read from a MariaDB server.
+
+### Algorithms and locks
+
+InnoDB runs an ALTER TABLE with one of four algorithms:
+
+| Algorithm | What the server does | Work |
+| --- | --- | --- |
+| `INSTANT` | Changes only the data dictionary | catalog |
+| `NOCOPY` | MariaDB only: changes the table in place without rebuilding it | catalog or index build |
+| `INPLACE` | Changes the table in place, and rebuilds it in place for some changes | catalog, index build, or rewrite |
+| `COPY` | Copies every row into a new table | rewrite |
+
+The report's lock is the clause the server accepts for the statement, and what it blocks while the work runs follows its LOCK level:
+
+| Lock | Blocks |
+| --- | --- |
+| `..., LOCK=NONE` | `ddl` |
+| `..., LOCK=SHARED` | `writes` |
+| `..., LOCK=EXCLUSIVE` | `reads_and_writes` |
+| `INSTANT` | `reads_and_writes`, for the moment the exclusive metadata lock is held |
+| `MDL EXCLUSIVE` | `reads_and_writes`. `DROP TABLE`, `TRUNCATE`, `RENAME TABLE`, `CREATE TRIGGER`, and `DROP VIEW` take it. |
+| `IX` | `ddl`. `INSERT`, `UPDATE`, and `DELETE` take it, and also lock the rows they change, so `UPDATE` and `DELETE` block writes. |
+
+An ALTER TABLE with more than one action runs with the heaviest algorithm and the strongest LOCK level among its actions.
+
+### Lock timeouts on MySQL and MariaDB
+
+Every ALTER TABLE, and every statement reported with `MDL EXCLUSIVE`, takes the table's exclusive metadata lock, at least at its start and its end. The lock waits behind every open transaction that has read the table, and every later query on the table waits behind it. So each of these statements draws a `mysql.lock_timeout` or `mariadb.lock_timeout` finding whatever its LOCK level, unless a timeout is in scope. The remedy is `SET SESSION lock_wait_timeout = 5`, in seconds. A value of a day or more counts as no timeout: MySQL's default is a year, and MariaDB's global default is a day. `INSERT`, `UPDATE`, and `DELETE` wait for row locks, which `innodb_lock_wait_timeout` bounds, so they draw no timeout finding.
+
+### Rules
+
+The rules follow the MySQL 8.0 reference manual's [online DDL operations](https://dev.mysql.com/doc/refman/8.0/en/innodb-online-ddl-operations.html) and the MariaDB knowledge base's pages on each algorithm. Each rule id names its page through the finding's `source`.
+
+| Statement | MySQL | MariaDB | Work | Rule |
+| --- | --- | --- | --- | --- |
+| `ADD COLUMN` | `INSTANT` | `INSTANT` | catalog | `add_column.instant` |
+| `ADD COLUMN ... FIRST` or `AFTER`, before MySQL 8.0.29 | `INPLACE, LOCK=NONE` | `INSTANT` | rewrite on MySQL | `add_column.rebuild` |
+| `ADD COLUMN` on a table that has used all its instant row versions: 64 before MySQL 9.1, 255 from 9.1 | `INPLACE, LOCK=NONE` | no limit | rewrite on MySQL | `add_column.rebuild` |
+| `ADD COLUMN` on a `ROW_FORMAT=COMPRESSED` table | `INPLACE, LOCK=NONE` | `INPLACE, LOCK=NONE` | rewrite | `add_column.rebuild` |
+| `ADD COLUMN` on a table with a FULLTEXT index | `COPY, LOCK=SHARED` | `INPLACE, LOCK=SHARED` | rewrite | `add_column.copy`, `add_column.rebuild` |
+| `ADD COLUMN ... UNIQUE` or `PRIMARY KEY` | `INPLACE, LOCK=NONE` | `INPLACE, LOCK=NONE` | rewrite | `add_column.rebuild` |
+| `ADD COLUMN ... AUTO_INCREMENT` | `INPLACE, LOCK=SHARED` | `INPLACE, LOCK=SHARED` | rewrite | `add_column.rebuild` |
+| `ADD COLUMN` with an expression default in parentheses, such as `DEFAULT (1 + 1)` | `COPY, LOCK=SHARED` | `INSTANT`, or `COPY` for a volatile expression such as `(uuid())` | rewrite, or catalog when instant | `add_column.copy` |
+| `ADD COLUMN ... STORED`, `... CHECK`, or `... REFERENCES` with `foreign_key_checks` on | `COPY` | `COPY` | rewrite | `add_column.copy` |
+| `DROP COLUMN`, MySQL 8.0.29 and later | `INSTANT` | `INSTANT` | catalog | `drop_column.instant` |
+| `DROP COLUMN` before MySQL 8.0.29, or of an indexed column | `INPLACE, LOCK=NONE` | `NOCOPY, LOCK=NONE` for an indexed column | rewrite on MySQL, catalog on MariaDB | `drop_column.rebuild` |
+| `MODIFY` or `CHANGE` that keeps the type and the nullability, and changes the default, the comment, or adds ENUM or SET members at the end | `INSTANT` | `INSTANT` | catalog | `modify_column.instant` |
+| `MODIFY` that widens a VARCHAR and keeps its length prefix | `INPLACE, LOCK=NONE` | `INSTANT` | catalog | `modify_column.inplace`, `modify_column.instant` |
+| `MODIFY` that widens a VARCHAR past its length prefix | `COPY, LOCK=SHARED` | `INSTANT` | rewrite on MySQL | `modify_column.copy`, `modify_column.instant` |
+| `MODIFY` that changes NULL to NOT NULL, or back | `INPLACE, LOCK=NONE` | `INPLACE, LOCK=NONE` | rewrite | `modify_column.rebuild` |
+| `MODIFY ... FIRST` or `AFTER` | `INPLACE, LOCK=NONE` | `INSTANT` | rewrite on MySQL | `modify_column.rebuild`, `modify_column.instant` |
+| `MODIFY` or `CHANGE` to another type, a shorter VARCHAR, reordered ENUM members, or AUTO_INCREMENT | `COPY, LOCK=SHARED` | `COPY` | rewrite | `modify_column.copy` |
+| `ALTER COLUMN ... SET DEFAULT`, `DROP DEFAULT`, `SET VISIBLE`, `SET INVISIBLE` | `INSTANT` | `INSTANT` | catalog | `column_default` |
+| `RENAME COLUMN`, `CHANGE` to a new name only | `INSTANT` from 8.0.28, `INPLACE, LOCK=NONE` before | `INSTANT` | catalog | `rename` |
+| `RENAME TO`; `RENAME TABLE` | `INSTANT`; `MDL EXCLUSIVE` | `INSTANT`; `MDL EXCLUSIVE` | catalog | `rename` |
+| `RENAME INDEX` | `INPLACE, LOCK=NONE` | `INSTANT` | catalog | `rename_index` |
+| `CREATE INDEX`, `ADD INDEX`, `ADD UNIQUE` | `INPLACE, LOCK=NONE` | `NOCOPY, LOCK=NONE` | index build | `add_index` |
+| A FULLTEXT index | `INPLACE, LOCK=SHARED` | `INPLACE, LOCK=SHARED` | rewrite for the table's first, which adds a hidden `FTS_DOC_ID` column; index build after | `add_fulltext` |
+| `DROP INDEX` | `INPLACE, LOCK=NONE` | `NOCOPY, LOCK=NONE` | catalog | `drop_index` |
+| `ADD PRIMARY KEY`, or `DROP PRIMARY KEY` with `ADD PRIMARY KEY` | `INPLACE, LOCK=NONE` | `INPLACE, LOCK=NONE` | rewrite | `add_primary_key` |
+| `DROP PRIMARY KEY` alone | `COPY, LOCK=SHARED` | `COPY` | rewrite | `drop_primary_key` |
+| `ADD FOREIGN KEY` with `foreign_key_checks` on | `COPY, LOCK=SHARED` | `COPY` | rewrite | `add_foreign_key` |
+| `ADD FOREIGN KEY` with `foreign_key_checks` off | `INPLACE, LOCK=NONE` | `INSTANT` | catalog | `add_foreign_key.unchecked` |
+| `DROP FOREIGN KEY` | `INPLACE, LOCK=NONE` | `INSTANT` | catalog | `drop_foreign_key` |
+| `ADD CHECK` | `COPY, LOCK=SHARED` | `COPY` | rewrite | `add_check` |
+| `DROP CHECK`, or `DROP CONSTRAINT` of a check | `INSTANT` | `INSTANT` | catalog | `drop_check` |
+| `CONVERT TO CHARACTER SET`, `ENGINE=` another engine | `COPY, LOCK=SHARED` | `COPY` | rewrite | `table_copy` |
+| `ENGINE=InnoDB`, `FORCE`, `ROW_FORMAT=`, `KEY_BLOCK_SIZE=`, `OPTIMIZE TABLE` | `INPLACE, LOCK=NONE` | `INPLACE, LOCK=NONE` | rewrite | `table_rebuild` |
+| `COMMENT =`, `AUTO_INCREMENT =` | `INPLACE, LOCK=NONE` | `INSTANT` | catalog | `table_option` |
+| `DROP TABLE`, `TRUNCATE` | `MDL EXCLUSIVE` | `MDL EXCLUSIVE` | catalog | `drop_table` |
+| `CREATE TRIGGER` | `MDL EXCLUSIVE` | `MDL EXCLUSIVE` | catalog | `trigger` |
+| `DROP VIEW` | `MDL EXCLUSIVE` | `MDL EXCLUSIVE` | catalog | `drop_view` |
+| `UPDATE`, `DELETE` | `IX`, plus row locks | `IX`, plus row locks | rows | `write_rows` |
+| `INSERT` | `IX` | `IX` | rows | `insert` |
+
+`COPY` runs with `LOCK=NONE` on MariaDB 11.2 and later, so writes go on while the table is copied. On MySQL, and on MariaDB before 11.2, it runs with `LOCK=SHARED`. `OPTIMIZE TABLE` on a table with a FULLTEXT index copies it.
+
+MySQL also takes the exclusive metadata lock on the parent table of a foreign key the statement adds or drops: `ADD FOREIGN KEY`, `DROP FOREIGN KEY`, `CREATE TABLE ... REFERENCES`, and `DROP TABLE` of a table that has a foreign key. The report lists the parent with `MDL EXCLUSIVE` under the rule `mysql.foreign_key_parent`. The parent of a dropped key comes from the schema read. MariaDB takes no such lock.
+
+A `MODIFY` or `CHANGE` restates the whole column, so the rules compare it with the column's current definition, from the intent of a statement the diff generated or from the schema read. Without either, the change counts as a type change: `COPY`, with confidence `likely`. A VARCHAR stores each value's length in one byte while its longest value fits in 255 bytes, and in two above that, so whether a widened VARCHAR keeps its length prefix depends on the character set. Without the column's collation, the rules assume utf8mb4, four bytes to a character.
+
+Without a server read, the storage facts are unknown, so a change that is instant on most tables reads as `INSTANT` with confidence `likely`, and a finding names the facts that would rule it out: a FULLTEXT index, `ROW_FORMAT=COMPRESSED`, or used-up instant row versions. Without the schema read, `DROP COLUMN` reads as instant with confidence `likely`, since an indexed column is dropped in place. `DROP TRIGGER` names no table, and the schema read reads no triggers, so it reports no table, with confidence `likely`.
+
+A statement the rules do not read, such as `ANALYZE TABLE`, `LOCK TABLES`, or MariaDB's `WAIT n` and `NOWAIT`, is unknown.
+
+### Asserting the algorithm
+
+For each ALTER TABLE, CREATE INDEX, or DROP INDEX the rules read as `INSTANT`, or as in place with `LOCK=NONE`, an `info` finding gives the reason and offers the statement with that clause added:
+
+```console
+  ALTER TABLE orders ADD COLUMN note text
+    orders  INSTANT  blocks reads_and_writes  catalog  brief  ~41.2M rows, 12.4 GB  [mysql.add_column.instant]
+    info    the column is added in the data dictionary; assert INSTANT so the server refuses the statement instead of running it with a slower algorithm or a stronger lock
+    fix     ALTER TABLE orders ADD COLUMN note text, ALGORITHM=INSTANT
+```
+
+With the clause, the server refuses the statement when it cannot run it that way. Without it, the server falls back to a slower algorithm or a stronger lock, as when a table has used its instant row versions. MySQL refuses a LOCK clause beside `ALGORITHM=INSTANT`, so the instant form names the algorithm alone. MariaDB's DROP INDEX takes no clause, so there the finding offers the `ALTER TABLE ... DROP INDEX` form.
+
+A statement that spells `ALGORITHM` or `LOCK` is read with them. A heavier algorithm or a stronger lock runs as asked. MySQL runs a `LOCK` clause without `ALGORITHM` in place, never instant. An algorithm or a LOCK level the change cannot run with draws a `mysql.refused` or `mariadb.refused` finding with severity `warn`, since the server refuses the statement, and the table is reported with no lock.
+
+A statement that copies the table while writes wait names an online schema change tool, such as gh-ost or pt-online-schema-change, which copies the table without blocking writes.
+
+The integration suite checks the rules against MySQL 8.4 and 26.7 and MariaDB 11.4 and 12.3. It checks the facts `read_context()` reads, and the parent-table locks, by running each foreign key statement while a second session reads the parent.

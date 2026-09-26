@@ -315,7 +315,7 @@ class RehearseTraceTestCase(unittest.TestCase):
         patches = [
             mock.patch(
                 "sustained.impact.rules._profiles",
-                return_value={"DEFAULT": PROFILE},
+                return_value={"DEFAULT": (PROFILE,)},
             ),
             mock.patch("sustained.impact.trace.traces", return_value=True),
         ]

@@ -1496,7 +1496,7 @@ class ImpactCliTestCase(CliBase):
 
         patcher = mock.patch(
             "sustained.impact.rules._profiles",
-            return_value={"DEFAULT": postgres.PROFILE},
+            return_value={"DEFAULT": (postgres.PROFILE,)},
         )
         patcher.start()
         self.addCleanup(patcher.stop)

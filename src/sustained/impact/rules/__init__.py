@@ -12,8 +12,10 @@ The analyzer turns effects into `TableImpact`s, and it decides the
 severity of blocking work from the table's size, so every profile rates
 a scan the same way.
 
-`profile_for()` picks the profile for a dialect. A dialect without one
-has no impact analysis yet.
+`profile_for()` picks the profile for a dialect. MySQL and MariaDB
+share the MYSQL dialect, so a context read from the server names which
+of the two applies. A dialect without a profile has no impact analysis
+yet.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ from sustained.impact.model import (
     ParsedStatement,
     Work,
 )
-from sustained.impact.state import RunState
+from sustained.impact.state import RunState, sets_a_timeout
 
 if TYPE_CHECKING:
     from sustained.dialects import Dialects
@@ -125,6 +127,13 @@ class Profile(NamedTuple):
     catalog read that fills an `EngineContext` from a live server.
     `fixture_schema` creates the objects the rules' fixtures name, for
     the ground-truth tests.
+
+    `queues()` says whether a statement waiting for the lock makes other
+    sessions queue behind it, which draws the lock-timeout finding; by
+    default a lock that blocks writes or more does. `bounded()` says
+    whether a value of the timeout setting bounds the wait.
+    `local_scope` says whether `SET LOCAL` ends with the transaction, as
+    on Postgres, or means the session, as on MySQL.
     """
 
     name: str
@@ -139,17 +148,44 @@ class Profile(NamedTuple):
     timeout_source: str
     context_plan: Callable[[], ContextPlan]
     fixture_schema: Tuple[str, ...] = ()
+    queues: Optional[Callable[[Optional[str]], bool]] = None
+    bounded: Callable[[str], bool] = sets_a_timeout
+    local_scope: bool = True
+
+    def waits_in_queue(self, lock: Optional[str]) -> bool:
+        """Whether waiting for the lock queues other sessions behind it."""
+        if self.queues is not None:
+            return self.queues(lock)
+        return self.blocks(lock) >= Blocks.WRITES
 
 
-def _profiles() -> Mapping[str, Profile]:
-    from sustained.impact.rules import postgres
+def _profiles() -> Mapping[str, Tuple[Profile, ...]]:
+    """Each dialect's profiles, the one assumed without a server first."""
+    from sustained.impact.rules import mysql, postgres
 
-    return {"POSTGRES": postgres.PROFILE}
+    return {
+        "POSTGRES": (postgres.PROFILE,),
+        "MYSQL": (mysql.MYSQL, mysql.MARIADB),
+    }
 
 
-def profile_for(dialect: "Dialects") -> Optional[Profile]:
-    """The rule profile for a dialect, or None when it has none yet."""
-    return _profiles().get(dialect.name)
+def profile_for(dialect: "Dialects", name: Optional[str] = None) -> Optional[Profile]:
+    """
+    The rule profile for a dialect, or None when it has none yet. `name`
+    picks one of the dialect's profiles, as a context read from the
+    server names it; without it, or with a name the dialect has no
+    profile for, the first is used.
+    """
+    profiles = _profiles().get(dialect.name, ())
+    for profile in profiles:
+        if profile.name == name:
+            return profile
+    return profiles[0] if profiles else None
+
+
+def profiles_for(dialect: "Dialects") -> Tuple[Profile, ...]:
+    """Every profile of a dialect, the one assumed without a server first."""
+    return _profiles().get(dialect.name, ())
 
 
 def supported(dialect: "Dialects") -> bool:
@@ -159,4 +195,9 @@ def supported(dialect: "Dialects") -> bool:
 
 def all_rules() -> List[Rule]:
     """Every rule of every profile."""
-    return [rule for profile in _profiles().values() for rule in profile.rules]
+    return [
+        rule
+        for profiles in _profiles().values()
+        for profile in profiles
+        for rule in profile.rules
+    ]
