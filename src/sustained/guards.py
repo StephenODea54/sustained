@@ -37,7 +37,7 @@ prints the statement with its literals intact.
 from __future__ import annotations
 
 import re
-from typing import Callable, List, NamedTuple, Optional, Sequence
+from typing import Callable, List, NamedTuple, Sequence
 
 from sustained.analysis import (
     _ALTER_DROP_RE,
@@ -242,35 +242,31 @@ def no_lock_without_timeout() -> Guard:
     so it ignores the `SET LOCAL` and the statements after it stay
     uncovered. Write the plain `SET lock_timeout` in a migration like
     that.
+
+    The impact analysis reads timeout scopes the same way, through
+    `sustained.impact.state.TimeoutScope`; its `pg.lock_timeout` finding
+    covers every lock that blocks reads or writes, where this rule reads
+    only ALTER TABLE and DROP TABLE.
     """
 
     def guard(
         statements: Sequence[MigrationStatement], dialect: Dialects
     ) -> List[Verdict]:
+        from sustained.impact.state import TimeoutScope
+
         if dialect is not Dialects.POSTGRES:
             return []
         found = []
-        session_covered = False
-        local_covered = False
-        current: Optional[str] = None
+        timeouts = TimeoutScope()
         for statement in statements:
             migration_id, transactional = statement_scope(statement)
-            if migration_id != current:
-                # A new migration ends the LOCAL setting of the one
-                # before it, whose commit dropped the setting with it.
-                current = migration_id
-                local_covered = False
+            timeouts.enter(migration_id)
             scanned = scannable_statement(statement)
             match = _LOCK_TIMEOUT_RE.search(scanned)
             if match:
-                scope = (match.group(1) or "").strip().upper()
-                if scope != "LOCAL":
-                    session_covered = True
-                elif transactional:
-                    local_covered = True
-            elif not (session_covered or local_covered) and _LOCK_TAKING_RE.search(
-                scanned
-            ):
+                scope = (match.group(1) or "session").strip().lower()
+                timeouts.set(scope, transactional)
+            elif not timeouts.covered and _LOCK_TAKING_RE.search(scanned):
                 found.append(
                     Verdict(
                         "no_lock_without_timeout",

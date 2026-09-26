@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from enum import Enum
 from types import MappingProxyType
-from typing import List, Mapping, NamedTuple, Optional, Tuple
+from typing import Any, List, Mapping, NamedTuple, Optional, Tuple
 
 _NO_DETAILS: Mapping[str, object] = MappingProxyType({})
 
@@ -199,6 +199,11 @@ class ParsedStatement(NamedTuple):
     def known(self) -> bool:
         return self.kind != UNKNOWN_KIND
 
+    def items(self, key: str) -> Tuple[Any, ...]:
+        """An option that holds a tuple, or an empty tuple without it."""
+        value = self.options.get(key)
+        return value if isinstance(value, tuple) else ()
+
 
 class Action(NamedTuple):
     """
@@ -219,7 +224,8 @@ class TableImpact(NamedTuple):
     What one statement does to one table: the engine's name for the lock
     it takes, what that lock blocks, the work it does, how long it holds
     the lock, and the table's size when a catalog read gave it. `rows`
-    and `bytes` are estimates, and None when unknown.
+    and `bytes` are estimates, and None when unknown. `rule` is the id
+    of the rule that gave the answer.
     """
 
     table: str
@@ -229,6 +235,7 @@ class TableImpact(NamedTuple):
     hold: Hold
     rows: Optional[int] = None
     bytes: Optional[int] = None
+    rule: Optional[str] = None
 
 
 class Finding(NamedTuple):
@@ -262,11 +269,22 @@ class StatementImpact(NamedTuple):
         return max((f.severity for f in self.findings), default=None)
 
 
+class Thresholds(NamedTuple):
+    """
+    The table size past which blocking work is `danger`: a table with
+    more estimated rows or bytes than these. Below both it is `info`,
+    and with neither known it is `warn`.
+    """
+
+    rows: int = 1_000_000
+    bytes: int = 1 << 30
+
+
 class Lock(NamedTuple):
     """
     One lock a migration holds: the table, the engine's name for it,
     what it blocks, and the position of the statement that took it in
-    the migration.
+    the migration, counting from 1.
     """
 
     table: str
@@ -279,8 +297,9 @@ class Window(NamedTuple):
     """
     How long a table stays blocked inside one migration. `blocks` is the
     worst lock held on the table, `taken_by` the position of the
-    statement that took it, and `heaviest` the heaviest work that runs
-    while it is held, by the statement at position `during`.
+    statement that first blocked the table that far, and `heaviest` the
+    heaviest work that runs while it is held, by the statement at
+    position `during`. Positions count from 1 within the migration.
     """
 
     table: str

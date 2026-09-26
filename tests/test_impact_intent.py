@@ -9,6 +9,7 @@ their setups here.
 
 import importlib
 import io
+import sys
 import unittest
 from unittest import mock
 
@@ -16,7 +17,10 @@ from sustained import autogenerate as autogenerate_module
 from sustained import ddl
 from sustained.analysis import MigrationStatement, summarize, with_intent
 from sustained.dialects import Dialects
+from sustained.impact import Confidence, analyze
+from sustained.impact.analyzer import intent_agrees
 from sustained.impact.model import INTENT_KINDS, Intent
+from sustained.impact.recognizer import recognize
 from sustained.migrations import Migration, migration_checksum
 from sustained.schema import Check, ColumnDef, ForeignKey, Index
 
@@ -44,6 +48,17 @@ DIFF_TEST_MODULES = [
     "tests.test_sqlite_rebuild",
     "tests.test_unique_removal",
 ]
+
+
+def _UNREAD_BY_DESIGN(statement, dialect):
+    """
+    The generated statements the recognizer leaves unread on purpose:
+    SQL Server's dynamic default drop, which its intent covers, and
+    Athena's ADD COLUMNS, which impact analysis does not cover.
+    """
+    if dialect is Dialects.MSSQL and "DECLARE" in statement.upper():
+        return True
+    return dialect.name == "ATHENA"
 
 
 class WithIntentTestCase(unittest.TestCase):
@@ -205,17 +220,37 @@ class DiffIntentSweepTestCase(unittest.TestCase):
 
     def test_every_generated_statement_carries_an_intent(self):
         missing = []
+        disagreeing = []
+        unknown = []
         seen_kinds = set()
         real_migration = autogenerate_module.Migration
 
         def checking_migration(*args, **kwargs):
             migration = real_migration(*args, **kwargs)
+            # autogenerate() builds the Migration, and holds the dialect
+            # the statements were rendered for.
+            dialect = sys._getframe(1).f_locals.get("dialect")
             for statement in migration.up:
                 intent = getattr(statement, "intent", None)
                 if intent is None or intent.kind not in INTENT_KINDS:
                     missing.append(str(statement))
-                else:
-                    seen_kinds.add(intent.kind)
+                    continue
+                seen_kinds.add(intent.kind)
+                if intent.kind == "rebuild_table" or dialect is None:
+                    continue
+                parsed = recognize(statement, dialect)
+                if not parsed.known:
+                    if not _UNREAD_BY_DESIGN(statement, dialect):
+                        unknown.append((dialect.name, str(statement), parsed))
+                elif not intent_agrees(intent, parsed):
+                    disagreeing.append((dialect.name, str(statement), intent, parsed))
+            if dialect is Dialects.POSTGRES:
+                report = analyze(list(migration.up), dialect)
+                unknown.extend(
+                    (dialect.name, s.statement, "no impact")
+                    for s in report.statements
+                    if s.confidence is Confidence.UNKNOWN
+                )
             return migration
 
         suite = unittest.TestSuite()
@@ -229,6 +264,10 @@ class DiffIntentSweepTestCase(unittest.TestCase):
         self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
         self.assertGreater(result.testsRun, 500)
         self.assertEqual(missing, [])
+        # Each intent agrees with the text it tags, and Sustained's own
+        # SQL is always understood.
+        self.assertEqual(disagreeing, [])
+        self.assertEqual(unknown, [])
         # The sweep reaches the diff's main paths; a path that stops
         # generating would show up here as a kind that went missing.
         self.assertLessEqual(

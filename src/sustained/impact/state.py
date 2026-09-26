@@ -1,0 +1,141 @@
+"""
+What the analysis carries from one statement of a run to the next.
+
+The rules read each statement against what came before it in the run:
+
+- A table created earlier in the run is empty, and nobody else reads
+  it yet, so work on it blocks nothing.
+- A table renamed earlier in the run is the live table under a new
+  name, so its size is the size of the table it was.
+- An index created earlier in the run names its table, which a later
+  `DROP INDEX` leaves unsaid.
+- A lock timeout set earlier covers the statements after it, as far as
+  its scope reaches (`TimeoutScope`).
+- Session settings, such as MySQL's `foreign_key_checks`, change what
+  later statements do.
+
+Names compare case-insensitively, as the recognizer's docstring asks.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Dict, Optional, Set
+
+from sustained.impact.model import ParsedStatement
+
+# A timeout of zero, however spelled, turns the timeout off, and so
+# does DEFAULT, which falls back to the server's setting.
+_NO_TIMEOUT_RE = re.compile(r"(0+(\.0*)?\s*(us|ms|s|min|h|d)?|default)", re.IGNORECASE)
+
+_UNSET = object()
+
+
+def sets_a_timeout(value: str) -> bool:
+    """Whether a lock timeout value waits for a bounded time."""
+    return not _NO_TIMEOUT_RE.fullmatch(value.strip())
+
+
+class TimeoutScope:
+    """
+    Whether a lock timeout covers the next statement of a run, read in
+    run order.
+
+    A session setting (`SET lock_timeout`, with or without SESSION)
+    covers every statement after it in the run. A `SET LOCAL` setting
+    dies at the commit that ends its migration, so it covers only the
+    statements after it in that migration. A migration that runs outside
+    a transaction has no transaction block to attach a LOCAL setting to,
+    so Postgres ignores it there.
+
+    Call `enter()` with each statement's migration before reading
+    `covered` or calling `set()` for it.
+    """
+
+    def __init__(self) -> None:
+        self.session = False
+        self.local = False
+        self._migration: object = _UNSET
+
+    def enter(self, migration_id: Optional[str]) -> None:
+        """Moves to a statement of the given migration."""
+        if migration_id != self._migration:
+            # A new migration ends the LOCAL setting of the one before
+            # it, whose commit dropped the setting with it.
+            self._migration = migration_id
+            self.local = False
+
+    def set(self, scope: str, transactional: bool, enabled: bool = True) -> None:
+        """Records a timeout statement of the given scope."""
+        if scope != "local":
+            self.session = enabled
+        elif transactional:
+            self.local = enabled
+
+    @property
+    def covered(self) -> bool:
+        return self.session or self.local
+
+
+class RunState:
+    """
+    The facts a run has built up so far. `timeout_setting` is the lower
+    case name of the engine's lock timeout setting, such as
+    `lock_timeout`.
+    """
+
+    def __init__(self, timeout_setting: Optional[str] = None) -> None:
+        self.timeout_setting = timeout_setting
+        self.created: Set[str] = set()
+        self.renamed: Dict[str, str] = {}
+        self.indexes: Dict[str, str] = {}
+        self.settings: Dict[str, str] = {}
+        self.timeouts = TimeoutScope()
+
+    def is_new(self, table: str) -> bool:
+        """Whether the run created the table earlier."""
+        return table.lower() in self.created
+
+    def original(self, table: str) -> str:
+        """The live name of a table the run may have renamed."""
+        return self.renamed.get(table.lower(), table)
+
+    def index_table(self, index: str) -> Optional[str]:
+        """The table of an index the run created, or None."""
+        return self.indexes.get(index.lower())
+
+    def record(self, parsed: ParsedStatement, transactional: bool) -> None:
+        """Takes in what the statement changes, after the rules read it."""
+        kind = parsed.kind
+        options = parsed.options
+        if kind == "create_table" and parsed.table:
+            self.created.add(parsed.table.lower())
+        elif kind == "drop_table":
+            for table in parsed.items("tables"):
+                self.created.discard(str(table).lower())
+        elif kind == "create_index" and parsed.table and options.get("name"):
+            self.indexes[str(options["name"]).lower()] = parsed.table
+        elif kind == "rename_table":
+            for old, new in parsed.items("renames"):
+                self.rename(str(old), str(new))
+        elif kind == "alter_table" and parsed.table:
+            for action in parsed.actions:
+                if action.kind == "rename_to":
+                    self.rename(parsed.table, str(action.options["new"]))
+        elif kind == "set":
+            self.record_settings(parsed, transactional)
+
+    def rename(self, old: str, new: str) -> None:
+        # A rename keeps the old schema when the new name has none.
+        if "." in old and "." not in new:
+            new = f"{old.rsplit('.', 1)[0]}.{new}"
+        if old.lower() in self.created:
+            self.created.discard(old.lower())
+            self.created.add(new.lower())
+        self.renamed[new.lower()] = self.original(old)
+
+    def record_settings(self, parsed: ParsedStatement, transactional: bool) -> None:
+        for scope, name, value in parsed.items("settings"):
+            self.settings[name] = value
+            if name == self.timeout_setting:
+                self.timeouts.set(scope, transactional, sets_a_timeout(value))
