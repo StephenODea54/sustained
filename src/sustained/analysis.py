@@ -105,7 +105,8 @@ class MigrationStatement(str):
     `impact` is the statement's `StatementImpact`, which the migrator
     attaches before the guards run on a dialect the impact analysis
     covers. It is None everywhere else. A statement wrapped again keeps
-    it when none is given. None of `destructive`, `intent`, and `impact`
+    it when none is given, and keeps its migration id and its
+    `transactional` flag the same way. None of `destructive`, `intent`, and `impact`
     takes part in equality or in a migration's checksum, which reads the
     statement text alone.
     """
@@ -120,13 +121,18 @@ class MigrationStatement(str):
         cls,
         statement: str,
         migration_id: Optional[str] = None,
-        transactional: bool = True,
+        transactional: Optional[bool] = None,
         destructive: Optional[bool] = None,
         intent: Optional[Intent] = None,
         impact: Optional[StatementImpact] = None,
     ) -> "MigrationStatement":
         instance = super().__new__(cls, statement)
+        wrapped = statement if isinstance(statement, MigrationStatement) else None
+        if migration_id is None and wrapped is not None:
+            migration_id = wrapped.migration_id
         instance.migration_id = migration_id
+        if transactional is None:
+            transactional = wrapped.transactional if wrapped is not None else True
         instance.transactional = transactional
         if destructive is None:
             destructive = (
@@ -157,14 +163,6 @@ def with_intent(
     if kind not in INTENT_KINDS:
         raise ValueError(f"Unknown intent kind: {kind!r}.")
     intent = Intent(kind, table, column, MappingProxyType(details))
-    if isinstance(statement, MigrationStatement):
-        return MigrationStatement(
-            statement,
-            statement.migration_id,
-            statement.transactional,
-            statement.destructive,
-            intent,
-        )
     return MigrationStatement(statement, intent=intent)
 
 

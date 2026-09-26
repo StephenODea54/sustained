@@ -21,6 +21,7 @@ from sustained.guards import (
     max_blocking,
     max_statements,
     no_drops,
+    no_lock_without_timeout,
     no_rewrite,
     no_unknown_impact,
     reads_impact,
@@ -165,6 +166,20 @@ class ImpactRuleTestCase(unittest.TestCase):
         statement = attached([ADD], context(5, 8192))[0]
         self.assertIs(MigrationStatement(statement).impact, statement.impact)
         self.assertEqual(MigrationStatement(statement), ADD)
+
+    def test_attaching_impact_keeps_each_statement_in_its_migration(self):
+        run = [
+            MigrationStatement("SET LOCAL lock_timeout = '1s'", "001"),
+            MigrationStatement("ALTER TABLE a ADD COLUMN x int", "001"),
+            MigrationStatement("ALTER TABLE b ADD COLUMN y int", "002", False),
+        ]
+        statements = with_impact(run, analyze(run, PG))
+        self.assertEqual([s.migration_id for s in statements], ["001", "001", "002"])
+        self.assertFalse(statements[2].transactional)
+        self.assertEqual(
+            flagged(no_lock_without_timeout(), statements),
+            ["ALTER TABLE b ADD COLUMN y int"],
+        )
 
 
 def index_run():

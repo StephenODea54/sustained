@@ -233,6 +233,15 @@ class MarkedStatementTestCase(unittest.TestCase):
             MigrationStatement(inner, "002", destructive=False).destructive
         )
 
+    def test_a_wrapped_statement_keeps_its_migration(self):
+        inner = MigrationStatement(
+            "CREATE INDEX CONCURRENTLY ix ON t (c)", "002", False
+        )
+        wrapped = MigrationStatement(inner, destructive=True)
+        self.assertEqual(wrapped.migration_id, "002")
+        self.assertFalse(wrapped.transactional)
+        self.assertTrue(MigrationStatement(inner, "003", True).transactional)
+
     def test_summarize_keeps_the_mark(self):
         statement = MigrationStatement(
             "ALTER TABLE t ALTER p TYPE int", destructive=True

@@ -731,11 +731,11 @@ One migration reduced to its id, state, repeatable flag, statement count, and de
 `PendingSummary(id, state, repeatable, sql, destructive)` contains that summary. `sql` is `None` for a callable step, which has no SQL to count. Each statement in it is a `MigrationStatement`.
 
 ```python
-MigrationStatement(statement, migration_id=None, transactional=True, destructive=None, intent=None, impact=None)
+MigrationStatement(statement, migration_id=None, transactional=None, destructive=None, intent=None, impact=None)
 ```
 {: .sig #migration-statement}
 
-One statement with the migration it came from. It subclasses `str`, so anything that reads statements as strings reads these too. `migration_id` is the migration's id, or `None` when nothing named one. `transactional` is that migration's transaction flag. `destructive` marks a statement the diff knows removes data. `intent` is what a generated statement is meant to do. `impact` is the statement's `StatementImpact`, which `up()` sets before the guards run. A statement wrapped again keeps the `destructive`, `intent`, and `impact` of the statement it wraps when none is given. None of the three takes part in equality or in a checksum.
+One statement with the migration it came from. It subclasses `str`, so anything that reads statements as strings reads these too. `migration_id` is the migration's id, or `None` when nothing named one. `transactional` is that migration's transaction flag, `True` when nothing gives one. `destructive` marks a statement the diff knows removes data. `intent` is what a generated statement is meant to do. `impact` is the statement's `StatementImpact`, which `up()` sets before the guards run. A statement wrapped again keeps the `migration_id`, `transactional`, `destructive`, `intent`, and `impact` of the statement it wraps when none is given. None of `destructive`, `intent`, and `impact` takes part in equality or in a checksum.
 
 ```python
 statement_scope(statement) -> tuple[str | None, bool]
