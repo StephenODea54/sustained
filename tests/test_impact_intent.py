@@ -17,7 +17,7 @@ from sustained import autogenerate as autogenerate_module
 from sustained import ddl
 from sustained.analysis import MigrationStatement, summarize, with_intent
 from sustained.dialects import Dialects
-from sustained.impact import Confidence, analyze
+from sustained.impact import Confidence, analyze, supported
 from sustained.impact.analyzer import intent_agrees
 from sustained.impact.model import INTENT_KINDS, Intent
 from sustained.impact.recognizer import recognize
@@ -244,7 +244,7 @@ class DiffIntentSweepTestCase(unittest.TestCase):
                         unknown.append((dialect.name, str(statement), parsed))
                 elif not intent_agrees(intent, parsed):
                     disagreeing.append((dialect.name, str(statement), intent, parsed))
-            if dialect is Dialects.POSTGRES:
+            if dialect is not None and supported(dialect):
                 report = analyze(list(migration.up), dialect)
                 unknown.extend(
                     (dialect.name, s.statement, "no impact")

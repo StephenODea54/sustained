@@ -37,7 +37,9 @@ The statement kinds, and the options each one sets:
 - `update`, `delete`: where, limited (a LIMIT or TOP caps the rows)
 - `insert`: source (`values`, `select`, or `default`), rows (the row
   count of a VALUES list)
-- `reindex`: target (`index`, `table`, ...), name, concurrently
+- `reindex`: target (`index`, `table`, ..., or on SQLite `database`
+  for every index and `any` for a name the text cannot place), name,
+  concurrently
 - `cluster`: index
 - `refresh_materialized_view`: concurrently, with_data
 - `create_trigger`, `drop_trigger`: name

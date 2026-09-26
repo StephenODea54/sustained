@@ -14,7 +14,8 @@ a scan the same way.
 
 `profile_for()` picks the profile for a dialect. MySQL and MariaDB
 share the MYSQL dialect, so a context read from the server names which
-of the two applies. A dialect without a profile has no impact analysis
+of the two applies. SQLite connections use the DEFAULT dialect, whose
+profile is SQLite's. A dialect without a profile has no impact analysis
 yet.
 """
 
@@ -187,7 +188,9 @@ class Profile(NamedTuple):
     `local_scope` says whether `SET LOCAL` ends with the transaction, as
     on Postgres, or means the session, as on MySQL. `trace` is how a
     traced rehearsal observes the statements, or None on an engine the
-    rehearsal cannot observe.
+    rehearsal cannot observe. `locks_database` says whether a write
+    locks the whole database, as on SQLite, so a migration's locks make
+    one transaction window.
     """
 
     name: str
@@ -207,6 +210,7 @@ class Profile(NamedTuple):
     bounded: Callable[[str], bool] = sets_a_timeout
     local_scope: bool = True
     trace: Optional[Trace] = None
+    locks_database: bool = False
 
     def waits_in_queue(self, lock: Optional[str]) -> bool:
         """Whether waiting for the lock queues other sessions behind it."""
@@ -217,11 +221,12 @@ class Profile(NamedTuple):
 
 def _profiles() -> Mapping[str, Tuple[Profile, ...]]:
     """Each dialect's profiles, the one assumed without a server first."""
-    from sustained.impact.rules import mysql, postgres
+    from sustained.impact.rules import mysql, postgres, sqlite
 
     return {
         "POSTGRES": (postgres.PROFILE,),
         "MYSQL": (mysql.MYSQL, mysql.MARIADB),
+        "DEFAULT": (sqlite.PROFILE,),
     }
 
 

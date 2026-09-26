@@ -480,7 +480,7 @@ class AttachImpactTestCase(unittest.TestCase):
 
     def test_refuses_a_dialect_without_rules(self):
         with self.assertRaises(ValueError):
-            attach_impact(["SELECT 1"], Dialects.DEFAULT)
+            attach_impact(["SELECT 1"], Dialects.PRESTO)
 
 
 if __name__ == "__main__":

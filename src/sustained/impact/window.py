@@ -18,11 +18,18 @@ this. `aggregate()` reads a migration's statements together:
 When the locks do not outlive their statement, because the migration
 runs outside a transaction or the engine commits each DDL statement,
 every statement is a window of its own.
+
+On an engine whose writes lock the whole database, as SQLite's do, a
+lock on one table blocks writes to every other, so `aggregate()` reads
+the migration's tables as one window named `DATABASE`. Every write
+there blocks the same sessions, so the heavy work itself blocks as much
+as the lock held across it, and the window draws no `window.held`
+finding.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from sustained.impact.model import (
     Blocks,
@@ -34,6 +41,10 @@ from sustained.impact.model import (
     Window,
     Work,
 )
+
+# The name of the one window a database-wide lock makes, and of the
+# table line for work on the whole database, such as SQLite's VACUUM.
+DATABASE = "(database)"
 
 
 def statement_work(impact: StatementImpact) -> Work:
@@ -50,11 +61,14 @@ def _scopes(count: int, spans_transaction: bool) -> List[range]:
 
 
 def aggregate(
-    statements: Sequence[StatementImpact], spans_transaction: bool
+    statements: Sequence[StatementImpact],
+    spans_transaction: bool,
+    locks_database: bool = False,
 ) -> Tuple[Tuple[Lock, ...], Tuple[Window, ...], Tuple[Finding, ...]]:
     """
     The locks, windows, and findings of one migration's statements.
-    `spans_transaction` says whether locks are held to the commit.
+    `spans_transaction` says whether locks are held to the commit, and
+    `locks_database` whether a lock on a table locks the whole database.
     """
     locks = tuple(
         Lock(table.table, table.lock, table.blocks, position)
@@ -65,19 +79,27 @@ def aggregate(
     works = [statement_work(s) for s in statements]
     windows: List[Window] = []
     findings: List[Finding] = []
+    database = DATABASE if locks_database else None
     for scope in _scopes(len(statements), spans_transaction):
-        scoped = _windows(statements, works, scope)
+        scoped = _windows(statements, works, scope, database)
         windows.extend(window for window, _ in scoped)
-        findings.extend(_held(scoped))
+        if not locks_database:
+            findings.extend(_held(scoped))
         if spans_transaction:
             findings.extend(_lock_order([window for window, _ in scoped]))
     return locks, tuple(windows), tuple(findings)
 
 
 def _windows(
-    statements: Sequence[StatementImpact], works: Sequence[Work], scope: range
+    statements: Sequence[StatementImpact],
+    works: Sequence[Work],
+    scope: range,
+    database: Optional[str] = None,
 ) -> List[Tuple[Window, int]]:
-    """Each blocked table's window, with the position that opened it."""
+    """
+    Each blocked table's window, with the position that opened it. With
+    `database`, every table's lock falls in the one window of that name.
+    """
     first: Dict[str, int] = {}
     worst: Dict[str, Tuple[Blocks, int]] = {}
     names: Dict[str, str] = {}
@@ -85,8 +107,8 @@ def _windows(
         for table in statements[index].tables:
             if table.blocks < Blocks.WRITES:
                 continue
-            key = table.table.lower()
-            names.setdefault(key, table.table)
+            key = database or table.table.lower()
+            names.setdefault(key, database or table.table)
             first.setdefault(key, index)
             if key not in worst or table.blocks > worst[key][0]:
                 worst[key] = (table.blocks, index + 1)

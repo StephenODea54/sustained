@@ -202,7 +202,7 @@ class ReadContextTestCase(unittest.TestCase):
 
     def test_refuses_a_dialect_without_rules(self):
         with self.assertRaises(ValueError):
-            read_context(ScriptedConnection(), Dialects.DEFAULT)
+            read_context(ScriptedConnection(), Dialects.PRESTO)
 
     def test_the_async_read_matches(self):
         adapter = ScriptedAdapter(refuse="pg_total_relation_size")

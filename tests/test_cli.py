@@ -658,6 +658,9 @@ class JsonOutputTestCase(CliBase):
         self.assertEqual(code, 2)
         self.assertEqual(payload["problems"], [])
         self.assertIsNone(payload["drift"])
+        impact = payload["pending"][2]["statements"][0].pop("impact")
+        self.assertEqual(impact["kind"], "drop_table")
+        self.assertEqual(impact["tables"][0]["lock"], "database write lock")
         self.assertEqual(
             payload["pending"][2],
             {
@@ -669,7 +672,6 @@ class JsonOutputTestCase(CliBase):
                         "sql": "DROP TABLE flags",
                         "destructive": True,
                         "guards": [],
-                        "impact": None,
                     }
                 ],
                 "destructive": ["DROP TABLE flags"],
@@ -1511,12 +1513,17 @@ class ImpactCliTestCase(CliBase):
     """
     The impact command and the plan's impact section.
 
-    The CLI tests run on SQLite, which has no impact rules yet, so the
-    tests that need an analysis read the migrations with the Postgres
-    profile standing in for SQLite's. SQLite refuses the Postgres
-    catalog statements, so the context holds only the schema read and
-    the version stays assumed.
+    The CLI tests run on SQLite. The tests of the Postgres report read
+    the migrations with the Postgres profile standing in for SQLite's.
+    SQLite refuses the Postgres catalog statements, so the context holds
+    only the schema read and the version stays assumed. The tests of a
+    dialect without rules leave no profile at all.
     """
+
+    def _no_rules(self):
+        patcher = mock.patch("sustained.impact.rules._profiles", return_value={})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _postgres_rules(self):
         from sustained.impact.rules import postgres
@@ -1597,11 +1604,13 @@ class ImpactCliTestCase(CliBase):
         self.assertIn('CREATE TABLE "notes"', stdout.getvalue())
 
     def test_impact_on_a_dialect_without_rules_exits_one(self):
+        self._no_rules()
         code, _, err = self.run_cli("impact")
         self.assertEqual(code, 1)
         self.assertIn("Impact analysis does not cover DEFAULT yet", err)
 
     def test_impact_json_failure_prints_null_keys(self):
+        self._no_rules()
         code, out, _ = self.run_cli("impact", "--json")
         self.assertEqual(code, 1)
         payload = json.loads(out)
@@ -1712,6 +1721,7 @@ class ImpactCliTestCase(CliBase):
             self.assertEqual(statement["impact"]["kind"], "alter_table")
 
     def test_plan_json_impact_is_null_without_rules(self):
+        self._no_rules()
         self._add_index()
         code, out, _ = self.run_cli("plan", "--json")
         self.assertEqual(code, 2)

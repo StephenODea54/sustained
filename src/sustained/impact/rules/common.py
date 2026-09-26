@@ -139,7 +139,7 @@ def with_observations(
                 statement = observe(statement, observations[key])
             statements.append(statement)
         spans = migration.transactional and profile.transactional_ddl
-        locks, windows, findings = aggregate(statements, spans)
+        locks, windows, findings = aggregate(statements, spans, profile.locks_database)
         migrations.append(
             migration._replace(
                 statements=tuple(statements),

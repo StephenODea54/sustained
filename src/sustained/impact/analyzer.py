@@ -258,7 +258,9 @@ class _Run:
             )
             for i, text in enumerate(statements, 1)
         )
-        locks, windows, findings = aggregate(impacts, spans)
+        locks, windows, findings = aggregate(
+            impacts, spans, self.profile.locks_database
+        )
         return MigrationImpact(
             migration_id, transactional, impacts, locks, windows, findings, spans
         )

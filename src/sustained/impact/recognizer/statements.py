@@ -160,6 +160,8 @@ class Statements(Cursor):
         return ParsedStatement("rename_table", pairs[0][0], options=frozen(options))
 
     def reindex(self) -> ParsedStatement:
+        if self.sqlite:
+            return self.sqlite_reindex()
         if self.is_punct("("):
             self.group()
         target = self.expect_one_of_words(
@@ -175,6 +177,20 @@ class Statements(Cursor):
             "concurrently": concurrently,
         }
         return ParsedStatement("reindex", table, options=frozen(options))
+
+    def sqlite_reindex(self) -> ParsedStatement:
+        """
+        SQLite's REINDEX: every index with no name, or the indexes of
+        the table, the index, or the collation the name finds, which
+        the text cannot tell apart.
+        """
+        name = None if self.at_end() else self.name()
+        options: Options = {
+            "target": "database" if name is None else "any",
+            "name": name,
+            "concurrently": False,
+        }
+        return ParsedStatement("reindex", options=frozen(options))
 
     def vacuum(self) -> ParsedStatement:
         full = False

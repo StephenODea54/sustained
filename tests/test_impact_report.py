@@ -88,10 +88,10 @@ class MigratorImpactTestCase(unittest.TestCase):
 
     def test_refuses_a_dialect_without_rules_before_reading(self):
         connection = FakePostgresConnection()
-        migrator = Migrator(connection, [], dialect=Dialects.DEFAULT)
+        migrator = Migrator(connection, [], dialect=Dialects.PRESTO)
         with self.assertRaises(DialectError) as caught:
             migrator.impact()
-        self.assertIn("does not cover DEFAULT", str(caught.exception))
+        self.assertIn("does not cover PRESTO", str(caught.exception))
         self.assertEqual(connection.log, [])
 
 
@@ -113,7 +113,7 @@ class AsyncMigratorImpactTestCase(unittest.TestCase):
 
     def test_refuses_a_dialect_without_rules_before_reading(self):
         adapter = FakePostgresAdapter()
-        migrator = AsyncMigrator(adapter, [], dialect=Dialects.DEFAULT)
+        migrator = AsyncMigrator(adapter, [], dialect=Dialects.PRESTO)
         with self.assertRaises(DialectError):
             asyncio.run(migrator.impact())
         self.assertEqual(adapter.log, [])

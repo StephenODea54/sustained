@@ -31,7 +31,7 @@ supported(dialect) -> bool
 ```
 {: .sig #supported}
 
-Whether the analysis has rules for the dialect. `Dialects.POSTGRES` and `Dialects.MYSQL` have rules.
+Whether the analysis has rules for the dialect. `Dialects.POSTGRES`, `Dialects.MYSQL`, and `Dialects.DEFAULT` have rules.
 
 ```python
 profile_for(dialect, name=None) -> Profile | None
@@ -39,7 +39,7 @@ profiles_for(dialect) -> tuple[Profile, ...]
 ```
 {: .sig #profile_for}
 
-These live in `sustained.impact.rules`. `profile_for()` returns the dialect's rule profile named `name`, or its first profile when `name` is `None` or names none of them, and `None` for a dialect without rules. `profiles_for()` returns every profile of the dialect, the one assumed without a server first: `postgres` on `Dialects.POSTGRES`, and `mysql` then `mariadb` on `Dialects.MYSQL`.
+These live in `sustained.impact.rules`. `profile_for()` returns the dialect's rule profile named `name`, or its first profile when `name` is `None` or names none of them, and `None` for a dialect without rules. `profiles_for()` returns every profile of the dialect, the one assumed without a server first: `postgres` on `Dialects.POSTGRES`, `mysql` then `mariadb` on `Dialects.MYSQL`, and `sqlite` on `Dialects.DEFAULT`, which SQLite connections use.
 
 ## `read_context()`
 
@@ -49,7 +49,7 @@ await async_read_context(adapter, dialect) -> EngineContext
 ```
 {: .sig #read_context}
 
-The server facts the dialect's rules read, from a blocking connection or an async adapter. On PostgreSQL that is the version from `server_version_num`, the `TimeZone` and `lock_timeout` settings, each table's estimated rows and total bytes, and the schema of the connection's own schema. On MySQL and MariaDB it is `VERSION()`, which also sets the context's profile to `mysql` or `mariadb`, the `foreign_key_checks` and `lock_wait_timeout` settings, each table's estimated rows, bytes, and row format, which tables have a FULLTEXT index, on MySQL 8.0.29 and later each table's instant row versions, and the schema of the current database. Nothing is written.
+The server facts the dialect's rules read, from a blocking connection or an async adapter. On PostgreSQL that is the version from `server_version_num`, the `TimeZone` and `lock_timeout` settings, each table's estimated rows and total bytes, and the schema of the connection's own schema. On MySQL and MariaDB it is `VERSION()`, which also sets the context's profile to `mysql` or `mariadb`, the `foreign_key_checks` and `lock_wait_timeout` settings, each table's estimated rows, bytes, and row format, which tables have a FULLTEXT index, on MySQL 8.0.29 and later each table's instant row versions, and the schema of the current database. On SQLite it is `sqlite_version()`, the `journal_mode` setting, each table's estimated rows from `sqlite_stat1` and bytes from the `dbstat` virtual table, the database file's bytes under the name `(database)`, and the schema. Nothing is written.
 
 Each statement runs inside a savepoint. A statement that fails leaves its facts out of `read`, and the read goes on. Both raise `ValueError` for a dialect without impact rules.
 
@@ -128,7 +128,7 @@ ImpactReport(profile, version, evidence, migrations, read=frozenset())
 ```
 {: .sig}
 
-`profile` is the rule profile: `'postgres'`, `'mysql'`, or `'mariadb'`. `version` is the server version the rules assumed, as a tuple of ints. `evidence` is what the report rests on. `migrations` is a tuple of `MigrationImpact`, in run order. `read` is the context's `read`: the facts that came from the server.
+`profile` is the rule profile: `'postgres'`, `'mysql'`, `'mariadb'`, or `'sqlite'`. `version` is the server version the rules assumed, as a tuple of ints. `evidence` is what the report rests on. `migrations` is a tuple of `MigrationImpact`, in run order. `read` is the context's `read`: the facts that came from the server.
 
 | Member | Returns |
 | --- | --- |
@@ -143,7 +143,7 @@ MigrationImpact(migration_id, transactional, statements, locks=(), windows=(), f
 ```
 {: .sig}
 
-One migration: its id, or `None` for statements with no migration, its transaction flag, a tuple of `StatementImpact`, the `Lock`s it takes, the `Window`s those locks make, and findings about the migration as a whole, such as `window.held` and `window.lock_order`. `held_to_commit` is true when the locks last until the migration commits: inside a transaction, on an engine whose DDL does not commit on its own. Otherwise each statement is a window of its own.
+One migration: its id, or `None` for statements with no migration, its transaction flag, a tuple of `StatementImpact`, the `Lock`s it takes, the `Window`s those locks make, and findings about the migration as a whole, such as `window.held` and `window.lock_order`. `held_to_commit` is true when the locks last until the migration commits: inside a transaction, on an engine whose DDL does not commit on its own. Otherwise each statement is a window of its own. On SQLite, whose writes lock the whole database, the migration's locks make one `Window` named `(database)`, and it draws no `window.held` finding.
 
 `Lock(table, lock, blocks, statement)` is one lock that blocks something. `statement` is the position of the statement that took it, counting from 1 within the migration.
 

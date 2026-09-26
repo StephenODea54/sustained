@@ -20,6 +20,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Union
 
 from sustained.impact.context import version_text
 from sustained.impact.model import (
+    Blocks,
     Confidence,
     Finding,
     ImpactReport,
@@ -29,6 +30,7 @@ from sustained.impact.model import (
     TableImpact,
 )
 from sustained.impact.rules import title
+from sustained.impact.window import DATABASE
 
 JsonValue = Union[
     str, int, float, bool, None, Sequence["JsonValue"], Mapping[str, "JsonValue"]
@@ -169,15 +171,27 @@ def _window_lines(migration: MigrationImpact, indent: str = "  ") -> List[str]:
         return []
     lines = []
     for window in migration.windows:
-        taken = [
-            f"{lock.lock} from statement {lock.statement}"
-            for lock in migration.locks
-            if lock.table.lower() == window.table.lower()
-        ]
+        if window.table == DATABASE:
+            taken = _database_locks(migration)
+        else:
+            taken = [
+                f"{lock.lock} from statement {lock.statement}"
+                for lock in migration.locks
+                if lock.table.lower() == window.table.lower()
+            ]
         lines.append(
             f"{indent}window  {window.table}: {', '.join(taken)}, held to commit"
         )
     return lines
+
+
+def _database_locks(migration: MigrationImpact) -> List[str]:
+    """Each lock of a database-wide window, from the first statement to take it."""
+    first: Dict[str, int] = {}
+    for lock in migration.locks:
+        if lock.blocks >= Blocks.WRITES:
+            first.setdefault(str(lock.lock), lock.statement)
+    return [f"{lock} from statement {position}" for lock, position in first.items()]
 
 
 def statement_annotation(impact: StatementImpact) -> List[str]:

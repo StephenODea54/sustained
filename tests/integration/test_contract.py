@@ -4,7 +4,7 @@ The covers contract.
 support.json carries a `covers` list per server, and the support page
 prints it. This test makes each name in that list a proven claim: every
 cover maps to its test mixins here, one per engine family where the
-engines need different tests, as `impact` does for PostgreSQL and InnoDB,
+engines need different tests, as `impact` does for PostgreSQL, InnoDB, and SQLite,
 and every server's test module mixes in exactly the covers its row names. A cover with no mixin, or a
 mixin no server claims, fails the suite. This needs no server, so it runs
 on every plain test run, not only under matrix.py.
@@ -18,6 +18,7 @@ from . import (
     harness,
     impact,
     impact_innodb,
+    impact_sqlite,
     lifecycle,
     queries,
     transactions,
@@ -30,7 +31,11 @@ COVERS = {
     "transactions": transactions.TransactionsCase,
     "migrations": lifecycle.ServerCase,
     "async": aio_lifecycle.AsyncCase,
-    "impact": (impact.ImpactCase, impact_innodb.InnodbImpactCase),
+    "impact": (
+        impact.ImpactCase,
+        impact_innodb.InnodbImpactCase,
+        impact_sqlite.SqliteImpactCase,
+    ),
 }
 
 

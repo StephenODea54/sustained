@@ -49,6 +49,7 @@ FLOORS: Mapping[str, Tuple[int, ...]] = MappingProxyType(
         "postgres": (12,),
         "mysql": (8, 0, 19),
         "mariadb": (10, 6),
+        "sqlite": (3, 35),
     }
 )
 

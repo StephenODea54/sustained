@@ -9,6 +9,7 @@ import io
 import sqlite3
 import unittest
 from contextlib import redirect_stderr
+from unittest import mock
 
 from sustained.aio_migrations import AsyncMigrator
 from sustained.analysis import MigrationStatement
@@ -153,7 +154,7 @@ class ImpactRuleTestCase(unittest.TestCase):
 
     def test_silent_on_a_dialect_without_rules(self):
         for guard in (max_blocking("nothing"), no_rewrite(), no_unknown_impact()):
-            self.assertEqual(flagged(guard, [RETYPE, GRANT], Dialects.DEFAULT), [])
+            self.assertEqual(flagged(guard, [RETYPE, GRANT], Dialects.PRESTO), [])
 
     def test_an_attached_impact_is_read_before_a_static_one(self):
         statements = attached([ADD], context(5, 8192))
@@ -249,7 +250,8 @@ class MigratorImpactGuardTestCase(unittest.TestCase):
         with self.assertRaises(GuardBlocked):
             asyncio.run(migrator.up())
 
-    def test_a_dialect_without_rules_reads_no_context(self):
+    @mock.patch("sustained.impact.rules._profiles", return_value={})
+    def test_a_dialect_without_rules_reads_no_context(self, _):
         connection = sqlite3.connect(":memory:")
         stderr = io.StringIO()
         migrator = Migrator(

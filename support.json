@@ -128,7 +128,7 @@
       "module": "sqlite3",
       "dsn_env": "SUSTAINED_TEST_SQLITE_DSN",
       "dsn": ":memory:",
-      "covers": ["queries", "writes", "transactions", "migrations", "async"],
+      "covers": ["queries", "writes", "transactions", "migrations", "async", "impact"],
       "floor": "3.35",
       "note": "Standard library. The table rebuild path lives here. RETURNING and DROP COLUMN set the floor; sqlite3.sqlite_version says what your Python links."
     },

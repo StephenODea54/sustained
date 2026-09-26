@@ -72,10 +72,11 @@ class LockNameTestCase(unittest.TestCase):
         )
         self.assertEqual(lock_name("RowExclusiveLock"), "ROW EXCLUSIVE")
 
-    def test_postgres_and_mysql_trace(self):
+    def test_which_profiles_trace(self):
         self.assertIsNotNone(profile_for(PG).trace.sighting)
         self.assertIsNotNone(profile_for(Dialects.MYSQL).trace.attempts)
-        self.assertIsNone(profile_for(Dialects.DEFAULT))
+        self.assertIsNone(profile_for(Dialects.DEFAULT).trace)
+        self.assertIsNone(profile_for(Dialects.PRESTO))
 
 
 class PlanTestCase(unittest.TestCase):

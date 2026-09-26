@@ -507,7 +507,7 @@ migrations_dir = 'migrations'
 
 ```console
 $ sustained plan                    # what a run would do; exits 2 when work is waiting
-$ sustained impact                  # the locks and work of each statement, on Postgres
+$ sustained impact                  # the locks and work of each statement
 $ sustained status
 $ sustained rehearse                # run it all, forwards and back, then roll back
 $ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order, --unrehearsed
@@ -563,7 +563,7 @@ The footer points at `rehearse` rather than `migrate` when a pending migration h
 
 The drift section appears only when the config module names `models`. It reports every difference, drops included, while `migrate` never generates a drop. When drops are all that is left, the footer says so instead of offering `sustained migrate`. With no `models`, the plan says drift went unchecked rather than reporting none.
 
-On Postgres, `plan` also lists the statements whose impact on a live database merits a look in an `impact` section: a statement with a `warn` or `danger` finding, such as a `CREATE INDEX` that blocks writes for the whole build, and a statement the analysis could not read. `sustained impact` prints the full report. See [Statement impact](/impact).
+On a dialect the impact analysis covers, `plan` also lists the statements whose impact on a live database merits a look in an `impact` section: a statement with a `warn` or `danger` finding, such as a `CREATE INDEX` that blocks writes for the whole build, and a statement the analysis could not read. `sustained impact` prints the full report. See [Statement impact](/impact).
 
 When the config module names `guards`, `plan` runs them and prints a fourth section, described under [Guards](#guards). The guards read the statements `migrate` would apply: the pending migrations, and the generated migration without the drops. The drift section is the wider set, so a drop it lists has no verdict, because no run would read it.
 

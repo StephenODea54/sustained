@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Statement impact
-description: "Read what each migration statement does to a live PostgreSQL, MySQL, or MariaDB database while it runs: the locks it takes, what they block, whether it rewrites the table, and the safer form."
+description: "Read what each migration statement does to a live PostgreSQL, MySQL, MariaDB, or SQLite database while it runs: the locks it takes, what they block, whether it rewrites the table, and the safer form."
 ---
 
 A migration can be valid, reversible, and free of drops, and still take the application down while it runs. A `CREATE INDEX` on a large table stops every write to it until the build finishes. An `ALTER TABLE` that needs `ACCESS EXCLUSIVE` waits behind the longest open transaction, and every query on the table waits behind the `ALTER TABLE`.
@@ -13,7 +13,7 @@ The impact analysis reads the statements a run would apply and reports, for each
 - how long it holds each lock: a moment, the whole statement, or until the migration commits
 - a safer form of the statement, when the engine has one
 
-The analysis covers PostgreSQL 12 and later, and InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later. It reads the statement text, the intent Sustained attaches to the statements it generates, and, when it has a connection, the server's version, settings, and table sizes.
+The analysis covers PostgreSQL 12 and later, InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later, and SQLite 3.35 and later. It reads the statement text, the intent Sustained attaches to the statements it generates, and, when it has a connection, the server's version, settings, and table sizes.
 
 ## Running it
 
@@ -37,7 +37,7 @@ $ sustained impact
 2 statements, 1 danger, 2 warn. Evidence: catalog (PostgreSQL 16.4)
 ```
 
-On MySQL and MariaDB the same report names the algorithm and lock level the server runs each ALTER TABLE with; see [MySQL and MariaDB](#mysql-and-mariadb).
+On MySQL and MariaDB the same report names the algorithm and lock level the server runs each ALTER TABLE with; see [MySQL and MariaDB](#mysql-and-mariadb). On SQLite it names the lock every write takes on the whole database; see [SQLite](#sqlite).
 
 `sustained impact` exits 0 when it prints the report and 1 on a failure, including a dialect the analysis does not cover. It never blocks a run. `--json` prints the report as one object; see [JSON output](/reference/cli#json-output).
 
@@ -89,7 +89,7 @@ The last line counts the statements and findings and says what the answer rests 
 | `writes` | INSERT, UPDATE, and DELETE wait. Reads proceed. |
 | `reads_and_writes` | Every query on the table waits. |
 
-**Lock** is the engine's own name for the lock. On PostgreSQL it is the mode `pg_locks.mode` reports, without the `Lock` suffix, such as `ACCESS EXCLUSIVE`, `SHARE`, or `SHARE UPDATE EXCLUSIVE`. On MySQL and MariaDB it is the `ALGORITHM` and `LOCK` clause the server accepts for the statement, such as `INSTANT` or `INPLACE, LOCK=NONE`, or `MDL EXCLUSIVE` and `IX` for statements that take no such clause.
+**Lock** is the engine's own name for the lock. On PostgreSQL it is the mode `pg_locks.mode` reports, without the `Lock` suffix, such as `ACCESS EXCLUSIVE`, `SHARE`, or `SHARE UPDATE EXCLUSIVE`. On MySQL and MariaDB it is the `ALGORITHM` and `LOCK` clause the server accepts for the statement, such as `INSTANT` or `INPLACE, LOCK=NONE`, or `MDL EXCLUSIVE` and `IX` for statements that take no such clause. On SQLite it is `database write lock`, which every write takes on the whole database file.
 
 **Work**, ordered from lightest to heaviest:
 
@@ -120,7 +120,7 @@ Work that blocks writes, or reads and writes, is rated against the table's size:
 
 A static report reads no sizes, so blocking work is `warn`. `analyze()` takes a `Thresholds(rows, bytes)` to move the limits.
 
-On PostgreSQL, a lock that blocks writes or more, with no lock timeout in scope, draws a `pg.lock_timeout` finding whatever the table's size. The statement waits for its lock behind the longest open transaction on the table, and every query that conflicts with the lock waits behind the statement. The remedy is `SET LOCAL lock_timeout` inside a transaction, or `SET lock_timeout` outside one. A `LOCK TABLE ... NOWAIT` never waits, so it draws no timeout finding. A `lock_timeout` the connection already has, from the role, the database, or the connection string, covers the whole run. MySQL and MariaDB draw the same finding, as `mysql.lock_timeout` or `mariadb.lock_timeout`, for every statement that takes the exclusive metadata lock; see [Lock timeouts on MySQL and MariaDB](#lock-timeouts-on-mysql-and-mariadb).
+On PostgreSQL, a lock that blocks writes or more, with no lock timeout in scope, draws a `pg.lock_timeout` finding whatever the table's size. The statement waits for its lock behind the longest open transaction on the table, and every query that conflicts with the lock waits behind the statement. The remedy is `SET LOCAL lock_timeout` inside a transaction, or `SET lock_timeout` outside one. A `LOCK TABLE ... NOWAIT` never waits, so it draws no timeout finding. A `lock_timeout` the connection already has, from the role, the database, or the connection string, covers the whole run. MySQL and MariaDB draw the same finding, as `mysql.lock_timeout` or `mariadb.lock_timeout`, for every statement that takes the exclusive metadata lock; see [Lock timeouts on MySQL and MariaDB](#lock-timeouts-on-mysql-and-mariadb). SQLite draws none, because a write waiting for the lock does not make other connections queue behind it.
 
 ## Server facts
 
@@ -146,7 +146,18 @@ On MySQL and MariaDB the read is this:
 | Instant row versions | `information_schema.INNODB_TABLES.TOTAL_ROW_VERSIONS`, MySQL 8.0.29 and later | Whether the table has instant changes left |
 | Schema | the schema read `plan()` uses | A column's current definition, which columns are indexed, and the table at the other end of a foreign key |
 
-The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. On MySQL and MariaDB it is InnoDB's estimate, which `ANALYZE TABLE` refreshes, and which InnoDB also refreshes on its own after a tenth of the rows change. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
+On SQLite the read is this:
+
+| Fact | Read from | Used for |
+| --- | --- | --- |
+| Version | `sqlite_version()` | The version the report names |
+| Journal mode | `PRAGMA journal_mode` | Whether reads wait for the write lock |
+| Table rows | `sqlite_stat1`, which exists once `ANALYZE` has run | The severity of blocking work |
+| Table sizes | the `dbstat` virtual table, when SQLite was built with it | The severity of blocking work |
+| Database size | `PRAGMA page_count` and `page_size` | The severity of `VACUUM` and of a `REINDEX` of every index |
+| Schema | the schema read `plan()` uses | The table an index to drop or reindex is on |
+
+The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. On MySQL and MariaDB it is InnoDB's estimate, which `ANALYZE TABLE` refreshes, and which InnoDB also refreshes on its own after a tenth of the rows change. On SQLite it is the count `ANALYZE` recorded, which nothing refreshes until `ANALYZE` runs again, and the read never counts rows itself. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
 
 A statement that fails, for example for lack of a privilege, leaves its facts out, and the rules fall back to the support floor or the worst case for them. Each statement runs inside a savepoint, so a failure does not abort the connection's open transaction. The report's `read` lists the facts that came from the server, and the last line of the text report says `assumed` before the version when the version was not read.
 
@@ -182,7 +193,7 @@ The NOT NULL flow the diff generates is one such case: it adds the column, backf
   warn    orders stays blocked for reads_and_writes from statement 1 until the migration commits, across the rows work of statement 2; move that work to a migration of its own
 ```
 
-A migration with `transactional=False` releases each lock when its statement ends, so each statement is a window of its own and the report prints no `window` line. MySQL and MariaDB commit each DDL statement on its own, so there every statement is a window of its own too. `MigrationImpact.held_to_commit`, and the `held_to_commit` key in the JSON output, say whether a migration's locks last until its commit.
+A migration with `transactional=False` releases each lock when its statement ends, so each statement is a window of its own and the report prints no `window` line. MySQL and MariaDB commit each DDL statement on its own, so there every statement is a window of its own too. On SQLite a write locks the whole database, so a migration inside a transaction is one window, named `(database)`, whatever tables it writes; see [SQLite](#sqlite). `MigrationImpact.held_to_commit`, and the `held_to_commit` key in the JSON output, say whether a migration's locks last until its commit.
 
 ## What the analysis carries through a run
 
@@ -521,3 +532,58 @@ A statement that spells `ALGORITHM` or `LOCK` is read with them. A heavier algor
 A statement that copies the table while writes wait names an online schema change tool, such as gh-ost or pt-online-schema-change, which copies the table without blocking writes.
 
 The integration suite checks the rules against MySQL 8.4 and 26.7 and MariaDB 11.4 and 12.3. It checks the facts `read_context()` reads, and the parent-table locks, by running each foreign key statement while a second session reads the parent. It creates the tables the rules' fixture statements name in a database of their own, runs each fixture alone under the probe of `rehearse --trace`, and fails on any `impact.mismatch`. It creates the database again for each fixture, since MySQL schema changes do not roll back. A fixture that spells its own clause must run, or be refused when the rules predict a refusal.
+
+## SQLite
+
+The rules follow the SQLite documentation for 3.35 and later. SQLite connections use the `DEFAULT` dialect, whose rules are SQLite's, and rule ids start with `sqlite.`.
+
+### The database write lock
+
+SQLite locks the database file, not a table. The first write of a transaction takes the write lock, and holds it until the transaction commits, so every other connection's writes wait for it on every table, for as long as their `busy_timeout` lets them. Each table line names the lock `database write lock`. What else waits depends on the journal mode:
+
+| Journal mode | Blocks |
+| --- | --- |
+| `wal` | `writes`. Readers never wait for the writer. |
+| any other, such as `delete` | `reads_and_writes`. Readers also wait while the changes are written to the database file, at the commit or when the page cache fills. |
+
+Without a read of the journal mode, the rules assume a rollback journal, and a finding for blocking work says the journal mode was not read.
+
+A migration inside a transaction holds the lock from its first write to its commit, whatever tables its statements name, so the report reads it as one window, `(database)`:
+
+```console
+20260926_items  transaction
+  ALTER TABLE items ADD COLUMN note text
+    items  database write lock  blocks writes  catalog  transaction  ~2.0M rows, 1.4 GB  [sqlite.add_column]
+  UPDATE items SET note = ''
+    items  database write lock  blocks writes  rows  statement  ~2.0M rows, 1.4 GB  [sqlite.write_rows]
+    danger  the UPDATE writes rows of items; writes to every table in the database wait until the migration commits; on a large table, backfill in batches outside the DDL migration
+  window  (database): database write lock from statement 1, held to commit
+```
+
+Every write blocks the same connections, so the work of a later statement blocks as much as the lock held across it, and the window draws no `window.held` finding. SQLite draws no lock-timeout finding: a write waiting for the lock does not make other connections queue behind it the way a server's lock queue does.
+
+### Rules
+
+| Statement | Work | Rule |
+| --- | --- | --- |
+| `ADD COLUMN` | catalog | `sqlite.add_column` |
+| `ADD COLUMN` with a CHECK constraint, or a NOT NULL constraint on a generated column, which SQLite checks against every row | scan | `sqlite.add_column.checked` |
+| `DROP COLUMN` | rewrite | `sqlite.drop_column` |
+| `RENAME COLUMN`, `RENAME TO`, with a note that running code naming the old name fails | catalog | `sqlite.rename` |
+| The diff's rebuild recipe, reported on the table it rebuilds | rewrite | `sqlite.rebuild` |
+| `CREATE INDEX` | index build | `sqlite.create_index` |
+| `DROP INDEX`, which visits every page of the index to free it | scan | `sqlite.drop_index` |
+| `REINDEX` | index build | `sqlite.reindex` |
+| `CREATE TABLE`, and creating or dropping a view or trigger | catalog | `sqlite.schema_change` |
+| `DROP TABLE`, which visits every page of the table to free it | scan | `sqlite.drop_table` |
+| `INSERT`, `UPDATE`, `DELETE` | rows | `sqlite.write_rows` |
+| `ANALYZE` | scan | `sqlite.analyze` |
+| `VACUUM`, which copies the whole database into a new file | rewrite | `sqlite.vacuum` |
+
+The diff changes a column's type or constraints on SQLite by rebuilding the table: it creates a new table, copies every row into it, drops the old table, renames the new one, and creates the indexes again. Each statement of the recipe carries the `rebuild_table` intent, so the analysis reports the copy as a rewrite of the table being rebuilt, under `sqlite.rebuild`. The recipe's other statements act on the new table, which the run created, so they block nothing and draw no findings. A hand-written copy has no intent, and its INSERT reads as row writes on the new table.
+
+`VACUUM` cannot run inside a transaction, so inside a transactional migration it also draws a `danger` finding that says to run it in a migration with `transactional=False`. `REINDEX` with no name reindexes every index in the database, and is reported on `(database)`. A `REINDEX` name that is neither a table nor an index the run or the schema read knows may be a collation, whose indexes span tables, so its confidence is `likely`.
+
+A statement the rules do not read, such as an `ALTER TABLE` action other than a column add, drop, or rename, is unknown.
+
+The integration suite checks each rule's fixtures on a WAL database file. Each fixture runs inside a transaction while a second connection tries to take the write lock and to read the database: the write must wait when the rules predict the write lock, and the read must go on. Each fixture then runs again with automatic checkpoints off, and the frames it leaves in the WAL count the pages it wrote. A statement the rules say rewrites a table or builds an index must write at least half as many pages as the table holds, and one they say changes only the schema at most two.

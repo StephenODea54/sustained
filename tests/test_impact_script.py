@@ -8,6 +8,7 @@ import asyncio
 import os
 import sqlite3
 import unittest
+from unittest import mock
 
 from sustained.aio_migrations import AsyncMigrator
 from sustained.dialects import Dialects
@@ -89,7 +90,8 @@ class AnnotatedScriptTestCase(unittest.TestCase):
         script = Migrator(ScriptedConnection(), [], dialect=PG).script(annotate=True)
         self.assertEqual(script, "")
 
-    def test_refuses_a_dialect_without_rules(self):
+    @mock.patch("sustained.impact.rules._profiles", return_value={})
+    def test_refuses_a_dialect_without_rules(self, _):
         migrator = Migrator(sqlite3.connect(":memory:"), orders_run())
         with self.assertRaises(DialectError):
             migrator.script(annotate=True)
@@ -116,7 +118,8 @@ class ImpactCliTestCase(CliBase):
         self.assertEqual(code, 0)
         self.assertIn("-- impact: danger  writes to orders wait", out)
 
-    def test_script_annotate_fails_on_a_dialect_without_rules(self):
+    @mock.patch("sustained.impact.rules._profiles", return_value={})
+    def test_script_annotate_fails_on_a_dialect_without_rules(self, _):
         code, _, err = self.run_cli("script", "--annotate")
         self.assertEqual(code, 1)
         self.assertIn("Impact analysis does not cover", err)
