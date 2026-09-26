@@ -61,6 +61,7 @@ from sustained.migrations.migration import (
     AppliedRecord,
     Callbacks,
     Migration,
+    PreflightCheck,
     _run_step,
 )
 from sustained.migrations.rehearsal import REHEARSAL_PASSED, Rehearsal
@@ -69,7 +70,7 @@ from sustained.types import Connection, Cursor, SqlValue
 
 if TYPE_CHECKING:
     from sustained.guards import Guard
-    from sustained.impact import ImpactReport
+    from sustained.impact import ImpactReport, Preflight
     from sustained.introspect import Snapshot
     from sustained.model import Model
     from sustained.schema import TableOptions
@@ -464,6 +465,7 @@ class Migrator(MigratorBase):
         unrehearsed: bool = False,
         assert_algorithm: bool = False,
         exact_counts: bool = False,
+        preflight: Union[None, str, PreflightCheck] = None,
     ) -> List[str]:
         """
         Applies pending migrations in order, stopping after the target id
@@ -517,6 +519,16 @@ class Migrator(MigratorBase):
         On a dialect the impact analysis covers, the server facts are
         read before the guards run, as impact() reads them, and
         exact_counts passes on to that read.
+
+        preflight='warn' or 'refuse' reads, after the guards pass and
+        before anything applies, the other sessions whose table locks a
+        statement of the run would wait behind, as preflight() reads
+        them. 'warn' prints each on stderr, with each transaction open
+        60 seconds or longer, and the run goes on; 'refuse' raises
+        PreflightBlocked when there is one. PreflightCheck(mode,
+        older_than) sets another age. The read is a snapshot: a session
+        may take a lock after it. A dialect without a live preflight
+        reads nothing. No session is ended.
         """
         return self._drive(
             runs.up(
@@ -532,8 +544,9 @@ class Migrator(MigratorBase):
                 table_renames=table_renames,
                 type_casts=type_casts,
                 unrehearsed=unrehearsed,
-                assert_algorithm=assert_algorithm,
-                exact_counts=exact_counts,
+                reads=runs.RunReads(
+                    assert_algorithm, exact_counts, runs.preflight_check(preflight)
+                ),
             )
         )
 
@@ -746,6 +759,8 @@ class Migrator(MigratorBase):
         models: Optional[List[Type["Model"]]] = None,
         assert_algorithm: bool = False,
         exact_counts: bool = False,
+        live: bool = False,
+        older_than: float = 60.0,
     ) -> "ImpactReport":
         """
         The impact of the run up() would make: every pending migration,
@@ -769,10 +784,36 @@ class Migrator(MigratorBase):
         reads the whole table. Other dialects read the estimates the
         server keeps either way.
 
+        live=True also reads what the run would wait behind on the
+        server, as preflight() reads it, into the report's `preflight`,
+        with older_than passed on.
+
         Raises DialectError on a dialect the analysis does not cover
-        yet.
+        yet, and with live=True on a dialect without a live preflight.
         """
-        return self._drive(runs.impact(self, models, assert_algorithm, exact_counts))
+        return self._drive(
+            runs.impact(self, models, assert_algorithm, exact_counts, live, older_than)
+        )
+
+    def preflight(
+        self,
+        models: Optional[List[Type["Model"]]] = None,
+        older_than: float = 60.0,
+        exact_counts: bool = False,
+    ) -> "Preflight":
+        """
+        The sessions the run up() would make would wait behind on the
+        server now: each other session whose table lock, granted or
+        asked for, conflicts with a lock a statement of the run takes,
+        and each other transaction open older_than seconds or longer.
+        The run is the one impact() analyzes, with models as there. See
+        sustained.impact.preflight. Nothing is written, and no session is
+        ended.
+
+        Raises DialectError on a dialect without a live preflight, which
+        PostgreSQL, MySQL, MariaDB, and SQL Server have.
+        """
+        return self._drive(runs.preflight(self, models, older_than, exact_counts))
 
     def read_schema(self, models: List[Type["Model"]]) -> "Snapshot":
         """

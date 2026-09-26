@@ -23,7 +23,9 @@ is unknown here.
 `context_plan()` reads the server facts the rules use: the version, the
 `TimeZone` and `lock_timeout` settings, and each table's size from
 `pg_class.reltuples` and `pg_total_relation_size()`. A partitioned
-table's size is the sum of its leaf partitions.
+table's size is the sum of its leaf partitions. `preflight_plan()` reads
+the other backends' table locks and open transactions for the live
+preflight.
 """
 
 from __future__ import annotations
@@ -73,6 +75,7 @@ from sustained.impact.rules.postgres.locks import (
     lock_rank,
     timeout_statement,
 )
+from sustained.impact.rules.postgres.preflight import preflight_plan
 from sustained.impact.rules.postgres.statements import (
     _cluster,
     _comment,
@@ -196,6 +199,7 @@ PROFILE = Profile(
     context_plan=context_plan,
     fixture_schema=FIXTURE_SCHEMA,
     trace=Trace(tables_plan, with_observations, sighting=sighting_plan),
+    preflight=preflight_plan,
 )
 
 __all__ = [

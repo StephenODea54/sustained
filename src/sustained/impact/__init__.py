@@ -18,6 +18,11 @@ The pieces:
   each with the catalog read and, on Postgres, the traced rehearsal's
   reads
 - `sustained.impact.window`: locks held across a migration
+- `sustained.impact.preflight`: what a run would wait behind on a live
+  server
+
+`preflight()` and `async_preflight()` read the sessions a run's
+statements would wait behind.
 """
 
 from sustained.impact.analyzer import analyze, attach_impact
@@ -43,14 +48,24 @@ from sustained.impact.model import (
     Window,
     Work,
 )
+from sustained.impact.preflight import (
+    Blocker,
+    LiveSession,
+    Preflight,
+    async_preflight,
+    preflight,
+)
 from sustained.impact.rules import supported
 
 __all__ = [
     "analyze",
     "attach_impact",
+    "async_preflight",
     "async_read_context",
+    "preflight",
     "read_context",
     "supported",
+    "Blocker",
     "Blocks",
     "Confidence",
     "EngineContext",
@@ -58,8 +73,10 @@ __all__ = [
     "Finding",
     "Hold",
     "ImpactReport",
+    "LiveSession",
     "Lock",
     "MigrationImpact",
+    "Preflight",
     "Severity",
     "StatementImpact",
     "TableImpact",

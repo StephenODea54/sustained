@@ -71,6 +71,8 @@ its clustered index from `sys.indexes`.
 
 A traced rehearsal, which SQL Server runs on a scratch database, reads
 the locks, partitions, and log around each statement (`trace.py`).
+`preflight_plan()` reads the other sessions' table locks and user
+transactions for the live preflight (`preflight.py`).
 """
 
 from __future__ import annotations
@@ -87,6 +89,7 @@ from sustained.impact.rules.mssql.locks import (
     release,
     timeout_statement,
 )
+from sustained.impact.rules.mssql.preflight import preflight_plan
 from sustained.impact.rules.mssql.statements import STATEMENTS
 from sustained.impact.rules.mssql.trace import (
     sighting_plan,
@@ -118,6 +121,7 @@ PROFILE = Profile(
     local_scope=False,
     release=release,
     trace=Trace(tables_plan, with_observations, sighting=sighting_plan),
+    preflight=preflight_plan,
 )
 
 __all__ = [

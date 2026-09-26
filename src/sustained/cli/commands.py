@@ -16,6 +16,8 @@ from sustained.cli.config import (
     _close_quietly,
     _exact_counts,
     _migrator_on,
+    _older_than,
+    _preflight,
 )
 from sustained.cli.output import (
     _print_json,
@@ -58,6 +60,8 @@ def _cmd_impact(
         models,
         assert_algorithm=_assert_algorithm(config),
         exact_counts=_exact_counts(config, args),
+        live=args.live,
+        older_than=_older_than(config, args),
     )
     if args.json:
         _print_json(report_data(report))
@@ -220,6 +224,7 @@ def _cmd_migrate(
         unrehearsed=args.unrehearsed,
         assert_algorithm=_assert_algorithm(config),
         exact_counts=_exact_counts(config, args),
+        preflight=_preflight(config, args),
     )
     if not applied:
         print("Nothing to apply.")

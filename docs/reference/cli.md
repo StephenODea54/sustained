@@ -19,10 +19,10 @@ Guide: [Schema and Migrations](/schema#command-line).
 | Command | Options | Does |
 | --- | --- | --- |
 | `plan` | `--json`, `--exact-counts` | Shows the pending migrations, the problems, and the model drift. |
-| `impact` | `--json`, `--exact-counts` | Shows the locks, blocking, and work of each statement in the run. |
+| `impact` | `--json`, `--exact-counts`, `--live`, `--older-than SECONDS` | Shows the locks, blocking, and work of each statement in the run. `--live` adds the sessions each statement would wait behind now. |
 | `status` | `--json` | Shows every migration's state: applied, pending, or changed. |
 | `rehearse` | `--json`, `--trace` | Runs the pending migrations up and back down, then rolls it all back. |
-| `migrate` | `--target ID`, `--no-validate`, `--allow-out-of-order`, `--unrehearsed`, `--exact-counts` | Applies pending migrations in order. |
+| `migrate` | `--target ID`, `--no-validate`, `--allow-out-of-order`, `--unrehearsed`, `--exact-counts`, `--preflight warn\|refuse` | Applies pending migrations in order. |
 | `down` | `--steps N` (default 1) or `--to ID` | Reverts applied migrations, newest first. |
 | `validate` | `--json` | Checks the tracking table against the migrations. |
 | `repair` | | Fixes tracking rows after failures or intentional edits. |
@@ -40,8 +40,9 @@ Guide: [Schema and Migrations](/schema#command-line).
 | 2 | `plan` only: work is waiting. |
 | 3 | `plan` and `migrate`: a guard blocked a statement. |
 | 4 | `migrate` only: the run removes data and no rehearsal proved it. |
+| 5 | `migrate` only: with `preflight` set to `refuse`, another session has a lock a statement of the run would wait for. |
 
-`plan` uses every code except 4. It exits 0 when the database is current, 2 when migrations are pending or the models have drifted, 3 when a guard blocked a statement, and 1 when validation found problems. Problems outrank a blocked statement, and a blocked statement outranks pending work.
+`plan` uses every code except 4 and 5. It exits 0 when the database is current, 2 when migrations are pending or the models have drifted, 3 when a guard blocked a statement, and 1 when validation found problems. Problems outrank a blocked statement, and a blocked statement outranks pending work.
 
 `argparse` also exits 2 on a usage error. If your script treats 2 as "work is waiting", check stderr for an `error:` line first.
 
@@ -55,7 +56,9 @@ A `migrate` that fails part way leaves the migrations it already applied in plac
 
 `validate` exits 1 when it finds problems, and 0 when it finds none. The exit codes are the same with and without `--json`.
 
-`impact` exits 0 when it prints the report, whatever the report says, and 1 on a failure, including a dialect the analysis does not cover. Blocking a run on impact is the job of guards.
+`impact` exits 0 when it prints the report, whatever the report says, and 1 on a failure, including a dialect the analysis does not cover. Blocking a run on impact is the job of guards. `impact --live` also exits 1 on a dialect without a [live preflight](/impact#live-preflight), which SQLite and DuckDB lack.
+
+`migrate --preflight refuse` reads the sessions the run would wait behind after the guards pass, and exits 5 before any migration applies when there is one, with each blocker on stderr. `--preflight warn` prints the same lines on stderr as `preflight: ...` and the run goes on. The flag takes precedence over the config module's `preflight` attribute.
 
 ## The config module
 
@@ -75,6 +78,8 @@ A `migrate` that fails part way leaves the migrations it already applied in plac
 | `get_rehearsal_connection` | no | `() -> Connection`, a scratch database | `None` |
 | `assert_algorithm` | no | `bool`; `plan`, `impact`, `migrate`, and `rehearse` pass it to the diff of `models` | `False` |
 | `exact_counts` | no | `bool`; `plan`, `impact`, `migrate`, and `script --annotate` count the rows of each SQLite table `sqlite_stat1` has no row count for, as `--exact-counts` does | `False` |
+| `preflight` | no | `'warn'` or `'refuse'`; `migrate` reads the sessions the run would wait behind before it applies anything, as `--preflight` does | `None` |
+| `preflight_older_than` | no | `float`, seconds; the age from which the preflight lists an open transaction, in `migrate` and `impact --live`, unless `--older-than` is given | `60` |
 | `before_migrate` | no | `(connection) -> None` | not called |
 | `after_migrate` | no | `(connection, applied) -> None` | not called |
 | `on_error` | no | `(connection, migration_id, error) -> None` | not called |
@@ -181,6 +186,15 @@ $ sustained impact
 1 statement, 1 danger, 1 warn. Evidence: catalog (PostgreSQL 16.4)
 ```
 
+`impact --live` adds a `preflight` section after the summary: one line per session a statement would wait behind, one line per other transaction open at least `--older-than` seconds, and a count. See [Live preflight](/impact#live-preflight).
+
+```console
+preflight
+  ALTER TABLE orders ADD COLUMN note text would queue behind pid 4121 (idle in transaction for 42m, user=billing, app=billing-worker, has ACCESS SHARE on orders)
+    last statement: SELECT * FROM orders WHERE id = 1
+  1 blocker, 0 transactions open 60s or longer. Read: locks, transactions
+```
+
 The drift section appears only when the config names `models`. It reports every difference, drops included, even though `migrate` never generates a drop. A drift section that contains only drops says so instead of offering the command. The `run:` line prints only when validation found no problems.
 
 ```console
@@ -267,7 +281,7 @@ $ sustained plan --json
 
 Every place a command reports SQL uses that statement object, including `drift`. When the config names no models, `drift` is `null` rather than `[]`, so a caller can tell "nothing was compared" from "compared and found no gap". `statements` is `null` for a callable step, which renders no SQL; before version 2.13.0 `statements` was a count. A guard verdict appears on the statement it flags, as `{"rule", "verdict"}`, and a statement no guard flagged has `[]`. The `guards` key is present from version 2.15.0 onward. `impact` holds the statement's impact in the form [`statement_data()`](/reference/impact#statement_data) gives, and is `null` on a dialect the analysis does not cover.
 
-`impact --json` prints the report in the form [`report_data()`](/reference/impact#report_data) gives, with the top-level keys `profile`, `version`, `evidence`, `read`, `migrations`, `counts`, and `error`. Each statement in a migration has `sql` and the keys of the plan's `impact` object.
+`impact --json` prints the report in the form [`report_data()`](/reference/impact#report_data) gives, with the top-level keys `profile`, `version`, `evidence`, `read`, `migrations`, `counts`, `preflight`, and `error`. `preflight` is `null` without `--live`, and otherwise has the keys [`preflight_data()`](/reference/impact#render_preflight) gives. Each statement in a migration has `sql` and the keys of the plan's `impact` object.
 
 `rehearse --json` prints:
 

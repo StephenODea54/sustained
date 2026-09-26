@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Impact reference
-description: "Reference for sustained.impact: analyze(), read_context(), the rule profiles, the impact attached for guards, rehearse(trace=True), the ImpactReport model, EngineContext, thresholds, and the report's text and JSON forms."
+description: "Reference for sustained.impact: analyze(), read_context(), the rule profiles, the impact attached for guards, rehearse(trace=True), the live preflight, the ImpactReport model, EngineContext, thresholds, and the report's text and JSON forms."
 ---
 
 These names live in `sustained.impact`, except where a section names another module.
@@ -56,14 +56,14 @@ Each statement runs inside a savepoint. A statement that fails leaves its facts 
 ## `Migrator.impact()`
 
 ```python
-Migrator.impact(models=None, assert_algorithm=False, exact_counts=False) -> ImpactReport
-await AsyncMigrator.impact(models=None, assert_algorithm=False, exact_counts=False) -> ImpactReport
+Migrator.impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0) -> ImpactReport
+await AsyncMigrator.impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0) -> ImpactReport
 ```
 {: .sig #migrator-impact}
 
 The impact of the run `up()` would make: every pending migration, then the migration the models generate when `models` is given. The generated migration is diffed against the schema as it is now, before the pending migrations run, as `plan()` diffs it, and `assert_algorithm` writes the clauses `plan()` writes on it. A callable step renders no SQL and is left out. Nothing is written.
 
-The context comes from `read_context()` on the migrator's connection, or `async_read_context()` on its adapter, with `exact_counts` passed on. Both raise `DialectError` on a dialect the analysis does not cover, before any statement runs.
+The context comes from `read_context()` on the migrator's connection, or `async_read_context()` on its adapter, with `exact_counts` passed on. With `live=True`, the report's `preflight` is the [live preflight](#preflight) of the analyzed statements, with `older_than` passed on. Both raise `DialectError` on a dialect the analysis does not cover, and with `live=True` on a dialect without a preflight, before any statement runs.
 
 ## Guards over impact
 
@@ -141,14 +141,68 @@ with_observations(report, observations, existing, profile) -> ImpactReport
 
 `observe()` returns one statement's impact with the facts its two sightings show, and an `impact.mismatch` finding for each difference, as the Postgres form does. A changed partition of the heap or clustered index that still has pages, or log of at least twice the bytes it held and at least 64 KB, is a rewrite, and a new or changed partition of another index is an index build. `existing` is the set of object ids of the tables that existed before the run, or `None` to compare every table. `with_observations()` applies `observe()` across a report.
 
-## `ImpactReport`
+## Live preflight
+
+Guide: [Live preflight](/impact#live-preflight).
 
 ```python
-ImpactReport(profile, version, evidence, migrations, read=frozenset())
+preflight(connection, dialect, statements, older_than=60.0, context=None) -> Preflight
+await async_preflight(adapter, dialect, statements, older_than=60.0, context=None) -> Preflight
+```
+{: .sig #preflight}
+
+The sessions the statements would wait behind on the server now, and the other transactions open at least `older_than` seconds, from a blocking connection or an async adapter. A statement with `impact` attached is read from it. The others are analyzed with `context`, which is read from the connection when it is not given. The connection's own session is never listed, and no session is ended. Both raise `ValueError` for a dialect without a preflight: `Dialects.POSTGRES`, `Dialects.MYSQL`, and `Dialects.MSSQL` have one.
+
+```python
+Migrator.preflight(models=None, older_than=60.0, exact_counts=False) -> Preflight
+await AsyncMigrator.preflight(models=None, older_than=60.0, exact_counts=False) -> Preflight
+```
+{: .sig #migrator-preflight}
+
+The preflight of the run `Migrator.impact()` analyzes, with `models` and `exact_counts` as there. Both raise `DialectError` on a dialect without a preflight.
+
+```python
+Migrator.up(..., preflight=None) -> list[str]
+await AsyncMigrator.up(..., preflight=None) -> list[str]
+PreflightCheck(mode, older_than=60.0)
+```
+{: .sig #up-preflight}
+
+With `preflight="warn"` or `"refuse"`, or a `PreflightCheck` with one of them as its `mode`, `up()` reads the preflight of the run's statements after the guards pass and before any migration applies, and again for the generated migration with `models`. `warn` prints each blocker, each transaction open `older_than` seconds or longer, 60 for a plain mode, and each read that failed on stderr as `preflight: <line>`, once per run. `refuse` raises `PreflightBlocked` when there is a blocker, and prints the other lines otherwise. Any other mode raises `ValueError` before the run starts. `PreflightCheck` lives in `sustained.migrations`. On a dialect without a preflight, `up()` reads nothing.
+
+`PreflightBlocked` lives in `sustained.exceptions` and in `sustained`. It is a `SustainedError` whose `preflight` attribute is the `Preflight` that stopped the run, and whose message lists each blocker's line.
+
+```python
+Preflight(profile, blockers, transactions, older_than, read=frozenset())
 ```
 {: .sig}
 
-`profile` is the rule profile: `'postgres'`, `'mysql'`, `'mariadb'`, `'sqlite'`, or `'duckdb'`. `version` is the server version the rules assumed, as a tuple of ints. `evidence` is what the report rests on. `migrations` is a tuple of `MigrationImpact`, in run order. `read` is the context's `read`: the facts that came from the server.
+`profile` is the rule profile the server reads as, such as `'postgres'` or `'mariadb'`. `blockers` is a tuple of `Blocker`, in run order. `transactions` is a tuple of `LiveSession`: the other transactions open at least `older_than` seconds whose sessions are not blockers, oldest first. `read` lists `locks` and `transactions` for the reads that came from the server.
+
+```python
+Blocker(statement, table, lock, held, granted, session)
+```
+{: .sig}
+
+One session a statement would wait behind: the statement, the table as the statement names it, the lock the statement takes on it, and the engine's name for the lock the session was granted, with `granted` true, or is waiting for, with `granted` false. `held` is `None` when the statement waits for the session's transaction to end instead of for a lock, as PostgreSQL's `CREATE INDEX CONCURRENTLY` waits for every transaction with a snapshot. A session is listed once per table and lock, beside the first statement that would wait for it.
+
+```python
+LiveSession(id, label, user=None, application=None, state=None, transaction_seconds=None, query=None)
+```
+{: .sig}
+
+Another session. `id` is the backend pid on PostgreSQL, the connection id on MySQL and MariaDB, and the session id on SQL Server, and `None` for a PostgreSQL prepared transaction. `label` is how the report names it: `pid 4121`, `connection 12`, `session 57`, or `prepared transaction 'gid'`. `state` is the engine's word for what the session is doing: `pg_stat_activity.state`, the processlist command, such as `Sleep`, or `sys.dm_exec_sessions.status`. `transaction_seconds` is how long its transaction has been open, and `query` its current or most recent statement. Any field but `id` and `label` is `None` where the read did not give it.
+
+The profile's `preflight` attribute is the read plan, `preflight(impacts, older_than)`, which yields SQL and returns a `Preflight`, or `None` for a profile without one. `preflight_plan(dialect, impacts, older_than=60.0)` and `covered(dialect)` live in `sustained.impact.preflight`. The plans live in `sustained.impact.rules.postgres.preflight`, `sustained.impact.rules.mysql.preflight`, and `sustained.impact.rules.mssql.preflight`, each with `conflicts(planned, mode)`, which says whether a planned lock waits for another session's lock mode.
+
+## `ImpactReport`
+
+```python
+ImpactReport(profile, version, evidence, migrations, read=frozenset(), preflight=None)
+```
+{: .sig}
+
+`profile` is the rule profile: `'postgres'`, `'mysql'`, `'mariadb'`, `'sqlite'`, or `'duckdb'`. `version` is the server version the rules assumed, as a tuple of ints. `evidence` is what the report rests on. `migrations` is a tuple of `MigrationImpact`, in run order. `read` is the context's `read`: the facts that came from the server. `preflight` is the `Preflight` of a report read with `live=True`, and `None` otherwise.
 
 | Member | Returns |
 | --- | --- |
@@ -261,14 +315,14 @@ render(report) -> str
 ```
 {: .sig #render}
 
-The report as the lines `sustained impact` prints.
+The report as the lines `sustained impact` prints, with `render_preflight()` after the summary when the report has a preflight.
 
 ```python
 report_data(report) -> dict
 ```
 {: .sig #report_data}
 
-The report as plain data that `json.dumps` accepts, with the keys `profile`, `version` (a string such as `"12"`), `evidence`, `read` (a sorted list), `migrations`, and `counts`. Each migration has `id`, `transactional`, `held_to_commit`, `statements`, `locks`, `windows`, and `findings`. Each statement is `{"sql": ...}` merged with `statement_data()`.
+The report as plain data that `json.dumps` accepts, with the keys `profile`, `version` (a string such as `"12"`), `evidence`, `read` (a sorted list), `migrations`, `counts`, and `preflight`, which is `preflight_data()` of the report's preflight or `null`. Each migration has `id`, `transactional`, `held_to_commit`, `statements`, `locks`, `windows`, and `findings`. Each statement is `{"sql": ...}` merged with `statement_data()`.
 
 ```python
 statement_data(impact) -> dict
@@ -284,3 +338,14 @@ flagged_line(impact) -> str
 {: .sig #flagged}
 
 `flagged()` keeps the statements `plan` lists, in the order given: those with a `warn` or `danger` finding, and those the analysis could not read. `flagged_line()` renders one of them as `plan` prints it: the worst severity, the statement, and the rules at `warn` or above. An unknown statement reads as `info` with the rule `impact.unknown`.
+
+```python
+render_preflight(preflight) -> str
+blocker_line(blocker) -> str
+transaction_line(session) -> str
+preflight_summary(preflight) -> str
+preflight_data(preflight) -> dict
+```
+{: .sig #render_preflight}
+
+`render_preflight()` returns the preflight as `sustained impact --live` prints it: a `preflight` line, each blocker's line and each transaction's line, each followed by the session's statement when it is known, and the summary. `blocker_line()` renders one blocker as `<statement> would queue behind <label> (<state> for <age>, user=..., app=..., has <lock> on <table>)`, with `waits for` in place of `has` for a lock not yet granted, and `would wait for the transaction of <label> to end` for a blocker with no `held`. `transaction_line()` renders one transaction as `<label> has had a transaction open for <age> (<state>, user=..., app=...)`. `preflight_summary()` counts both and names what was read and what was not. `preflight_data()` returns the preflight as plain data with the keys `profile`, `older_than`, `read`, `blockers`, and `transactions`; each blocker has `statement`, `table`, `lock`, `held`, `granted`, and `session`, and each session has `id`, `label`, `user`, `application`, `state`, `transaction_seconds`, and `query`.

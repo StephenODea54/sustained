@@ -12,11 +12,14 @@ import unittest
 
 from sustained.aio_migrations import AsyncMigrator
 from sustained.dialects import Dialects
+from sustained.exceptions import PreflightBlocked
 from sustained.impact import (
     Evidence,
     Work,
     analyze,
+    async_preflight,
     async_read_context,
+    preflight,
     read_context,
 )
 from sustained.impact.rules import profile_for
@@ -79,9 +82,7 @@ class ImpactCase(unittest.TestCase):
 
     def setUp(self):
         self.drop()
-
-    def tearDown(self):
-        self.drop()
+        self.addCleanup(self.drop)
 
     def drop(self):
         self.connection.rollback()
@@ -209,6 +210,88 @@ class ImpactCase(unittest.TestCase):
         # A small table's blocking work is info, not a warning.
         index = [f for f in report.findings if f.rule == "pg.create_index"]
         self.assertEqual([str(f.severity) for f in index], ["info"])
+
+    def reader(self, isolation="READ COMMITTED"):
+        """
+        A second session that has read it_impact_orders in a transaction
+        it leaves open at the isolation level given, and its pid.
+        """
+        other = harness.connect(self.NAME)
+        self.addCleanup(other.close)
+        self.addCleanup(other.rollback)
+        cursor = other.cursor()
+        cursor.execute(f"SET TRANSACTION ISOLATION LEVEL {isolation}")
+        cursor.execute("SELECT pg_backend_pid()")
+        ((pid,),) = cursor.fetchall()
+        cursor.execute("SELECT count(*) FROM it_impact_orders")
+        cursor.fetchall()
+        return pid
+
+    def test_preflight_names_a_session_that_read_the_table(self):
+        self.orders()
+        pid = self.reader()
+        add = "ALTER TABLE it_impact_orders ADD COLUMN extra integer"
+        found = preflight(self.connection, self.DIALECT, [add], older_than=0.0)
+        self.connection.rollback()
+        self.assertEqual(found.read, {"locks", "transactions"})
+        (blocker,) = [b for b in found.blockers if b.session.id == pid]
+        self.assertEqual(blocker.statement, add)
+        self.assertEqual(blocker.held, "ACCESS SHARE")
+        self.assertTrue(blocker.granted)
+        self.assertEqual(blocker.session.state, "idle in transaction")
+        self.assertIn("it_impact_orders", blocker.session.query)
+        self.assertNotIn(pid, [s.id for s in found.transactions])
+
+    def test_preflight_passes_a_reader_for_a_weaker_lock(self):
+        self.orders()
+        pid = self.reader()
+        index = "CREATE INDEX it_impact_note ON it_impact_orders (note)"
+        found = preflight(self.connection, self.DIALECT, [index], older_than=0.0)
+        self.connection.rollback()
+        self.assertNotIn(pid, [b.session.id for b in found.blockers])
+        self.assertIn(pid, [s.id for s in found.transactions])
+
+    def test_preflight_waits_for_every_snapshot_before_a_concurrent_build(self):
+        self.orders()
+        # A READ COMMITTED transaction has no snapshot between statements.
+        pid = self.reader("REPEATABLE READ")
+        index = "CREATE INDEX CONCURRENTLY it_impact_note ON it_impact_orders (note)"
+        found = preflight(self.connection, self.DIALECT, [index])
+        self.connection.rollback()
+        (blocker,) = [b for b in found.blockers if b.session.id == pid]
+        self.assertIsNone(blocker.held)
+
+    def test_up_refuses_while_a_session_reads_the_table(self):
+        self.orders()
+        self.reader()
+        migrator = self.migrator(
+            [Migration("001_extra", up="ALTER TABLE it_impact_orders ADD extra int")]
+        )
+        with self.assertRaises(PreflightBlocked):
+            migrator.up(preflight="refuse")
+        self.connection.rollback()
+        columns = self.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'it_impact_orders'"
+        )
+        self.assertNotIn(("extra",), columns)
+
+    def test_async_preflight_reads_the_same_blocker(self):
+        if self.NAME not in aio_lifecycle.ADAPTERS:
+            self.skipTest(f"{self.NAME} has no async adapter")
+        self.orders()
+        pid = self.reader()
+        add = "ALTER TABLE it_impact_orders ADD COLUMN extra integer"
+
+        async def read():
+            adapter, close = await aio_lifecycle.ADAPTERS[self.NAME]()
+            try:
+                return await async_preflight(adapter, self.DIALECT, [add])
+            finally:
+                await close()
+
+        found = asyncio.run(read())
+        self.assertIn(pid, [b.session.id for b in found.blockers])
 
     def migrator(self, migrations):
         return Migrator(

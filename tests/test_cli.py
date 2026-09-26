@@ -1611,9 +1611,11 @@ class ImpactCliTestCase(CliBase):
                 "read",
                 "migrations",
                 "counts",
+                "preflight",
                 "error",
             },
         )
+        self.assertIsNone(payload["preflight"])
         self.assertEqual(payload["profile"], "postgres")
         self.assertEqual(payload["evidence"], "catalog")
         self.assertEqual(payload["read"], ["schema"])
@@ -1770,6 +1772,122 @@ class ImpactCliTestCase(CliBase):
         for pending in json.loads(out)["pending"]:
             for statement in pending["statements"]:
                 self.assertIsNone(statement["impact"])
+
+
+def _fake_preflight(impacts, older_than):
+    """A preflight read that finds the first statement's table in use."""
+    from sustained.impact import Blocker, LiveSession, Preflight
+
+    yield "SELECT 1"
+    found = ()
+    if impacts and impacts[0].tables:
+        table = impacts[0].tables[0]
+        found = (
+            Blocker(
+                impacts[0].statement,
+                table.table,
+                table.lock,
+                "ACCESS SHARE",
+                True,
+                LiveSession(
+                    4121, "pid 4121", "billing", None, "idle in transaction", 90.0
+                ),
+            ),
+        )
+    return Preflight("postgres", found, (), older_than, frozenset({"locks"}))
+
+
+class PreflightCliTestCase(ImpactCliTestCase):
+    """`impact --live`, `migrate --preflight`, and their config attributes."""
+
+    def _preflight_rules(self, preflight=_fake_preflight):
+        from sustained.impact.rules import postgres
+
+        patcher = mock.patch(
+            "sustained.impact.rules._profiles",
+            return_value={"DEFAULT": (postgres.PROFILE._replace(preflight=preflight),)},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _config(self, extra):
+        name = f"preflight_config_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(CONFIG_TEMPLATE + extra)
+        self.addCleanup(sys.modules.pop, name, None)
+        return name
+
+    def run_named(self, name, *argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main([*argv, "--config", name])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_impact_live_prints_the_preflight(self):
+        self._preflight_rules()
+        self.run_cli("migrate")
+        self._add_index()
+        code, out, _ = self.run_cli("impact", "--live", "--older-than", "5")
+        self.assertEqual(code, 0)
+        self.assertIn("\npreflight\n", out)
+        self.assertIn(
+            "CREATE INDEX ix_users_id ON users (id) would queue behind pid 4121 "
+            "(idle in transaction for 90s, user=billing, has ACCESS SHARE on users)",
+            out,
+        )
+        self.assertIn("1 blocker, 0 transactions open 5s or longer", out)
+
+    def test_impact_live_json_carries_the_preflight(self):
+        self._preflight_rules()
+        self.run_cli("migrate")
+        self._add_index()
+        name = self._config("preflight_older_than = 7\n")
+        code, out, _ = self.run_named(name, "impact", "--live", "--json")
+        self.assertEqual(code, 0)
+        preflight = json.loads(out)["preflight"]
+        self.assertEqual(preflight["older_than"], 7.0)
+        self.assertEqual(preflight["blockers"][0]["session"]["label"], "pid 4121")
+
+    def test_impact_live_on_a_dialect_without_a_preflight_exits_one(self):
+        self._preflight_rules(None)
+        code, _, err = self.run_cli("impact", "--live")
+        self.assertEqual(code, 1)
+        self.assertIn("live preflight does not cover DEFAULT", err)
+
+    def test_migrate_refuses_with_exit_five(self):
+        self._preflight_rules()
+        self.run_cli("migrate")
+        self._add_index()
+        code, _, err = self.run_cli("migrate", "--preflight", "refuse")
+        self.assertEqual(code, 5)
+        self.assertIn("Other sessions have locks this run would wait for", err)
+        self.assertNotIn("ix_users_id", self._indexes())
+
+    def test_the_config_attribute_sets_the_mode(self):
+        self._preflight_rules()
+        self.run_cli("migrate")
+        self._add_index()
+        name = self._config("preflight = 'warn'\n")
+        code, out, err = self.run_named(name, "migrate")
+        self.assertEqual(code, 0)
+        self.assertIn("applied  003_index", out)
+        self.assertIn("preflight: CREATE INDEX ix_users_id ON users (id)", err)
+        self.assertIn("ix_users_id", self._indexes())
+
+    def test_the_flag_outranks_the_config_attribute(self):
+        self._preflight_rules()
+        self.run_cli("migrate")
+        self._add_index()
+        name = self._config("preflight = 'warn'\n")
+        code, _, _ = self.run_named(name, "migrate", "--preflight", "refuse")
+        self.assertEqual(code, 5)
+
+    def _indexes(self):
+        with contextlib.closing(self.db()) as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        return {r[0] for r in rows}
 
 
 if __name__ == "__main__":

@@ -18,7 +18,8 @@ again for each fixture.
 import unittest
 
 from sustained.dialects import Dialects
-from sustained.impact import Evidence, Work, analyze, read_context
+from sustained.exceptions import PreflightBlocked
+from sustained.impact import Evidence, Work, analyze, preflight, read_context
 from sustained.impact.rules import Probe, mysql, profile_for
 from sustained.impact.rules.mysql.trace import attempts, observe, refused, tables_plan
 from sustained.introspect.runner import run_plan
@@ -74,9 +75,7 @@ class InnodbImpactCase(unittest.TestCase):
 
     def setUp(self):
         self.drop()
-
-    def tearDown(self):
-        self.drop()
+        self.addCleanup(self.drop)
 
     def drop(self):
         self.connection.rollback()
@@ -255,6 +254,79 @@ class InnodbImpactCase(unittest.TestCase):
             reader.rollback()
             reader.close()
             self.execute("SET SESSION lock_wait_timeout = DEFAULT")
+
+    def reader(self):
+        """
+        A second session that has read it_impact_parent in a transaction
+        it leaves open, and its connection id.
+        """
+        other = harness.connect_scratch(self.NAME)
+        self.addCleanup(other.close)
+        self.addCleanup(other.rollback)
+        cursor = other.cursor()
+        cursor.execute("SELECT CONNECTION_ID()")
+        ((connection_id,),) = cursor.fetchall()
+        cursor.execute("START TRANSACTION")
+        cursor.execute("SELECT * FROM it_impact_parent")
+        cursor.fetchall()
+        return connection_id
+
+    def metadata_locks_recorded(self):
+        """Whether this server's Performance Schema records metadata locks."""
+        rows = self.fetch(
+            "SELECT @@performance_schema, (SELECT ENABLED FROM "
+            "performance_schema.setup_instruments "
+            "WHERE NAME = 'wait/lock/metadata/sql/mdl')"
+        )
+        return all(str(v).upper() in ("1", "YES") for v in rows[0])
+
+    def test_preflight_names_a_session_that_read_the_table(self):
+        self.execute(
+            "CREATE TABLE it_impact_parent (id int PRIMARY KEY)",
+            "INSERT INTO it_impact_parent VALUES (1)",
+        )
+        connection_id = self.reader()
+        add = "ALTER TABLE it_impact_parent ADD COLUMN extra int"
+        found = preflight(self.connection, self.DIALECT, [add], older_than=0.0)
+        self.connection.rollback()
+        self.assertEqual(found.profile, self.PROFILE)
+        self.assertIn("transactions", found.read)
+        if not self.metadata_locks_recorded():
+            self.assertNotIn("locks", found.read)
+            self.assertIn(connection_id, [s.id for s in found.transactions])
+            return
+        self.assertIn("locks", found.read)
+        (blocker,) = [b for b in found.blockers if b.session.id == connection_id]
+        self.assertEqual(blocker.held, "SHARED_READ")
+        self.assertTrue(blocker.granted)
+        self.assertEqual(blocker.session.state, "Sleep")
+        write = "UPDATE it_impact_parent SET id = 2"
+        found = preflight(self.connection, self.DIALECT, [write], older_than=0.0)
+        self.connection.rollback()
+        self.assertNotIn(connection_id, [b.session.id for b in found.blockers])
+
+    def test_up_refuses_while_a_session_reads_the_table(self):
+        self.execute(
+            "CREATE TABLE it_impact_parent (id int PRIMARY KEY)",
+            "INSERT INTO it_impact_parent VALUES (1)",
+        )
+        if not self.metadata_locks_recorded():
+            self.skipTest("the Performance Schema records no metadata locks")
+        self.reader()
+        migrator = Migrator(
+            self.connection,
+            [Migration("001_extra", up="ALTER TABLE it_impact_parent ADD extra int")],
+            dialect=self.DIALECT,
+            table="it_impact_migrations",
+        )
+        with self.assertRaises(PreflightBlocked):
+            migrator.up(preflight="refuse")
+        self.connection.rollback()
+        columns = self.fetch(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'it_impact_parent'"
+        )
+        self.assertEqual([c for (c,) in columns], ["id"])
 
     def test_a_traced_rehearsal_probes_each_statement(self):
         self.orders()

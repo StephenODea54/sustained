@@ -23,7 +23,15 @@ JsonValue = Union[
 _JSON_KEYS: Dict[str, Tuple[str, ...]] = {
     "status": ("migrations",),
     "plan": ("pending", "problems", "drift"),
-    "impact": ("profile", "version", "evidence", "read", "migrations", "counts"),
+    "impact": (
+        "profile",
+        "version",
+        "evidence",
+        "read",
+        "migrations",
+        "counts",
+        "preflight",
+    ),
     "rehearse": ("rehearsed", "scratch", "key", "recorded", "ok", "impact"),
     "validate": ("ok", "problems"),
 }

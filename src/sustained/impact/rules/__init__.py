@@ -49,6 +49,7 @@ from sustained.impact.state import RunState, sets_a_timeout
 if TYPE_CHECKING:
     from sustained.dialects import Dialects
     from sustained.impact.model import ImpactReport, StatementImpact
+    from sustained.impact.preflight import PreflightPlan
 
 
 def _every_version(version: Tuple[int, ...]) -> bool:
@@ -199,7 +200,9 @@ class Profile(NamedTuple):
     locks the whole database, as on SQLite, so a migration's locks make
     one transaction window. `release` names a version as people know it,
     such as SQL Server's `2022 (16.0.4135.4)`, where the version number
-    alone does not.
+    alone does not. `preflight(impacts, older_than)` is the live
+    preflight's read plan for the statements' impacts, or None on an
+    engine without one.
     """
 
     name: str
@@ -221,6 +224,9 @@ class Profile(NamedTuple):
     trace: Optional[Trace] = None
     locks_database: bool = False
     release: Optional[Callable[[Tuple[int, ...]], str]] = None
+    preflight: Optional[
+        Callable[[Sequence["StatementImpact"], float], "PreflightPlan"]
+    ] = None
 
     def waits_in_queue(self, lock: Optional[str]) -> bool:
         """Whether waiting for the lock queues other sessions behind it."""

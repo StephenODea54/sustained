@@ -45,6 +45,7 @@ from sustained.migrations import (
     Callbacks,
     Migration,
     MigrationStep,
+    PreflightCheck,
     Rehearsal,
     SchemaRead,
     _render_elements,
@@ -80,7 +81,7 @@ from sustained.types import RowValue, SqlValue
 
 if TYPE_CHECKING:
     from sustained.guards import Guard
-    from sustained.impact import ImpactReport
+    from sustained.impact import ImpactReport, Preflight
     from sustained.introspect import Snapshot
     from sustained.model import Model
     from sustained.schema import TableOptions
@@ -477,6 +478,7 @@ class AsyncMigrator(MigratorBase):
         unrehearsed: bool = False,
         assert_algorithm: bool = False,
         exact_counts: bool = False,
+        preflight: Union[None, str, PreflightCheck] = None,
     ) -> List[str]:
         """
         Applies pending migrations in order, stopping after the target id
@@ -525,6 +527,16 @@ class AsyncMigrator(MigratorBase):
         applied on the exception's `applied` attribute. The
         migrator's callbacks fire around the run, and each is awaited
         when it returns an awaitable.
+
+        preflight='warn' or 'refuse' reads, after the guards pass and
+        before anything applies, the other sessions whose table locks a
+        statement of the run would wait behind, as preflight() reads
+        them. 'warn' prints each on stderr, with each transaction open
+        60 seconds or longer, and the run goes on; 'refuse' raises
+        PreflightBlocked when there is one. PreflightCheck(mode,
+        older_than) sets another age. The read is a snapshot: a session
+        may take a lock after it. A dialect without a live preflight
+        reads nothing. No session is ended.
         """
         return await self._drive(
             runs.up(
@@ -540,8 +552,9 @@ class AsyncMigrator(MigratorBase):
                 table_renames=table_renames,
                 type_casts=type_casts,
                 unrehearsed=unrehearsed,
-                assert_algorithm=assert_algorithm,
-                exact_counts=exact_counts,
+                reads=runs.RunReads(
+                    assert_algorithm, exact_counts, runs.preflight_check(preflight)
+                ),
             )
         )
 
@@ -660,6 +673,8 @@ class AsyncMigrator(MigratorBase):
         models: Optional[List[Type["Model"]]] = None,
         assert_algorithm: bool = False,
         exact_counts: bool = False,
+        live: bool = False,
+        older_than: float = 60.0,
     ) -> "ImpactReport":
         """
         The impact of the run up() would make, with the server facts read
@@ -668,8 +683,20 @@ class AsyncMigrator(MigratorBase):
         schema read.
         """
         return await self._drive(
-            runs.impact(self, models, assert_algorithm, exact_counts)
+            runs.impact(self, models, assert_algorithm, exact_counts, live, older_than)
         )
+
+    async def preflight(
+        self,
+        models: Optional[List[Type["Model"]]] = None,
+        older_than: float = 60.0,
+        exact_counts: bool = False,
+    ) -> "Preflight":
+        """
+        The sessions the run up() would make would wait behind, read
+        through the adapter. Mirrors Migrator.preflight().
+        """
+        return await self._drive(runs.preflight(self, models, older_than, exact_counts))
 
     async def drift(
         self,

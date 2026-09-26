@@ -16,7 +16,8 @@ the unit tests alone.
 import unittest
 
 from sustained.dialects import Dialects
-from sustained.impact import Evidence, Work, analyze, read_context
+from sustained.exceptions import PreflightBlocked
+from sustained.impact import Evidence, Work, analyze, preflight, read_context
 from sustained.impact.rules import profile_for
 from sustained.impact.rules.mssql.trace import observe, sighting_plan, tables_plan
 from sustained.introspect.runner import run_plan
@@ -124,6 +125,65 @@ class MssqlImpactCase(unittest.TestCase):
         self.assertEqual(context.stats("dbo.it_impact_orders"), orders)
         heap = context.stats("it_impact_migrations")
         self.assertEqual((heap.rows, heap.heap, heap.clustered), (0, True, None))
+
+    def reader(self):
+        """
+        A second session that has read it_impact_orders under HOLDLOCK in
+        a transaction it leaves open, and its session id.
+        """
+        other = harness.connect_scratch(self.NAME)
+        self.addCleanup(other.close)
+        self.addCleanup(other.rollback)
+        cursor = other.cursor()
+        cursor.execute("SELECT @@SPID")
+        ((session,),) = cursor.fetchall()
+        cursor.execute("SELECT COUNT(*) FROM it_impact_orders WITH (HOLDLOCK)")
+        cursor.fetchall()
+        return session
+
+    def orders(self):
+        self.execute(
+            "CREATE TABLE it_impact_orders (id int PRIMARY KEY, note varchar(10))",
+            "INSERT INTO it_impact_orders VALUES (1, 'n'), (2, 'n')",
+        )
+
+    def test_preflight_names_a_session_that_read_the_table(self):
+        self.orders()
+        session = self.reader()
+        add = "ALTER TABLE it_impact_orders ADD extra int"
+        found = preflight(self.connection, self.DIALECT, [add], older_than=0.0)
+        self.connection.rollback()
+        self.assertEqual(found.read, {"locks", "transactions"})
+        (blocker,) = [b for b in found.blockers if b.session.id == session]
+        self.assertEqual(blocker.held, "IS")
+        self.assertTrue(blocker.granted)
+        self.assertEqual(blocker.session.state, "sleeping")
+        self.assertIn("it_impact_orders", blocker.session.query)
+        self.assertNotIn(session, [s.id for s in found.transactions])
+
+    def test_preflight_passes_a_reader_for_a_shared_lock(self):
+        self.orders()
+        session = self.reader()
+        index = "CREATE INDEX it_impact_note ON it_impact_orders (note)"
+        found = preflight(self.connection, self.DIALECT, [index], older_than=0.0)
+        self.connection.rollback()
+        self.assertNotIn(session, [b.session.id for b in found.blockers])
+        self.assertIn(session, [s.id for s in found.transactions])
+
+    def test_up_refuses_while_a_session_reads_the_table(self):
+        self.orders()
+        self.reader()
+        migrator = Migrator(
+            self.connection,
+            [Migration("001_extra", up="ALTER TABLE it_impact_orders ADD extra int")],
+            dialect=self.DIALECT,
+            table="it_impact_migrations",
+        )
+        with self.assertRaises(PreflightBlocked):
+            migrator.up(preflight="refuse")
+        self.connection.rollback()
+        ((length,),) = self.fetch("SELECT COL_LENGTH('it_impact_orders', 'extra')")
+        self.assertIsNone(length)
 
     def test_each_rule_fixture_does_what_its_rule_predicts(self):
         profile = profile_for(self.DIALECT)

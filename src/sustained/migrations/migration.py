@@ -121,6 +121,20 @@ def _derived_down(
     return inverses
 
 
+class PreflightCheck(NamedTuple):
+    """
+    How up(preflight=...) reads the live preflight. `mode` is 'warn',
+    which prints what the run would wait behind and goes on, or
+    'refuse', which raises PreflightBlocked when a session is in the
+    way. `older_than` is the age in seconds from which another open
+    transaction is printed. up() takes the mode alone as shorthand for
+    a check with the default age.
+    """
+
+    mode: str
+    older_than: float = 60.0
+
+
 class Callbacks(NamedTuple):
     """
     The functions a migrator calls around a run.

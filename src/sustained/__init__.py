@@ -16,6 +16,7 @@ from sustained.exceptions import (
     DialectError,
     GuardBlocked,
     MigrationError,
+    PreflightBlocked,
     RehearsalRequired,
 )
 from sustained.expressions import (
@@ -51,6 +52,7 @@ __all__ = [
     "DialectError",
     "GuardBlocked",
     "MigrationError",
+    "PreflightBlocked",
     "RehearsalRequired",
     # from expressions
     "Column",

@@ -117,22 +117,23 @@ statuses() -> list[tuple[str, str]]
 `(id, state)`, where state is `applied`, `pending`, or `changed`. `changed` marks a repeatable whose contents differ from its last run.
 
 ```python
-impact(models=None, assert_algorithm=False, exact_counts=False) -> ImpactReport
+impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0) -> ImpactReport
+preflight(models=None, older_than=60.0, exact_counts=False) -> Preflight
 ```
 {: .sig #impact}
 
-The impact of the run `up()` would make on a live database: the locks each statement takes, what they block, the work each does, and findings with safer forms. With `models`, the migration they generate is analyzed after the pending ones. The analysis writes nothing. `exact_counts=True` counts the rows of each SQLite table `sqlite_stat1` has no row count for. Raises `DialectError` on a dialect the analysis does not cover, which is Presto, Athena, and SQL Server. See [Impact reference](/reference/impact#migrator-impact).
+The impact of the run `up()` would make on a live database: the locks each statement takes, what they block, the work each does, and findings with safer forms. With `models`, the migration they generate is analyzed after the pending ones. The analysis writes nothing. `exact_counts=True` counts the rows of each SQLite table `sqlite_stat1` has no row count for. `live=True` adds the report's `preflight`: the sessions each statement would wait behind now, and the transactions open `older_than` seconds or longer. `preflight()` returns that read alone. Raises `DialectError` on a dialect the analysis does not cover, which is Presto and Athena, and with `live=True`, or from `preflight()`, on SQLite and DuckDB too. See [Impact reference](/reference/impact#migrator-impact) and [Live preflight](/reference/impact#preflight).
 
 `pending()`, `status()`, `statuses()`, and `validate()` read the tracking table without creating or upgrading it, on `Migrator` and `AsyncMigrator` alike, so they run on a read-only replica. A database with no tracking table reads as one with nothing applied.
 
 ### Running
 
 ```python
-up(target=None, validate=True, allow_out_of_order=False, models=None, unrehearsed=False, ...) -> list[str]
+up(target=None, validate=True, allow_out_of_order=False, models=None, unrehearsed=False, preflight=None, ...) -> list[str]
 ```
 {: .sig #up}
 
-Validates, then applies pending migrations in order. `target` stops after that id and skips the repeatables. With `models`, the diff against them runs after the versioned migrations and before the repeatables, and you cannot combine `models` with `target`. `unrehearsed=True` waives the rehearsal gate below. `exact_counts=True` passes on to the server facts the guards read, as `impact()` takes it. The remaining options are the [diff options](#generating-from-models) below.
+Validates, then applies pending migrations in order. `target` stops after that id and skips the repeatables. With `models`, the diff against them runs after the versioned migrations and before the repeatables, and you cannot combine `models` with `target`. `unrehearsed=True` waives the rehearsal gate below. `exact_counts=True` passes on to the server facts the guards read, as `impact()` takes it. `preflight='warn'` prints, after the guards pass, the sessions the run would wait behind on stderr, and `preflight='refuse'` raises `PreflightBlocked` when there is one. `preflight=PreflightCheck(mode, older_than)` also sets the age from which an open transaction is printed; see [Live preflight](/impact#preflight-before-a-run). The remaining options are the [diff options](#generating-from-models) below.
 
 ```python
 down(steps=1) -> list[str]
@@ -155,7 +156,7 @@ baseline(target) -> list[str]
 
 Records migrations up to and including `target` as applied, without running them. Also records every repeatable at its current checksum. Raises `MigrationError` before it writes a row when a migration it would record has a failed attempt on record, so run `repair()` first. A write that fails part way rolls back every row the call inserted.
 
-`up` raises `MigrationError` when validation finds problems, `RehearsalRequired` when the run would remove data and no passing rehearsal row covers it, and `ValueError` for an unknown target or a target that names a repeatable. Every migration that applied before an error stays applied, and the exception lists their ids on its `applied` attribute. A driver error gets the attribute too, unless its class refuses new attributes. `down` and `down_to` raise `ValueError` when an applied migration is not registered, and when it has no down step.
+`up` raises `MigrationError` when validation finds problems, `RehearsalRequired` when the run would remove data and no passing rehearsal row covers it, `PreflightBlocked` under `preflight='refuse'` when another session has a lock a statement would wait for, and `ValueError` for an unknown target or a target that names a repeatable. Every migration that applied before an error stays applied, and the exception lists their ids on its `applied` attribute. A driver error gets the attribute too, unless its class refuses new attributes. `down` and `down_to` raise `ValueError` when an applied migration is not registered, and when it has no down step.
 
 A migration that fails re-raises the driver's exception with a `migration_id` attribute attached, so the caller can tell which migration failed.
 

@@ -32,7 +32,7 @@ from sustained import Column, ColumnExpr, Literal, Func, Predicate
 from sustained import AggregateExpression, WindowExpression, CaseExpression
 from sustained import RelationType, RelationMapping, Join
 from sustained import Connection, Cursor, Binding, SqlValue, RowValue
-from sustained import DialectError, GuardBlocked, MigrationError, RehearsalRequired
+from sustained import DialectError, GuardBlocked, MigrationError, PreflightBlocked, RehearsalRequired
 from sustained import AmbiguousColumns
 
 # from submodules

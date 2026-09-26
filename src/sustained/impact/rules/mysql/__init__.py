@@ -46,6 +46,9 @@ the server MySQL or MariaDB, `foreign_key_checks` and
 `lock_wait_timeout`, each table's size, row format, and FULLTEXT indexes
 from `information_schema`, and on MySQL 8.0.29 and later the instant row
 versions each table has used from `INNODB_TABLES.TOTAL_ROW_VERSIONS`.
+`preflight_plan()` reads the other connections' metadata locks and
+InnoDB transactions for the live preflight;
+`sustained.impact.rules.mysql.preflight` describes it.
 """
 
 from __future__ import annotations
@@ -81,6 +84,7 @@ from sustained.impact.rules.mysql.locks import (
     timeout_statement,
 )
 from sustained.impact.rules.mysql.online import asserted_statements, assertion
+from sustained.impact.rules.mysql.preflight import preflight_plan
 from sustained.impact.rules.mysql.statements import (
     STATEMENTS,
 )
@@ -121,6 +125,7 @@ def _profile(name: str) -> Profile:
         bounded=bounded,
         local_scope=False,
         trace=Trace(tables_plan, with_observations, attempts=attempts, refused=refused),
+        preflight=preflight_plan,
     )
 
 

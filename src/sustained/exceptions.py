@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, List, Sequence
 
 if TYPE_CHECKING:
     from sustained.guards import Verdict
+    from sustained.impact.preflight import Preflight
 
 
 class SustainedError(Exception):
@@ -67,6 +68,29 @@ class GuardBlocked(SustainedError):
                     "Fix the statement, or take the rule out of the guard "
                     "list to run it anyway."
                 ]
+            )
+        )
+
+
+class PreflightBlocked(SustainedError):
+    """
+    Raised by up(preflight='refuse') when another session has a table
+    lock, or has asked for one, that a statement of the run would wait
+    for. `preflight` is the whole read. Nothing of the run had applied
+    when it was raised, except the registered migrations of a run with
+    models when the generated migration is the one that would wait.
+    """
+
+    def __init__(self, preflight: "Preflight") -> None:
+        from sustained.impact.report import blocker_line
+
+        self.preflight = preflight
+        lines = [f"  {blocker_line(b)}" for b in preflight.blockers]
+        super().__init__(
+            "\n".join(
+                ["Other sessions have locks this run would wait for:"]
+                + lines
+                + ["End those transactions, or run again once they finish."]
             )
         )
 

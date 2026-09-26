@@ -13,9 +13,20 @@ from __future__ import annotations
 import sys
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple, Type
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    List,
+    NamedTuple,
+    Optional,
+    Set,
+    Tuple,
+    Type,
+    Union,
+)
 
 from sustained.dialects import Dialects
+from sustained.impact.preflight import OLDER_THAN
 from sustained.migrations.checks import (
     _changed_down_message,
     _changed_since_applied,
@@ -35,6 +46,7 @@ from sustained.migrations.core.requests import (
     DiffSource,
     Execute,
     Fire,
+    ReadCatalog,
     ReadContext,
     RefuseOpenTransaction,
     RunStep,
@@ -45,6 +57,7 @@ from sustained.migrations.core.requests import (
 from sustained.migrations.migration import (
     Migration,
     MigrationStep,
+    PreflightCheck,
     _checked_steps,
     _stored_steps,
     _tag_applied,
@@ -65,8 +78,10 @@ from sustained.migrations.tracking import _next_seq
 from sustained.types import Connection
 
 if TYPE_CHECKING:
+    from sustained.analysis import MigrationStatement
     from sustained.guards import Verdict
     from sustained.impact import ImpactReport
+    from sustained.impact.preflight import Preflight
     from sustained.introspect import Snapshot
     from sustained.model import Model
 
@@ -128,6 +143,19 @@ def fire_on_error(m: MigratorBase, error: BaseException) -> Core[None]:
         print(f"error: on_error raised {callback_error!r}", file=sys.stderr)
 
 
+class RunReads(NamedTuple):
+    """
+    What up() reads from the server around the run: `assert_algorithm`
+    writes the predicted ALGORITHM and LOCK clauses on the generated
+    migration, `exact_counts` passes on to the context read, and
+    `preflight` is the live preflight check, or None for none.
+    """
+
+    assert_algorithm: bool = False
+    exact_counts: bool = False
+    preflight: Optional[PreflightCheck] = None
+
+
 def up(
     m: MigratorBase,
     target: Optional[str],
@@ -141,8 +169,7 @@ def up(
     table_renames: Optional[Dict[str, str]],
     type_casts: Optional[Dict[str, str]],
     unrehearsed: bool,
-    assert_algorithm: bool = False,
-    exact_counts: bool = False,
+    reads: RunReads = RunReads(),
 ) -> Core[List[str]]:
     yield RefuseOpenTransaction("up")
     callbacks = m._callbacks
@@ -162,8 +189,7 @@ def up(
             table_renames=table_renames,
             type_casts=type_casts,
             unrehearsed=unrehearsed,
-            assert_algorithm=assert_algorithm,
-            exact_counts=exact_counts,
+            reads=reads,
         )
     except Exception as error:
         yield from fire_on_error(m, error)
@@ -186,8 +212,7 @@ def run_up(
     table_renames: Optional[Dict[str, str]],
     type_casts: Optional[Dict[str, str]],
     unrehearsed: bool,
-    assert_algorithm: bool = False,
-    exact_counts: bool = False,
+    reads: RunReads = RunReads(),
 ) -> Core[List[str]]:
     """The run itself, without the callbacks up() wraps it in."""
     from sustained.exceptions import MigrationError
@@ -241,7 +266,11 @@ def run_up(
         registered_run = versioned_now + repeatables_now
         warned: Set["Verdict"] = set()
         dangers: Set[Tuple[str, str]] = set()
-        yield from guard_run(m, registered_run, warned, dangers, exact_counts)
+        shown: Set[str] = set()
+        checked = yield from guard_run(
+            m, registered_run, warned, dangers, reads.exact_counts
+        )
+        yield from check_preflight(m, checked, reads.preflight, shown)
         yield from bookkeeping.require_rehearsal_row(
             m, records, registered_run, unrehearsed, target
         )
@@ -263,7 +292,7 @@ def run_up(
                     renames=renames,
                     table_renames=table_renames,
                     type_casts=type_casts,
-                    assert_algorithm=assert_algorithm,
+                    assert_algorithm=reads.assert_algorithm,
                 )
                 if generated is not None:
                     # The generated statements are known only now, after
@@ -273,7 +302,15 @@ def run_up(
                     # migrations are already applied and committed by
                     # then, so a block here reports what it stopped after.
                     final_run = registered_run + [generated]
-                    yield from guard_run(m, final_run, warned, dangers, exact_counts)
+                    checked = yield from guard_run(
+                        m, final_run, warned, dangers, reads.exact_counts
+                    )
+                    yield from check_preflight(
+                        m,
+                        [s for s in checked if s.migration_id == generated.id],
+                        reads.preflight,
+                        shown,
+                    )
                     yield from bookkeeping.require_rehearsal_row(
                         m, records, final_run, unrehearsed, target
                     )
@@ -313,14 +350,15 @@ def guard_run(
     warned: Set["Verdict"],
     dangers: Set[Tuple[str, str]],
     exact_counts: bool = False,
-) -> Core[None]:
+) -> Core[List["MigrationStatement"]]:
     """
-    Runs the guards over the statements a run would apply. On a dialect
-    the impact analysis covers, the server facts are read first and each
-    statement's impact is attached, so an impact rule reads it. When no
-    guard reads impact, each `danger` finding prints on stderr after the
-    guards pass. `warned` and `dangers` hold what was already printed,
-    for a run checked twice. `exact_counts` passes on to the read.
+    Runs the guards over the statements a run would apply, and returns
+    the statements. On a dialect the impact analysis covers, the server
+    facts are read first and each statement's impact is attached, so an
+    impact rule reads it. When no guard reads impact, each `danger`
+    finding prints on stderr after the guards pass. `warned` and
+    `dangers` collect what was already printed, for a run checked
+    twice. `exact_counts` passes on to the read.
     """
     from sustained.guards import reads_impact
     from sustained.impact import attach_impact, supported
@@ -332,8 +370,70 @@ def guard_run(
         check_statements(m._guards, statements, m._dialect, warned)
         if not any(reads_impact(guard) for guard in m._guards):
             report_danger(statements, dangers)
-        return
+        return statements
     check_statements(m._guards, statements, m._dialect, warned)
+    return statements
+
+
+def preflight_check(
+    preflight: Union[None, str, PreflightCheck],
+) -> Optional[PreflightCheck]:
+    """
+    up()'s preflight argument as a PreflightCheck, or None for no check.
+    Raises ValueError for a mode other than 'warn' and 'refuse'.
+    """
+    if preflight is None:
+        return None
+    check = (
+        preflight
+        if isinstance(preflight, PreflightCheck)
+        else PreflightCheck(preflight)
+    )
+    if check.mode not in ("warn", "refuse"):
+        raise ValueError(
+            f"preflight must be None, 'warn', or 'refuse', not {check.mode!r}."
+        )
+    return check
+
+
+def check_preflight(
+    m: MigratorBase,
+    statements: List["MigrationStatement"],
+    check: Optional[PreflightCheck],
+    shown: Set[str],
+) -> Core[None]:
+    """
+    Reads what the statements would wait behind on the live server, for
+    up(preflight=...). With `refuse`, a blocker raises PreflightBlocked.
+    Otherwise each blocker, each transaction open the check's
+    `older_than` seconds or longer, and each read that failed prints on
+    stderr, once per run: `shown` collects the lines already printed. A
+    dialect without a preflight, or statements without impact, read
+    nothing.
+    """
+    from sustained.exceptions import PreflightBlocked
+    from sustained.impact.preflight import covered, preflight_plan
+    from sustained.impact.report import blocker_line, transaction_line
+
+    if check is None or not covered(m._dialect):
+        return
+    impacts = [s.impact for s in statements if s.impact is not None]
+    if not impacts:
+        return
+    found: "Preflight" = yield ReadCatalog(
+        preflight_plan(m._dialect, impacts, check.older_than)
+    )
+    if check.mode == "refuse" and found.blockers:
+        raise PreflightBlocked(found)
+    lines = [blocker_line(b) for b in found.blockers]
+    lines.extend(transaction_line(s) for s in found.transactions)
+    missing = sorted({"locks", "transactions"} - found.read)
+    if missing:
+        lines.append(f"could not read {' or '.join(missing)}")
+    for line in lines:
+        if line not in shown:
+            shown.add(line)
+            print(f"preflight: {line}", file=sys.stderr)
 
 
 def apply(
@@ -559,25 +659,48 @@ def impact(
     models: Optional[List[Type["Model"]]] = None,
     assert_algorithm: bool = False,
     exact_counts: bool = False,
+    live: bool = False,
+    older_than: float = OLDER_THAN,
 ) -> Core["ImpactReport"]:
     """
     The pending run, plus the migration the models generate, analyzed
-    with the server facts read from the connection. The dialect is
-    checked before anything is read, so a dialect without rules costs no
-    round trip.
+    with the server facts read from the connection, and with `live`, the
+    preflight of the analyzed statements. The dialect is checked before
+    anything is read, so a dialect without rules costs no round trip.
     """
     from sustained.exceptions import DialectError
     from sustained.impact import analyze, supported
+    from sustained.impact.preflight import covered, preflight_plan
 
     if not supported(m._dialect):
         raise DialectError(f"Impact analysis does not cover {m._dialect.name} yet.")
+    if live and not covered(m._dialect):
+        raise DialectError(f"The live preflight does not cover {m._dialect.name}.")
     run = yield from bookkeeping.pending(m)
     if models:
         generated = yield from plan(m, list(models), assert_algorithm=assert_algorithm)
         if generated is not None:
             run = run + [generated]
     context = yield ReadContext(exact_counts)
-    return analyze(run_statements(run, m._compiler), m._dialect, context)
+    report = analyze(run_statements(run, m._compiler), m._dialect, context)
+    if not live:
+        return report
+    found = yield ReadCatalog(preflight_plan(m._dialect, report.statements, older_than))
+    return report._replace(preflight=found)
+
+
+def preflight(
+    m: MigratorBase,
+    models: Optional[List[Type["Model"]]] = None,
+    older_than: float = OLDER_THAN,
+    exact_counts: bool = False,
+) -> Core["Preflight"]:
+    """The preflight of the run impact() analyzes."""
+    report = yield from impact(
+        m, models, exact_counts=exact_counts, live=True, older_than=older_than
+    )
+    assert report.preflight is not None
+    return report.preflight
 
 
 def drift(

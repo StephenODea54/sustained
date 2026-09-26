@@ -28,6 +28,13 @@ The config module names the pieces the migrator needs:
   `sqlite_stat1` has no row count for when the impact analysis reads
   the database, in `plan`, `impact`, `migrate`, and `script --annotate`,
   as the `--exact-counts` flag of those commands does (optional)
+- `preflight`: 'warn' or 'refuse' to read, before `migrate` applies
+  anything, the other sessions a statement of the run would wait
+  behind, as `Migrator.up(preflight=...)` does, and as `migrate
+  --preflight` does (optional)
+- `preflight_older_than`: the age in seconds from which the preflight
+  lists an open transaction, 60 by default, for `migrate` and `impact
+  --live` (optional)
 - `before_migrate(connection)`, `after_migrate(connection, applied)`, and
   `on_error(connection, migration_id, error)`: callbacks around the
   `migrate` command; `on_error` also runs when `down` fails (optional)
@@ -41,7 +48,9 @@ also blocked: a plan that cannot be trusted outranks the rest.
 
 `migrate` refuses to apply statements that remove data until a passing
 rehearsal has covered them, and exits 4. `--unrehearsed` applies them
-anyway and records the override on the database.
+anyway and records the override on the database. `migrate` with
+`preflight` set to 'refuse' exits 5 when another session has a lock a
+statement of the run would wait for.
 
 `impact` prints the locks each statement of the run would take, what
 they block, and the work each does; see sustained.impact. It never
@@ -49,6 +58,9 @@ gates: blocking on impact is the guards' job. `plan` lists the
 statements whose impact merits a look in an `impact` section. When no
 guard reads impact, `migrate` prints each `danger` finding on stderr, as
 `Migrator.up()` does.
+`impact --live` also prints the sessions each statement would wait
+behind on the server now, and the transactions open longer than
+`--older-than` seconds.
 `script --annotate` prints each statement's impact above it as SQL
 comments. `rehearse --trace` observes each statement on Postgres, MySQL,
 and MariaDB, and prints the impact report with what the server did in
@@ -91,7 +103,12 @@ from sustained.cli.output import (
 from sustained.cli.plan import (
     _cmd_plan,
 )
-from sustained.exceptions import GuardBlocked, MigrationError, RehearsalRequired
+from sustained.exceptions import (
+    GuardBlocked,
+    MigrationError,
+    PreflightBlocked,
+    RehearsalRequired,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -138,12 +155,23 @@ def _build_parser() -> argparse.ArgumentParser:
             machine_readable=True,
         )
     )
-    counts_rows(
+    impact = counts_rows(
         command(
             "impact",
             "Show the locks, blocking, and work of each statement in the run.",
             machine_readable=True,
         )
+    )
+    impact.add_argument(
+        "--live",
+        action="store_true",
+        help="Also show the sessions each statement would wait behind now.",
+    )
+    impact.add_argument(
+        "--older-than",
+        type=float,
+        metavar="SECONDS",
+        help="List open transactions at least this old with --live (default: 60).",
     )
 
     # Ordered as they are used: plan reads, rehearse proves, migrate applies.
@@ -172,6 +200,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--unrehearsed",
         action="store_true",
         help="Apply statements that remove data without a passing rehearsal.",
+    )
+    migrate.add_argument(
+        "--preflight",
+        choices=("warn", "refuse"),
+        help="Read the sessions the run would wait behind before it starts.",
     )
 
     down = command("down", "Revert applied migrations, newest first.")
@@ -271,6 +304,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # a different thing to do from fixing a failure.
         _print_applied(error)
         return _fail(args, error, 4)
+    except PreflightBlocked as error:
+        # Exit 5 says another session is in the way, which running again
+        # later can fix without any change.
+        _print_applied(error)
+        return _fail(args, error, 5)
     except MigrationError as error:
         _print_applied(error)
         return _fail(args, error, 1)

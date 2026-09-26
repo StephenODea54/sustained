@@ -32,7 +32,19 @@ from __future__ import annotations
 
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, FrozenSet, List, Mapping, NamedTuple, Optional, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    FrozenSet,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Tuple,
+)
+
+if TYPE_CHECKING:
+    from sustained.impact.preflight import Preflight
 
 _NO_DETAILS: Mapping[str, object] = MappingProxyType({})
 
@@ -335,7 +347,9 @@ class ImpactReport(NamedTuple):
     `postgres`, and `version` the server version the rules assumed.
     `read` names the facts read from the server, such as `version` or
     `sizes`, as `EngineContext.read` does; it is empty for a static
-    report.
+    report. `preflight` is what the run would wait behind on the live
+    server, when the report was asked for with `live=True`, and None
+    otherwise.
     """
 
     profile: str
@@ -343,6 +357,7 @@ class ImpactReport(NamedTuple):
     evidence: Evidence
     migrations: Tuple[MigrationImpact, ...]
     read: FrozenSet[str] = frozenset()
+    preflight: Optional["Preflight"] = None
 
     @property
     def statements(self) -> Tuple[StatementImpact, ...]:

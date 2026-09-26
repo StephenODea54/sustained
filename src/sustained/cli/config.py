@@ -24,6 +24,7 @@ from sustained.migrations import (
     Callbacks,
     Migration,
     Migrator,
+    PreflightCheck,
 )
 from sustained.types import Connection
 
@@ -74,6 +75,32 @@ def _exact_counts(config: ModuleType, args: argparse.Namespace) -> bool:
     return bool(
         getattr(args, "exact_counts", False) or getattr(config, "exact_counts", False)
     )
+
+
+def _preflight(
+    config: ModuleType, args: argparse.Namespace
+) -> Optional[PreflightCheck]:
+    """
+    The preflight check for `migrate`: the mode from the --preflight
+    flag or the config module's preflight attribute, with the age from
+    _older_than(), or None without a mode.
+    """
+    mode = getattr(args, "preflight", None) or getattr(config, "preflight", None)
+    if mode is None:
+        return None
+    return PreflightCheck(str(mode), _older_than(config, args))
+
+
+def _older_than(config: ModuleType, args: argparse.Namespace) -> float:
+    """
+    The age from which the preflight lists an open transaction: the
+    --older-than flag, or the config module's preflight_older_than
+    attribute, or 60 seconds.
+    """
+    flag = getattr(args, "older_than", None)
+    if flag is not None:
+        return float(flag)
+    return float(getattr(config, "preflight_older_than", 60.0))
 
 
 def _close_quietly(connection: object) -> None:

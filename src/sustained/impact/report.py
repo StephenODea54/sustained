@@ -12,11 +12,23 @@ The text form reads one migration at a time:
       window  orders: SHARE from statement 1, held to commit
 
     1 statement, 0 danger, 2 warn. Evidence: static (assumed PostgreSQL 12)
+
+A report read with `live=True` ends with its preflight:
+
+    preflight
+      ALTER TABLE orders ADD COLUMN note text would queue behind pid 4121
+      (idle in transaction for 42m, user=billing, app=billing-worker,
+      has ACCESS SHARE on orders)
+        last statement: SELECT * FROM orders WHERE id = 1
+      pid 5003 has had a transaction open for 12m (active, user=report)
+      1 blocker, 1 transaction open 60s or longer. Read: locks, transactions
+
+Each blocker and transaction is one line; the first is wrapped here.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Mapping, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Dict, List, Mapping, Optional, Sequence, Union
 
 from sustained.impact.context import version_text
 from sustained.impact.model import (
@@ -31,6 +43,9 @@ from sustained.impact.model import (
 )
 from sustained.impact.rules import release, title
 from sustained.impact.window import DATABASE
+
+if TYPE_CHECKING:
+    from sustained.impact.preflight import Blocker, LiveSession, Preflight
 
 JsonValue = Union[
     str, int, float, bool, None, Sequence["JsonValue"], Mapping[str, "JsonValue"]
@@ -84,6 +99,42 @@ def report_data(report: ImpactReport) -> Dict[str, JsonValue]:
         "read": sorted(report.read),
         "migrations": [_migration_data(m) for m in report.migrations],
         "counts": {str(s): report.count(s) for s in Severity},
+        "preflight": (
+            preflight_data(report.preflight) if report.preflight is not None else None
+        ),
+    }
+
+
+def preflight_data(preflight: "Preflight") -> Dict[str, JsonValue]:
+    """A preflight as plain data."""
+    return {
+        "profile": preflight.profile,
+        "older_than": preflight.older_than,
+        "read": sorted(preflight.read),
+        "blockers": [
+            {
+                "statement": blocker.statement,
+                "table": blocker.table,
+                "lock": blocker.lock,
+                "held": blocker.held,
+                "granted": blocker.granted,
+                "session": _session_data(blocker.session),
+            }
+            for blocker in preflight.blockers
+        ],
+        "transactions": [_session_data(s) for s in preflight.transactions],
+    }
+
+
+def _session_data(session: "LiveSession") -> Dict[str, JsonValue]:
+    return {
+        "id": session.id,
+        "label": session.label,
+        "user": session.user,
+        "application": session.application,
+        "state": session.state,
+        "transaction_seconds": session.transaction_seconds,
+        "query": session.query,
     }
 
 
@@ -236,6 +287,8 @@ def render(report: ImpactReport) -> str:
     if lines:
         lines.append("")
     lines.append(summary(report))
+    if report.preflight is not None:
+        lines.extend(["", render_preflight(report.preflight)])
     return "\n".join(lines)
 
 
@@ -280,3 +333,92 @@ def flagged_line(impact: StatementImpact) -> str:
         rules = [f.rule for f in impact.findings if f.severity >= Severity.WARN]
     unique = list(dict.fromkeys(rules))
     return f"{severity!s:<6}  {impact.statement}  [{', '.join(unique)}]"
+
+
+# --- preflight ---------------------------------------------------------
+
+
+def _duration(seconds: float) -> str:
+    """A duration as people read it, such as `42s`, `12m`, or `3h 5m`."""
+    whole = int(seconds)
+    if whole < 120:
+        return f"{whole}s"
+    if whole < 7200:
+        return f"{whole // 60}m"
+    return f"{whole // 3600}h {whole % 3600 // 60}m"
+
+
+def _one_line(sql: str, limit: Optional[int] = None) -> str:
+    flat = " ".join(sql.split())
+    if limit is not None and len(flat) > limit:
+        return flat[: limit - 3] + "..."
+    return flat
+
+
+def _session_details(session: "LiveSession") -> List[str]:
+    parts = []
+    if session.state and session.transaction_seconds is not None:
+        parts.append(f"{session.state} for {_duration(session.transaction_seconds)}")
+    elif session.state:
+        parts.append(session.state)
+    elif session.transaction_seconds is not None:
+        parts.append(f"transaction open for {_duration(session.transaction_seconds)}")
+    if session.user:
+        parts.append(f"user={session.user}")
+    if session.application:
+        parts.append(f"app={session.application}")
+    return parts
+
+
+def blocker_line(blocker: "Blocker") -> str:
+    """One blocker on one line: the statement, the session, and the lock."""
+    details = _session_details(blocker.session)
+    statement = _one_line(blocker.statement)
+    if blocker.held is None:
+        what = f"would wait for the transaction of {blocker.session.label} to end"
+    else:
+        verb = "has" if blocker.granted else "waits for"
+        details.append(f"{verb} {blocker.held} on {blocker.table}")
+        what = f"would queue behind {blocker.session.label}"
+    return f"{statement} {what} ({', '.join(details)})"
+
+
+def transaction_line(session: "LiveSession") -> str:
+    """One long transaction on one line."""
+    age = _duration(session.transaction_seconds or 0.0)
+    line = f"{session.label} has had a transaction open for {age}"
+    details = _session_details(session._replace(transaction_seconds=None))
+    return f"{line} ({', '.join(details)})" if details else line
+
+
+def preflight_summary(preflight: "Preflight") -> str:
+    """The preflight's last line: the counts and what was read."""
+    blockers = len(preflight.blockers)
+    transactions = len(preflight.transactions)
+    parts = [
+        f"{blockers} blocker" + ("" if blockers == 1 else "s"),
+        f"{transactions} transaction"
+        + ("" if transactions == 1 else "s")
+        + f" open {_duration(preflight.older_than)} or longer",
+    ]
+    read = ", ".join(sorted(preflight.read)) or "nothing"
+    line = f"{', '.join(parts)}. Read: {read}"
+    missing = sorted({"locks", "transactions"} - preflight.read)
+    if missing:
+        line += f". Not read: {', '.join(missing)}"
+    return line
+
+
+def render_preflight(preflight: "Preflight") -> str:
+    """The preflight as the lines `sustained impact --live` prints."""
+    lines = ["preflight"]
+    for blocker in preflight.blockers:
+        lines.append(f"  {blocker_line(blocker)}")
+        if blocker.session.query:
+            lines.append(f"    last statement: {_one_line(blocker.session.query, 200)}")
+    for session in preflight.transactions:
+        lines.append(f"  {transaction_line(session)}")
+        if session.query:
+            lines.append(f"    last statement: {_one_line(session.query, 200)}")
+    lines.append(f"  {preflight_summary(preflight)}")
+    return "\n".join(lines)

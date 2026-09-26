@@ -39,7 +39,7 @@ $ sustained impact
 
 On MySQL and MariaDB the same report names the algorithm and lock level the server runs each ALTER TABLE with; see [MySQL and MariaDB](#mysql-and-mariadb). On SQL Server it names the table lock mode, and what the edition runs online; see [SQL Server](#sql-server). On SQLite it names the lock every write takes on the whole database; see [SQLite](#sqlite). On DuckDB, which takes no locks, it names the conflict each statement opens with other transactions; see [DuckDB](#duckdb).
 
-`sustained impact` exits 0 when it prints the report and 1 on a failure, including a dialect the analysis does not cover. It never blocks a run. `--json` prints the report as one object; see [JSON output](/reference/cli#json-output).
+`sustained impact` exits 0 when it prints the report and 1 on a failure, including a dialect the analysis does not cover. It never blocks a run. `--json` prints the report as one object; see [JSON output](/reference/cli#json-output). `--live` adds the sessions each statement would wait behind now; see [Live preflight](#live-preflight).
 
 From Python, `Migrator.impact(models=None)` returns the same report as an `ImpactReport`, and `await AsyncMigrator.impact(models=None)` does the same on an async adapter. `sustained.impact.analyze(statements, dialect)` analyzes any list of statements, with no connection at all:
 
@@ -295,6 +295,78 @@ danger: pg.create_index  CREATE INDEX ix_orders_customer ON orders (customer_id)
 `sustained migrate`, `Migrator.up()`, and `AsyncMigrator.up()` print the same lines. A guard counts as reading impact when it has a true `reads_impact` attribute, which the four rules set. On a dialect the analysis does not cover, `up()` reads no server facts, the four rules are silent, and nothing prints.
 
 `no_table_rewrite()` and `index_must_be_concurrent()` read the statement text, and keep their verdicts in 2.x. `no_rewrite()` and `max_blocking("ddl")` answer the same questions from the analysis, with the server version and the table sizes.
+
+## Live preflight
+
+A statement that needs a table lock another session already has waits until that session lets it go. On PostgreSQL, MySQL, and MariaDB every later query on the table then waits behind the statement, so one transaction left open by an application can stop every query on the table. The preflight reads, at the moment it runs, the sessions each statement of the run would wait behind. It never ends a session.
+
+```console
+$ sustained impact --live
+20260926_orders  transaction
+  ALTER TABLE orders ADD COLUMN note text
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  ~41.2M rows, 12.4 GB  [pg.add_column]
+    ...
+
+1 statement, 0 danger, 1 warn. Evidence: catalog (PostgreSQL 16.4)
+
+preflight
+  ALTER TABLE orders ADD COLUMN note text would queue behind pid 4121 (idle in transaction for 42m, user=billing, app=billing-worker, has ACCESS SHARE on orders)
+    last statement: SELECT * FROM orders WHERE id = 1
+  pid 5003 has had a transaction open for 12m (active, user=report, app=metabase)
+  1 blocker, 1 transaction open 60s or longer. Read: locks, transactions
+```
+
+A blocker line names the first statement of the run that would wait for the session, the session, its state and how long its transaction has been open, its user and application, and the lock it was granted (`has`) or is waiting for (`waits for`) on the table. A session that is itself waiting for a conflicting lock counts, since the statement queues behind it. Each session appears once per table and lock. The `last statement` line gives the session's current or most recent statement, cut at 200 characters.
+
+The transaction lines list the other transactions open at least `--older-than` seconds, 60 by default, that are not blockers. Such a transaction has no lock the run would wait for yet, but it may take one before the run finishes. The last line counts both and names what was read. A read that failed, for example for lack of a privilege, is named after `Not read:`, and none of its sessions are listed.
+
+What each engine reads:
+
+| Engine | Locks | Transactions | Privilege to see other users' sessions |
+| --- | --- | --- | --- |
+| PostgreSQL | `pg_locks`, with `pg_stat_activity` and `pg_prepared_xacts` | `pg_stat_activity` and `pg_prepared_xacts`, in the current database | `pg_read_all_stats` for another user's state, transaction age, and statement; without it, another user's transactions are not listed, and its blockers show no state. The locks need none |
+| MySQL | `performance_schema.metadata_locks` | `information_schema.INNODB_TRX` and `PROCESSLIST` | `PROCESS`, and `SELECT` on `performance_schema` |
+| MariaDB | `performance_schema.metadata_locks` when the Performance Schema is on, and otherwise `information_schema.METADATA_LOCK_INFO`, which the `metadata_lock_info` plugin adds and which lists granted locks only | the same as MySQL | the same as MySQL |
+| SQL Server | `sys.dm_tran_locks`, in the current database | `sys.dm_tran_session_transactions` and `sys.dm_exec_sessions`, for sessions in the current database | `VIEW SERVER STATE`, or `VIEW SERVER PERFORMANCE STATE` on 2022 and later |
+
+The application is `application_name` on PostgreSQL, the `program_name` connection attribute on MySQL and MariaDB, which only some clients send, and `program_name` on SQL Server. MariaDB ships with the Performance Schema off, so there the locks are read only with `performance_schema = ON` in the server configuration or with the plugin installed.
+
+A statement waits behind a lock that conflicts with its own:
+
+- **PostgreSQL:** the table-level lock conflict table in the documentation. `CREATE INDEX CONCURRENTLY` also waits for every session that writes to the table, as a `SHARE` lock would, and then for every transaction with a snapshot, whatever table it reads, so every open transaction in the database is a blocker for it, named with `would wait for the transaction of pid ... to end`. `REINDEX CONCURRENTLY` waits for every session with a lock on the table and for every snapshot. `DROP INDEX CONCURRENTLY` and `DETACH PARTITION ... CONCURRENTLY` wait for every session with a lock on the table.
+- **MySQL and MariaDB:** the metadata lock each statement needs. Every statement the rules name, other than INSERT, UPDATE, and DELETE, needs the `EXCLUSIVE` metadata lock at its start or its end, whatever its `ALGORITHM` and `LOCK`, so it waits for every other metadata lock on the table, including the `SHARED_READ` lock a transaction keeps after one `SELECT` until it commits. INSERT, UPDATE, and DELETE take `SHARED_WRITE`, which waits for `SHARED_NO_WRITE`, `SHARED_NO_READ_WRITE`, `SHARED_READ_ONLY`, and `EXCLUSIVE`.
+- **SQL Server:** the lock compatibility matrix. The intent update modes `IU`, `SIU`, and `UIX`, which the matrix in the documentation leaves out, count as conflicting with `S`, `SIX`, and `X`.
+
+The preflight reads table locks only. It reads no row locks, and a lock on a PostgreSQL partition is not matched to its partitioned table. SQLite and DuckDB have no preflight: `impact --live` exits 1 on them.
+
+### Preflight before a run
+
+`up(preflight="warn")` and `up(preflight="refuse")` read the preflight after the guards pass and before any migration applies. `warn` prints each blocker and each transaction open 60 seconds or longer on stderr, and the run goes on:
+
+```console
+preflight: ALTER TABLE orders ADD COLUMN note text would queue behind pid 4121 (idle in transaction for 42m, user=billing, app=billing-worker, has ACCESS SHARE on orders)
+preflight: pid 5003 has had a transaction open for 12m (active, user=report, app=metabase)
+```
+
+`refuse` raises `PreflightBlocked` when there is a blocker, and prints the transaction lines otherwise. The error's `preflight` attribute is the whole read, and `sustained migrate` exits 5 for it. `up(preflight=PreflightCheck("warn", older_than=300))` sets another age; `PreflightCheck` lives in `sustained.migrations`. A read that failed prints `preflight: could not read locks` in either mode, and the run goes on, since the preflight refuses only for a blocker it has seen. With `models`, the generated migration is read again once the registered migrations have applied, as the guards read it. The read is a snapshot: a session may take a lock after it and before the statement runs, so `refuse` goes well with a `lock_timeout`. On a dialect without a preflight, `up()` reads nothing.
+
+From the command line, `migrate --preflight refuse` or the config module's `preflight = "refuse"` does the same, and `preflight_older_than` sets the age, as `impact --older-than` does:
+
+```python
+# sustained_config.py
+preflight = "refuse"
+preflight_older_than = 300
+```
+
+From Python, `Migrator.preflight(models=None, older_than=60.0)` returns the read as a `Preflight`, and `Migrator.impact(live=True)` puts it on the report's `preflight`. `sustained.impact.preflight(connection, dialect, statements)` reads it for any list of statements, and `await async_preflight(adapter, dialect, statements)` through an async adapter:
+
+```python
+from sustained.impact import preflight
+
+found = preflight(connection, Dialects.POSTGRES, ["ALTER TABLE orders ADD COLUMN note text"])
+for blocker in found.blockers:
+    print(blocker.session.label, blocker.held, blocker.session.transaction_seconds)
+```
 
 ## Observed impact
 

@@ -508,9 +508,10 @@ migrations_dir = 'migrations'
 ```console
 $ sustained plan                    # what a run would do; exits 2 when work is waiting
 $ sustained impact                  # the locks and work of each statement
+$ sustained impact --live           # the same, with the sessions each would wait behind now
 $ sustained status
 $ sustained rehearse                # run it all, forwards and back, then roll back
-$ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order, --unrehearsed
+$ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order, --unrehearsed, --preflight
 $ sustained down                    # --steps N (0 or more) or --to ID, --allow-changed
 $ sustained validate                # exits 1 when problems exist
 $ sustained repair
@@ -519,7 +520,7 @@ $ sustained script --annotate       # the same, with each statement's impact abo
 $ sustained baseline 001_create_users
 ```
 
-Commands exit 0 on success and 1 on failure, with errors on stderr, so they slot into deploy pipelines. `plan` exits 2 when work is waiting, `plan` and `migrate` exit 3 when a [guard](#guards) blocked a statement, and `migrate` exits 4 when a run that removes data has no rehearsal row.
+Commands exit 0 on success and 1 on failure, with errors on stderr, so they slot into deploy pipelines. `plan` exits 2 when work is waiting, `plan` and `migrate` exit 3 when a [guard](#guards) blocked a statement, and `migrate` exits 4 when a run that removes data has no rehearsal row. `migrate --preflight refuse` exits 5 when another session has a lock the run would wait for; see [Live preflight](/impact#live-preflight).
 
 When the config module names `models`, `rehearse` and `migrate` use them: `rehearse` proves the generated migration alongside the pending ones, and `migrate` applies it after them. A targeted `migrate` applies the registered migrations only, since the generated migration always runs last.
 
@@ -871,7 +872,7 @@ def on_error(connection, migration_id, error):
 
 `before_migrate` runs before the run starts, which is before validation and before the advisory lock. `after_migrate` runs only when at least one migration applied, so a run with nothing to do stays quiet. `on_error` runs after the failure and before it reaches the caller. If the callback itself raises, its error prints on stderr and the migration error is the one that propagates. `migration_id` names the migration that failed, or is `None` when the run failed before reaching one, as it does for a guard block or a validation problem.
 
-Only `up()` calls them. `rehearse` does not, since nothing real happened. `AsyncMigrator` takes the same `Callbacks`, receives the adapter as the first argument, and awaits a callback that returns an awaitable, so `async def before_migrate(adapter)` works.
+Only `up()` calls them. `rehearse` does not, since nothing real happened. `before_migrate` runs before the run's statements are known, so a check of what the run would wait behind belongs in `up(preflight='refuse')` instead; see [Live preflight](/impact#live-preflight). `AsyncMigrator` takes the same `Callbacks`, receives the adapter as the first argument, and awaits a callback that returns an awaitable, so `async def before_migrate(adapter)` works.
 
 ## Offline review and async
 

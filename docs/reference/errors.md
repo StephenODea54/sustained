@@ -15,6 +15,7 @@ Exception
 │   ├── DialectError
 │   ├── GuardBlocked
 │   ├── MigrationError
+│   ├── PreflightBlocked
 │   └── RehearsalRequired
 ├── RuntimeError
 │   └── PoolTimeout             sustained.pool
@@ -104,6 +105,20 @@ Fix the statement, or take the rule out of the guard list to run it anyway.
 ```
 
 No flag waives a guard. `sustained plan` and `sustained migrate` exit 3 when a guard blocks the run. A warning verdict prints on stderr and raises nothing. See [Guards](/schema#guards).
+
+## `PreflightBlocked`
+
+Another session has a table lock, or has asked for one, that a statement of the run would wait for, and the run was started with `preflight='refuse'`.
+
+`Migrator.up()` and `AsyncMigrator.up()` raise it after the guards pass and before any migration applies. A run with models reads the generated migration a second time, once the registered migrations have applied, and a refusal there leaves them applied and lists their ids on the exception's `applied` attribute. The `preflight` attribute is the whole `Preflight` read. The message names each blocker:
+
+```
+Other sessions have locks this run would wait for:
+  ALTER TABLE orders ADD COLUMN note text would queue behind pid 4121 (idle in transaction for 42m, user=billing, app=billing-worker, has ACCESS SHARE on orders)
+End those transactions, or run again once they finish.
+```
+
+Sustained ends no session. `sustained migrate` exits 5 on this error. See [Live preflight](/impact#live-preflight).
 
 ## `PoolTimeout`
 
