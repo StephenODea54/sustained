@@ -63,7 +63,7 @@ class AnnotatedScriptTestCase(unittest.TestCase):
                 "-- impact: locks no table",
                 f"{TIMEOUT};",
                 "-- impact: orders  ACCESS EXCLUSIVE  blocks reads_and_writes  "
-                "catalog  brief  ~2.0M rows, 3.0 GB  [pg.add_column]",
+                "catalog  transaction  ~2.0M rows, 3.0 GB  [pg.add_column]",
                 f"{ADD};",
                 "-- impact: window  orders: SHARE from statement 1, "
                 "ACCESS EXCLUSIVE from statement 3, held to commit",

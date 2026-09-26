@@ -89,9 +89,9 @@ tables_plan() -> frozenset[int] | None
 ```
 {: .sig #sighting_plan}
 
-Read plans, generators that yield SQL and take each statement's rows back, which `run_plan()` in `sustained.introspect.runner` drives. `sighting_plan()` reads the table locks the transaction holds and the files of the named tables and their indexes. `tables_plan()` reads the oids of every table that exists.
+Read plans, generators that yield SQL and take each statement's rows back, which `run_plan()` in `sustained.introspect.runner` drives. `sighting_plan()` reads the table locks the transaction has and the files of the named tables and their indexes. `tables_plan()` reads the oids of every table that exists.
 
-`Sighting(locks, names, storage, read)` holds one read: the lock modes held on each table, by oid, in the rules' names, such as `SHARE`; the lower case names that find each table; each named table's `File(is_index, filenode, size)` records, by relation oid; and `read`, which holds `locks` and `storage` for the parts that were read.
+`Sighting(locks, names, storage, read)` is one read: the lock modes granted on each table, by oid, in the rules' names, such as `SHARE`; the lower case names that find each table; each named table's `File(is_index, filenode, size)` records, by relation oid; and `read`, which names `locks` and `storage` for the parts that were read.
 
 ```python
 observe(impact, before, after, existing, profile) -> StatementImpact
@@ -99,7 +99,7 @@ with_observations(report, observations, existing, profile) -> ImpactReport
 ```
 {: .sig #observe}
 
-`observe()` returns one statement's impact with the facts its two sightings show, and an `impact.mismatch` finding for each difference. `existing` holds the oids of the tables that existed before the run, or `None` to compare every table. It returns the impact unchanged when the locks were not read both times. `with_observations()` applies `observe()` across a report, keyed by migration id and the statement's position in its migration, counting from 0, and reads each migration's locks and windows again.
+`observe()` returns one statement's impact with the facts its two sightings show, and an `impact.mismatch` finding for each difference. `existing` is the set of oids of the tables that existed before the run, or `None` to compare every table. It returns the impact unchanged when the locks were not read both times. `with_observations()` applies `observe()` across a report, keyed by migration id and the statement's position in its migration, counting from 0, and reads each migration's locks and windows again.
 
 The MySQL and MariaDB names live in `sustained.impact.rules.mysql.trace`:
 
@@ -208,7 +208,7 @@ ImpactReport(profile, version, evidence, migrations, read=frozenset(), preflight
 | --- | --- |
 | `statements` | Every `StatementImpact`, in run order |
 | `findings` | Every `Finding`, statement findings first within each migration |
-| `count(severity)` | How many findings carry that severity |
+| `count(severity)` | How many findings have that severity |
 
 ## `MigrationImpact`
 
@@ -237,7 +237,7 @@ TableImpact(table, lock, blocks, work, hold, rows=None, bytes=None, rule=None)
 ```
 {: .sig}
 
-What the statement does to one table: the engine's lock name, or `None` for no lock, what it blocks, the work, how long it is held, the row and byte estimates when known, and the id of the rule that gave the answer. DuckDB takes no locks, so there the lock name is the conflict the statement opens on the table: `altered table`, `changed rows`, or `catalog entry`; see [DuckDB](/impact#duckdb).
+What the statement does to one table: the engine's lock name, or `None` for no lock, what it blocks, the work, how long the lock lasts, the row and byte estimates when known, and the id of the rule that gave the answer. DuckDB takes no locks, so there the lock name is the conflict the statement opens on the table: `altered table`, `changed rows`, or `catalog entry`; see [DuckDB](/impact#duckdb).
 
 ```python
 Finding(rule, severity, message, remedy=(), source=None)
@@ -257,7 +257,7 @@ The analysis itself raises these findings:
 | `pg.lock_timeout` | `warn` | A lock that blocks writes or more waits with no `lock_timeout` in scope, from a `SET` earlier in the run or from the connection's settings. |
 | `mysql.lock_timeout`, `mariadb.lock_timeout` | `warn` | A statement that takes the exclusive metadata lock runs with no `lock_wait_timeout` below a day in scope. |
 | `mysql.refused`, `mariadb.refused` | `warn` | The statement spells an `ALGORITHM` or `LOCK` the change cannot run with, so the server refuses it. |
-| `window.held` | `warn` | A table stays blocked until the commit across heavier work from a later statement. |
+| `window.held` | `warn` | A table stays blocked until the commit across heavier work from a later statement. The message names each level the table is blocked for, and the first statement to block it that far. |
 | `window.lock_order` | `warn` | One migration blocks reads and writes on more than one table at once. |
 
 ## Enums
@@ -293,7 +293,7 @@ The server facts the rules read: the profile, the version as a tuple of ints, th
 
 `read_context()` keys each table as `schema.table`, and also by its bare name when the search path finds it under that name, or on MySQL and MariaDB when it is in the current database. `stats(table)` returns a table's `TableStats`, or unknown stats for a table the read did not see.
 
-These methods read the schema, and return `None` or an empty tuple when the schema was not read or does not hold what they look for. A dotted name finds a table by its last part, since the read covers one schema.
+These methods read the schema, and return `None` or an empty tuple when the schema was not read or does not have what they look for. A dotted name finds a table by its last part, since the read covers one schema.
 
 | Method | Returns |
 | --- | --- |
@@ -308,14 +308,24 @@ These methods read the schema, and return `None` or an empty tuple when the sche
 
 ## Report forms
 
-These names live in `sustained.impact.report`, and `sustained impact` and `sustained plan` print through them.
+These names live in `sustained.impact.report`, and `sustained impact`, `sustained plan`, and `sustained script --annotate` print through them. The module's `__all__` lists them.
 
 ```python
 render(report) -> str
+summary(report) -> str
+table_line(table) -> str
 ```
 {: .sig #render}
 
-The report as the lines `sustained impact` prints, with `render_preflight()` after the summary when the report has a preflight.
+`render()` returns the report as the lines `sustained impact` prints, with `render_preflight()` after the summary when the report has a preflight. Each statement prints on one line, with each run of whitespace in it, line breaks included, printed as one space. `summary()` returns the report's last line: the counts of statements and findings, and what the answer rests on. `table_line()` renders one `TableImpact` as a table line: the table, the lock, what it blocks, the work, the hold, the size when it is known, and the rule id.
+
+```python
+statement_annotation(impact) -> list[str]
+migration_annotation(migration) -> list[str]
+```
+{: .sig #statement_annotation}
+
+The comment lines `script(annotate=True)` prints, without the `-- impact: ` prefix. `statement_annotation()` gives a statement's table lines and then its finding lines, or `["locks no table"]` for a statement with neither. `migration_annotation()` gives a `MigrationImpact`'s `window` lines and then its findings, and is empty for a migration with neither.
 
 ```python
 report_data(report) -> dict
@@ -332,12 +342,19 @@ statement_data(impact) -> dict
 One statement's impact as plain data: `kind` (`null` for an unknown statement), `severity` (`null` with no findings), `confidence`, `evidence`, `tables`, and `findings`. Each table has `table`, `lock`, `blocks`, `work`, `hold`, `rows`, `bytes`, and `rule`. Each finding has `rule`, `severity`, `message`, `remedy` as a list, and `source`.
 
 ```python
+finding_data(finding) -> dict
+```
+{: .sig #finding_data}
+
+One `Finding` as plain data, with the keys `rule`, `severity`, `message`, `remedy` as a list, and `source`. `statement_data()` and `report_data()` give each finding in this form.
+
+```python
 flagged(statements) -> list[StatementImpact]
 flagged_line(impact) -> str
 ```
 {: .sig #flagged}
 
-`flagged()` keeps the statements `plan` lists, in the order given: those with a `warn` or `danger` finding, and those the analysis could not read. `flagged_line()` renders one of them as `plan` prints it: the worst severity, the statement, and the rules at `warn` or above. An unknown statement reads as `info` with the rule `impact.unknown`.
+`flagged()` keeps the statements `plan` lists, in the order given: those with a `warn` or `danger` finding, and those the analysis could not read. `flagged_line()` renders one of them as `plan` prints it: the worst severity, the statement on one line, as `render()` prints it, and the rules at `warn` or above. An unknown statement reads as `info` with the rule `impact.unknown`.
 
 ```python
 render_preflight(preflight) -> str

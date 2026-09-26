@@ -83,8 +83,36 @@ class ReportTestCase(unittest.TestCase):
     def test_a_dialect_without_rules_is_refused(self):
         self.assertTrue(supported(PG))
         self.assertFalse(supported(Dialects.PRESTO))
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as caught:
             analyze(["DROP TABLE a"], Dialects.PRESTO)
+        self.assertEqual(
+            str(caught.exception), "Impact analysis does not cover Presto yet."
+        )
+
+    def test_a_message_names_the_engine_a_dialect_stands_for(self):
+        from sustained.impact.rules import engine, listed
+
+        self.assertEqual(engine(Dialects.DEFAULT), "SQLite")
+        self.assertEqual(engine(Dialects.MYSQL), "MySQL and MariaDB")
+        self.assertEqual(engine(Dialects.MSSQL), "SQL Server")
+        self.assertEqual(engine(Dialects.ATHENA), "Athena")
+        self.assertEqual(listed(["A"]), "A")
+        self.assertEqual(listed(["A", "B"]), "A and B")
+        self.assertEqual(listed(["A", "B", "C"]), "A, B, and C")
+
+    def test_the_preflight_refusal_names_the_engine(self):
+        from sustained.impact.preflight import covered_or_raise, preflight_plan
+
+        with self.assertRaises(ValueError) as caught:
+            covered_or_raise(Dialects.DEFAULT)
+        self.assertEqual(
+            str(caught.exception), "The live preflight does not cover SQLite."
+        )
+        with self.assertRaises(ValueError) as caught:
+            preflight_plan(Dialects.DUCKDB, ())
+        self.assertEqual(
+            str(caught.exception), "The live preflight does not cover DuckDB."
+        )
 
 
 class SeverityTestCase(unittest.TestCase):
@@ -152,12 +180,18 @@ class HoldTestCase(unittest.TestCase):
             self.holds(
                 [m("ALTER TABLE a ADD COLUMN c int"), m("CREATE INDEX ix ON b (c)")]
             ),
-            [Hold.TRANSACTION, Hold.STATEMENT],
+            [Hold.TRANSACTION, Hold.TRANSACTION],
         )
 
-    def test_a_statement_alone_holds_by_its_work(self):
+    def test_the_last_statement_keeps_its_lock_to_the_commit(self):
         self.assertEqual(
-            self.holds([m("ALTER TABLE a ADD COLUMN c int")]), [Hold.BRIEF]
+            self.holds([m("ALTER TABLE a ADD COLUMN c int")]), [Hold.TRANSACTION]
+        )
+
+    def test_a_lock_on_an_engine_whose_ddl_commits_ends_with_its_statement(self):
+        report = analyze([m("ALTER TABLE a ADD COLUMN c int")], Dialects.MYSQL)
+        self.assertEqual(
+            [t.hold for s in report.statements for t in s.tables], [Hold.BRIEF]
         )
 
     def test_outside_a_transaction_locks_end_with_their_statement(self):
@@ -365,7 +399,7 @@ class WindowTestCase(unittest.TestCase):
         )
         (finding,) = migration.findings
         self.assertEqual(finding.rule, "window.held")
-        self.assertIn("from statement 1", finding.message)
+        self.assertIn("for reads_and_writes from statement 1 until", finding.message)
         self.assertIn("rows work of statement 2", finding.message)
         self.assertEqual(
             [(lock.table, lock.lock, lock.statement) for lock in migration.locks],
@@ -374,6 +408,27 @@ class WindowTestCase(unittest.TestCase):
                 ("orders", "ROW EXCLUSIVE", 2),
                 ("orders", "ACCESS EXCLUSIVE", 3),
             ],
+        )
+
+    def test_the_finding_names_the_statement_that_takes_each_level(self):
+        report = analyze(
+            [
+                m("UPDATE orders SET c = 0"),
+                m("CREATE INDEX ix ON orders (c)"),
+                m("ALTER TABLE orders ADD COLUMN d int"),
+            ],
+            PG,
+        )
+        (migration,) = report.migrations
+        (window,) = migration.windows
+        self.assertEqual((window.blocks, window.taken_by), (Blocks.READS_AND_WRITES, 3))
+        (finding,) = [f for f in migration.findings if f.rule == "window.held"]
+        self.assertEqual(
+            finding.message,
+            "orders stays blocked for writes from statement 1 and for "
+            "reads_and_writes from statement 3 until the migration commits, "
+            "across the index_build work of statement 2; move that work to a "
+            "migration of its own",
         )
 
     def test_heavy_work_in_the_statement_that_takes_the_lock_draws_no_window_finding(

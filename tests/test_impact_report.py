@@ -91,7 +91,7 @@ class MigratorImpactTestCase(unittest.TestCase):
         migrator = Migrator(connection, [], dialect=Dialects.PRESTO)
         with self.assertRaises(DialectError) as caught:
             migrator.impact()
-        self.assertIn("does not cover PRESTO", str(caught.exception))
+        self.assertIn("does not cover Presto yet", str(caught.exception))
         self.assertEqual(connection.log, [])
 
 
@@ -148,6 +148,19 @@ class RenderTestCase(unittest.TestCase):
             "2 statements, 0 danger, 3 warn. Evidence: static (assumed "
             "PostgreSQL 12)",
         )
+
+    def test_a_statement_over_several_lines_prints_on_one(self):
+        text = render(
+            analyze(
+                [m("CREATE INDEX ix_orders_customer\n    ON orders (customer_id)")], PG
+            )
+        )
+        self.assertEqual(text.splitlines()[1], f"  {INDEX}")
+
+    def test_the_hold_of_the_last_statement_is_the_transaction(self):
+        text = render(analyze([m(INDEX)], PG))
+        self.assertIn("index_build  transaction  [pg.create_index]", text)
+        self.assertIn("window  orders: SHARE from statement 1, held to commit", text)
 
     def test_a_migration_without_a_transaction_has_no_window(self):
         text = render(analyze([m(ADD, "m1", False)], PG))
@@ -282,6 +295,16 @@ class FlaggedTestCase(unittest.TestCase):
             "info    GRANT SELECT ON orders TO app  [impact.unknown]",
         )
 
+    def test_a_statement_over_several_lines_prints_on_one(self):
+        (impact,) = analyze(
+            [m("CREATE INDEX ix_orders_customer\n  ON orders\t(customer_id)")], PG
+        ).statements
+        self.assertEqual(
+            flagged_line(impact),
+            "warn    CREATE INDEX ix_orders_customer ON orders (customer_id)  "
+            "[pg.create_index, pg.lock_timeout]",
+        )
+
     def test_a_danger_statement_names_its_rules_once(self):
         context = EngineContext(
             "postgres",
@@ -294,6 +317,22 @@ class FlaggedTestCase(unittest.TestCase):
         line = flagged_line(impact)
         self.assertTrue(line.startswith("danger  "))
         self.assertEqual(line.count("pg.create_index"), 1)
+
+
+class ExportsTestCase(unittest.TestCase):
+    def test_every_public_function_is_exported(self):
+        from sustained.impact import report
+
+        public = {
+            name
+            for name, value in vars(report).items()
+            if callable(value)
+            and not name.startswith("_")
+            and getattr(value, "__module__", None) == report.__name__
+        }
+        self.assertLessEqual(public, set(report.__all__))
+        for name in report.__all__:
+            self.assertTrue(hasattr(report, name), name)
 
 
 if __name__ == "__main__":

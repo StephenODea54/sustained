@@ -73,7 +73,7 @@ def _model_plans(
     if not models:
         return None
     snapshot = migrator.read_schema(list(models))
-    asserted = _assert_algorithm(config)
+    asserted = _assert_algorithm(config, args)
     online = _online(config, args)
     return _ModelPlans(
         migrator.plan_migrations(
@@ -99,9 +99,9 @@ def _drift_statements(
     Drops are included: a preview reports every difference, including
     tables and columns the models no longer declare, which migrate does
     not generate. The statements print in full, so a drop reads as a drop
-    without a separate label. Each statement carries the id of its
-    migration in the preview, so the impact analysis reads the
-    migrations apart.
+    without a separate label. Each statement is a MigrationStatement with
+    the id of its migration in the preview, so the impact analysis reads
+    the migrations apart.
     """
     if plans is None:
         return None
@@ -118,8 +118,9 @@ def _migrate_drift_statements(
     This is the drift preview without the drops: migrate generates none
     unless it is called from Python with allow_drops=True. The guards read
     this set, so a verdict names a statement the run would run. Each
-    statement carries its generated migration's id, so a rule that reads
-    migration boundaries sees each generated migration as one of its own.
+    statement is a MigrationStatement with its generated migration's id,
+    so a rule that reads migration boundaries sees each generated
+    migration as one of its own.
     """
     if plans is None:
         return None
@@ -190,9 +191,9 @@ def _plan_verdicts(
 
     The guards read the whole run at once, pending migrations and
     generated statements together, so a rule over the run as a whole sees
-    what migrate will see. Each statement carries the id of the migration
-    it belongs to, so a rule that reads migration boundaries reads the
-    same ones migrate would. The drift the plan prints is the wider set: it
+    what migrate will see. Each statement is a MigrationStatement with the
+    id of the migration it belongs to, so a rule that reads migration
+    boundaries reads the same ones migrate would. The drift the plan prints is the wider set: it
     includes the drops migrate does not generate, and no verdict is
     reported on those, because no run would read them.
 
@@ -415,9 +416,12 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
     if blockers and not problems:
         # migrate refuses a blocked statement, so there is one thing to do
         # and it is not running migrate.
-        print("blocked: fix the statement, or take the rule out of guards")
+        print(
+            "blocked: fix the statement, or take the rule out of the guard list "
+            "to run it anyway"
+        )
     elif not problems:
-        # migrate never generates drops, so a drift section holding
+        # migrate never generates drops, so a drift section with
         # nothing else is not work it can do.
         closable = [s for s in drift or [] if not destructive_statements([s])]
         if any(s.destructive for s in summaries) and not _rehearsal_row_covers(

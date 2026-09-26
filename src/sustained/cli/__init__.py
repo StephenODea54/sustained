@@ -23,7 +23,8 @@ The config module names the pieces the migrator needs:
 - `assert_algorithm`: True to write the predicted ALGORITHM and LOCK
   clause on the statements generated from the models on MySQL and
   MariaDB, as `Migrator.plan(assert_algorithm=True)` does, in `plan`,
-  `impact`, `migrate`, and `rehearse` (optional)
+  `impact`, `migrate`, and `rehearse`, as the `--assert-algorithm` flag
+  of those commands does (optional)
 - `exact_counts`: True to count the rows of each SQLite table that
   `sqlite_stat1` has no row count for when the impact analysis reads
   the database, in `plan`, `impact`, `migrate`, and `script --annotate`,
@@ -37,8 +38,8 @@ The config module names the pieces the migrator needs:
   behind, as `Migrator.up(preflight=...)` does, and as `migrate
   --preflight` does (optional)
 - `preflight_older_than`: the age in seconds from which the preflight
-  lists an open transaction, 60 by default, for `migrate` and `impact
-  --live` (optional)
+  lists an open transaction, 60 by default, for `migrate` with a
+  preflight and `impact --live`; only those read it (optional)
 - `before_migrate(connection)`, `after_migrate(connection, applied)`, and
   `on_error(connection, migration_id, error)`: callbacks around the
   `migrate` command; `on_error` also runs when `down` fails (optional)
@@ -66,9 +67,15 @@ guard reads impact, `migrate` prints each `danger` finding on stderr, as
 behind on the server now, and the transactions open longer than
 `--older-than` seconds.
 `script --annotate` prints each statement's impact above it as SQL
-comments. `rehearse --trace` observes each statement on Postgres, MySQL,
-and MariaDB, and prints the impact report with what the server did in
-place of the prediction.
+comments. `rehearse --trace` observes each statement on PostgreSQL,
+MySQL, MariaDB, and SQL Server, and prints the impact report with what
+the server did in place of the prediction.
+
+A flag that changes nothing is an error. `--older-than` without
+`--live`, and `script --exact-counts` without `--annotate`, are usage
+errors, which exit 2. `--online` on a dialect other than PostgreSQL,
+MySQL, and MariaDB, and `--assert-algorithm` on a dialect other than
+MySQL and MariaDB, exit 1.
 
 `status`, `validate`, `plan`, `impact`, and `rehearse` take `--json`, which prints
 one JSON object instead of the plain lines. A failure prints the object
@@ -96,8 +103,10 @@ from sustained.cli.commands import (
 )
 from sustained.cli.config import (
     _build_migrator,
+    _check_dialect_flags,
     _close_quietly,
     _load_config,
+    _seconds,
 )
 from sustained.cli.output import (
     _JSON_KEYS,
@@ -156,7 +165,14 @@ def _build_parser() -> argparse.ArgumentParser:
         sub.add_argument(
             "--online",
             action="store_true",
-            help="Generate the models' migration in its online form (Postgres).",
+            help="Generate the models' migration in its online form "
+            "(PostgreSQL; on MySQL and MariaDB, as --assert-algorithm).",
+        )
+        sub.add_argument(
+            "--assert-algorithm",
+            action="store_true",
+            help="Write the predicted ALGORITHM and LOCK clauses on the models' "
+            "statements (MySQL, MariaDB).",
         )
         return sub
 
@@ -185,7 +201,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     impact.add_argument(
         "--older-than",
-        type=float,
+        type=_seconds,
         metavar="SECONDS",
         help="List open transactions at least this old with --live (default: 60).",
     )
@@ -201,7 +217,8 @@ def _build_parser() -> argparse.ArgumentParser:
     rehearse.add_argument(
         "--trace",
         action="store_true",
-        help="Observe the locks and rewrites of each statement (Postgres, MySQL, MariaDB).",
+        help="Observe the locks and rewrites of each statement "
+        "(PostgreSQL, MySQL, MariaDB, SQL Server).",
     )
 
     migrate = generates(
@@ -301,8 +318,21 @@ def _fail(
     return code
 
 
+def _check_usage(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """
+    Refuses a flag that does nothing without another, as a usage error,
+    so the flag is not read as having done something.
+    """
+    if getattr(args, "older_than", None) is not None and not args.live:
+        parser.error("--older-than needs --live")
+    if args.command == "script" and args.exact_counts and not args.annotate:
+        parser.error("--exact-counts on script needs --annotate")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    _check_usage(parser, args)
     try:
         config = _load_config(args.config)
         migrator, connection = _build_migrator(config)
@@ -313,6 +343,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # traceback.
         return _fail(args, error, 1)
     try:
+        _check_dialect_flags(args, migrator.dialect)
         return _COMMANDS[args.command](migrator, args, config)
     except GuardBlocked as error:
         # Exit 3 says a guard blocked the run, which plan reports the same

@@ -203,7 +203,7 @@ plan_migrations(models, ..., online=False) -> list[Migration]
 ```
 {: .sig #plan_migrations}
 
-The migrations that `up(models=[...])` would generate, as a list that is empty when the schema is current. It takes `plan()`'s arguments, `snapshot` included on `Migrator`, and without `online` the list holds the one migration `plan()` returns. `AsyncMigrator.plan_migrations()` takes no `snapshot`.
+The migrations that `up(models=[...])` would generate, as a list that is empty when the schema is current. It takes `plan()`'s arguments, `snapshot` included on `Migrator`, and without `online` the list has the one migration `plan()` returns. `AsyncMigrator.plan_migrations()` takes no `snapshot`.
 
 ```python
 read_schema(models) -> dict[str, IntrospectedTable]
@@ -244,7 +244,7 @@ These methods take the same options:
 | `table_renames` | `None` | `{'old': 'new'}`. |
 | `type_casts` | `None` | `{'table.col': 'col::integer'}`, a `USING` hint. Postgres only. |
 | `ignore_undeclared` | `True` | Leave objects the models do not declare alone. `False` refuses to generate while any exist. |
-| `online` | `False` | On PostgreSQL, split the work into `<id>`, which runs in one transaction and changes only the catalog, and `<id>_online`, which has `transactional=False` and holds the backfills, `CREATE INDEX CONCURRENTLY`, `VALIDATE CONSTRAINT`, the check route to `SET NOT NULL`, and the drops. On MySQL and MariaDB, it turns on `assert_algorithm`. Other dialects ignore it. `plan()` and `sync()` do not take it; `plan_migrations()` does. See [Online migrations](/impact#online-migrations). |
+| `online` | `False` | On PostgreSQL, split the work into `<id>`, which runs in one transaction and changes only the catalog, and `<id>_online`, which has `transactional=False` and runs the backfills, `CREATE INDEX CONCURRENTLY`, `VALIDATE CONSTRAINT`, the check route to `SET NOT NULL`, and the drops. On MySQL and MariaDB, it turns on `assert_algorithm`. Other dialects ignore it. `plan()` and `sync()` do not take it; `plan_migrations()` does. See [Online migrations](/impact#online-migrations). |
 | `assert_algorithm` | `False` | On MySQL and MariaDB, write the `ALGORITHM` and `LOCK` clause the impact rules predict on each generated ALTER TABLE, CREATE INDEX, and DROP INDEX whose prediction is `INSTANT`, `NOCOPY, LOCK=NONE`, or `INPLACE, LOCK=NONE` with confidence `known`, on a table that existed before the migration. The server facts are read after the diff. Changes the SQL text, so a rehearsal without it does not cover a run with it. See [Asserting the algorithm](/impact#asserting-the-algorithm). |
 
 Pass every model you manage, because these methods compare the whole database against the whole list, and nothing keeps a table up to date when its model is missing from the list. The comparison always excludes the tracking table.
@@ -421,7 +421,7 @@ check_guards(guards, run, dialect, reported=None)
 ```
 {: .sig #check_guards}
 
-Runs the guards over a run. Raises `GuardBlocked` on a blocking verdict, prints warnings on stderr. The statements carry no `impact`, so an impact rule analyzes them with no server facts; `up()` attaches the impact first.
+Runs the guards over a run. Raises `GuardBlocked` on a blocking verdict, prints warnings on stderr. The statements have no `impact` attached, so an impact rule analyzes them with no server facts; `up()` attaches the impact first.
 
 ```python
 check_statements(guards, statements, dialect, reported=None)
@@ -661,9 +661,9 @@ autogenerate_migrations(connection, models, id, dialect=..., allow_drops=False, 
 ```
 {: .sig #autogenerate_migrations}
 
-Builds the migrations a diff asks for, as a list that is empty when the schema is up to date. The arguments are those of `autogenerate()`, and without `online` the list holds the one migration `autogenerate()` returns.
+Builds the migrations a diff asks for, as a list that is empty when the schema is up to date. The arguments are those of `autogenerate()`, and without `online` the list has the one migration `autogenerate()` returns.
 
-On PostgreSQL, `online=True` splits the work into two migrations. The migration named `id` runs in one transaction and changes only the catalog. The migration named `<id>_online` has `transactional=False`, so each of its statements commits on its own, and it holds the statements that read or write rows. A migration with no statement is left out of the list. On MySQL and MariaDB, `online=True` does what `assert_algorithm=True` does. Other dialects ignore it. [Online migrations](/impact#online-migrations) lists the statements each migration holds.
+On PostgreSQL, `online=True` splits the work into two migrations. The migration named `id` runs in one transaction and changes only the catalog. The migration named `<id>_online` has `transactional=False`, so each of its statements commits on its own, and it has the statements that read or write rows. A migration with no statement is left out of the list. On MySQL and MariaDB, `online=True` does what `assert_algorithm=True` does. Other dialects ignore it. [Online migrations](/impact#online-migrations) lists the statements of each migration.
 
 ```python
 introspect_schema(connection, dialect=Dialects.DEFAULT, schemas=()) -> dict[str, IntrospectedTable]

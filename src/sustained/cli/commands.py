@@ -23,6 +23,7 @@ from sustained.cli.config import (
 from sustained.cli.output import (
     _print_json,
 )
+from sustained.impact.preflight import OLDER_THAN
 from sustained.impact.report import (
     render,
     report_data,
@@ -59,10 +60,10 @@ def _cmd_impact(
     models = list(getattr(config, "models", None) or []) or None
     report = migrator.impact(
         models,
-        assert_algorithm=_assert_algorithm(config),
+        assert_algorithm=_assert_algorithm(config, args),
         exact_counts=_exact_counts(config, args),
         live=args.live,
-        older_than=_older_than(config, args),
+        older_than=_older_than(config, args) if args.live else OLDER_THAN,
         online=_online(config, args),
     )
     if args.json:
@@ -177,7 +178,7 @@ def _cmd_rehearse(
         results = migrator.rehearse(
             models=models,
             trace=args.trace,
-            assert_algorithm=_assert_algorithm(config),
+            assert_algorithm=_assert_algorithm(config, args),
             online=_online(config, args),
         )
         key, recorded = results.key, results.recorded
@@ -190,7 +191,7 @@ def _cmd_rehearse(
                 scratch=True,
                 models=models,
                 trace=args.trace,
-                assert_algorithm=_assert_algorithm(config),
+                assert_algorithm=_assert_algorithm(config, args),
                 online=_online(config, args),
             )
         finally:
@@ -226,7 +227,7 @@ def _cmd_migrate(
         allow_out_of_order=args.allow_out_of_order,
         models=models,
         unrehearsed=args.unrehearsed,
-        assert_algorithm=_assert_algorithm(config),
+        assert_algorithm=_assert_algorithm(config, args),
         exact_counts=_exact_counts(config, args),
         preflight=_preflight(config, args),
         online=_online(config, args),

@@ -112,6 +112,17 @@ class StatementTestCase(unittest.TestCase):
                 self.assertEqual(found.work, work)
                 self.assertEqual(found.rule, rule)
 
+    def test_a_delete_is_advised_to_delete_in_batches(self):
+        for sql, advice in (
+            ("DELETE FROM t", "delete in batches"),
+            ("UPDATE t SET c = 1", "backfill in batches"),
+        ):
+            with self.subTest(sql=sql):
+                messages = [f.message for f in impact(sql).findings]
+                self.assertTrue(any(advice in text for text in messages), messages)
+                if advice == "delete in batches":
+                    self.assertFalse(any("backfill" in text for text in messages))
+
     def test_wal_mode_lets_reads_go_on(self):
         self.assertIs(table("DROP TABLE t", context("wal")).blocks, Blocks.WRITES)
         self.assertIs(

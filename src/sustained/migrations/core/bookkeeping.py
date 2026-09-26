@@ -488,8 +488,9 @@ def script(
 
     if annotate and not supported(m._dialect):
         from sustained.exceptions import DialectError
+        from sustained.impact.rules import engine
 
-        raise DialectError(f"Impact analysis does not cover {m._dialect.name} yet.")
+        raise DialectError(f"Impact analysis does not cover {engine(m._dialect)} yet.")
     records = yield from read_applied_records(m)
     generated: Dict[str, Migration] = {}
     if direction == "down":

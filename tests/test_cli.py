@@ -5,6 +5,7 @@ Each test writes a config module and a migrations directory into a temp
 directory, points the CLI at them, and calls main() directly.
 """
 
+import argparse
 import contextlib
 import io
 import json
@@ -1281,18 +1282,51 @@ class AssertAlgorithmCliTestCase(CliBase):
             self._run(name, *argv)
         return [call.kwargs.get("assert_algorithm") for call in spy.call_args_list]
 
-    def test_each_command_passes_the_attribute(self):
-        for extra, expected in (("assert_algorithm = True\n", True), ("", False)):
+    def test_each_command_passes_the_flag_or_the_attribute(self):
+        # The dialect check refuses the flag on SQLite, which the diff
+        # still reads it on; it is tested on its own below.
+        patcher = mock.patch("sustained.cli._check_dialect_flags")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        cases = (("assert_algorithm = True\n", (), True), ("", (), False))
+        cases += (("", ("--assert-algorithm",), True),)
+        for extra, flag, expected in cases:
             name = self._config(extra)
-            with self.subTest(assert_algorithm=expected):
+            with self.subTest(extra=extra, flag=flag):
                 self.assertEqual(
-                    self._calls("plan_migrations", name, "plan"), [expected] * 2
+                    self._calls("plan_migrations", name, "plan", *flag),
+                    [expected] * 2,
                 )
-                self.assertEqual(self._calls("impact", name, "impact"), [expected])
-                self.assertEqual(self._calls("rehearse", name, "rehearse"), [expected])
-                self.assertEqual(self._calls("up", name, "migrate"), [expected])
+                self.assertEqual(
+                    self._calls("impact", name, "impact", *flag), [expected]
+                )
+                self.assertEqual(
+                    self._calls("rehearse", name, "rehearse", *flag), [expected]
+                )
+                self.assertEqual(self._calls("up", name, "migrate", *flag), [expected])
             sys.modules.pop(name, None)
             os.remove(os.path.join(self.dir.name, "cli.db"))
+
+    def test_the_flag_on_a_dialect_it_changes_nothing_on_exits_one(self):
+        for command in ("plan", "impact", "rehearse", "migrate"):
+            with self.subTest(command=command):
+                code, _, err = self.run_cli(command, "--assert-algorithm")
+                self.assertEqual(code, 1)
+                self.assertIn(
+                    "--assert-algorithm changes the migration the models generate "
+                    "on MySQL and MariaDB only, not SQLite",
+                    err,
+                )
+        self.assertNotIn("users", self.table_names())
+
+    def test_the_flag_on_mysql_passes_the_check(self):
+        from sustained.cli.config import _check_dialect_flags
+        from sustained.dialects import Dialects
+
+        args = argparse.Namespace(assert_algorithm=True, online=True)
+        _check_dialect_flags(args, Dialects.MYSQL)
+        with self.assertRaises(ValueError):
+            _check_dialect_flags(args, Dialects.POSTGRES)
 
 
 class OnlineCliTestCase(CliBase):
@@ -1310,6 +1344,11 @@ class OnlineCliTestCase(CliBase):
         return [call.kwargs.get("online") for call in spy.call_args_list]
 
     def test_each_command_passes_the_flag_or_the_attribute(self):
+        # The dialect check refuses the flag on SQLite, which the diff
+        # still reads it on; it is tested on its own below.
+        patcher = mock.patch("sustained.cli._check_dialect_flags")
+        patcher.start()
+        self.addCleanup(patcher.stop)
         cases = (("", (), False), ("", ("--online",), True))
         cases += (("online = True\n", (), True),)
         for extra, flag, expected in cases:
@@ -1328,6 +1367,38 @@ class OnlineCliTestCase(CliBase):
                 self.assertEqual(self._calls("up", name, "migrate", *flag), [expected])
             sys.modules.pop(name, None)
             os.remove(os.path.join(self.dir.name, "cli.db"))
+
+    def test_the_flag_on_sqlite_exits_one_before_anything_runs(self):
+        for command in ("plan", "impact", "rehearse", "migrate"):
+            with self.subTest(command=command):
+                code, _, err = self.run_cli(command, "--online")
+                self.assertEqual(code, 1)
+                self.assertIn(
+                    "--online changes the migration the models generate on "
+                    "PostgreSQL, MySQL, and MariaDB only, not SQLite",
+                    err,
+                )
+        self.assertNotIn("users", self.table_names())
+
+    def test_the_flag_on_duckdb_exits_one(self):
+        from sustained.cli.config import _check_dialect_flags
+        from sustained.dialects import Dialects
+
+        args = argparse.Namespace(online=True)
+        with self.assertRaises(ValueError) as caught:
+            _check_dialect_flags(args, Dialects.DUCKDB)
+        self.assertIn("not DuckDB", str(caught.exception))
+        _check_dialect_flags(args, Dialects.POSTGRES)
+
+    def test_the_attribute_on_sqlite_is_not_refused(self):
+        code, _, _ = self._run(self._config("online = True\n"), "migrate")
+        self.assertEqual(code, 0)
+
+    def test_the_help_names_mysql_and_mariadb(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit):
+            main(["migrate", "--help"])
+        self.assertIn("MySQL and MariaDB", " ".join(stdout.getvalue().split()))
 
 
 class ExactCountsCliTestCase(CliBase):
@@ -1370,6 +1441,18 @@ class ExactCountsCliTestCase(CliBase):
                 self.assertEqual(self._calls("up", name, "migrate", *flag), [expected])
             sys.modules.pop(name, None)
             os.remove(os.path.join(self.dir.name, "cli.db"))
+
+    def test_script_without_annotate_refuses_the_flag(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as exit:
+            main(["script", "--exact-counts", "--config", self.config_name])
+        self.assertEqual(exit.exception.code, 2)
+        self.assertIn("--exact-counts on script needs --annotate", stderr.getvalue())
+
+    def test_script_without_annotate_ignores_the_attribute(self):
+        code, out, _ = self._run(self._config("exact_counts = True\n"), "script")
+        self.assertEqual(code, 0)
+        self.assertNotIn("-- impact:", out)
 
 
 class CallbackCliTestCase(CliBase):
@@ -1482,7 +1565,11 @@ class GuardCliTestCase(CliBase):
         self.assertIn("guards", out)
         self.assertIn("block  no_drops  DROP TABLE flags", out)
         self.assertIn("1 guard verdict", out)
-        self.assertIn("blocked: fix the statement", out)
+        self.assertIn(
+            "blocked: fix the statement, or take the rule out of the guard list "
+            "to run it anyway",
+            out,
+        )
         self.assertNotIn("run: sustained migrate", out)
 
     def test_plan_json_attaches_the_verdict_to_its_statement(self):
@@ -1688,7 +1775,7 @@ class ImpactCliTestCase(CliBase):
         self._no_rules()
         code, _, err = self.run_cli("impact")
         self.assertEqual(code, 1)
-        self.assertIn("Impact analysis does not cover DEFAULT yet", err)
+        self.assertIn("Impact analysis does not cover SQLite yet", err)
 
     def test_impact_json_failure_prints_null_keys(self):
         self._no_rules()
@@ -1701,7 +1788,9 @@ class ImpactCliTestCase(CliBase):
     def test_rehearse_trace_on_a_dialect_it_cannot_observe_exits_one(self):
         code, _, err = self.run_cli("rehearse", "--trace")
         self.assertEqual(code, 1)
-        self.assertIn("POSTGRES, MYSQL, and MSSQL only", err)
+        self.assertIn(
+            "PostgreSQL, MySQL, MariaDB, and SQL Server only, not SQLite", err
+        )
 
     def test_rehearse_trace_prints_the_report(self):
         self._postgres_rules()
@@ -1889,7 +1978,7 @@ class PreflightCliTestCase(ImpactCliTestCase):
         self._preflight_rules(None)
         code, _, err = self.run_cli("impact", "--live")
         self.assertEqual(code, 1)
-        self.assertIn("live preflight does not cover DEFAULT", err)
+        self.assertIn("live preflight does not cover PostgreSQL", err)
 
     def test_migrate_refuses_with_exit_five(self):
         self._preflight_rules()
@@ -1918,6 +2007,60 @@ class PreflightCliTestCase(ImpactCliTestCase):
         name = self._config("preflight = 'warn'\n")
         code, _, _ = self.run_named(name, "migrate", "--preflight", "refuse")
         self.assertEqual(code, 5)
+
+    def test_a_preflight_older_than_that_is_not_a_number_names_the_attribute(self):
+        self._preflight_rules()
+        for value in ("'soon'", "None", "-1", "float('nan')", "True"):
+            name = self._config(f"preflight_older_than = {value}\n")
+            with self.subTest(value=value):
+                code, _, err = self.run_named(name, "impact", "--live")
+                self.assertEqual(code, 1)
+                self.assertIn(
+                    "preflight_older_than must be a number of seconds, 0 or more",
+                    err,
+                )
+                code, _, err = self.run_named(name, "migrate", "--preflight", "warn")
+                self.assertEqual(code, 1)
+                self.assertIn("preflight_older_than must be", err)
+            sys.modules.pop(name, None)
+
+    def test_a_preflight_older_than_in_a_string_of_digits_is_read(self):
+        self._preflight_rules()
+        self.run_cli("migrate")
+        self._add_index()
+        name = self._config("preflight_older_than = '7'\n")
+        code, out, _ = self.run_named(name, "impact", "--live", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["preflight"]["older_than"], 7.0)
+
+    def test_impact_without_live_does_not_read_preflight_older_than(self):
+        self._preflight_rules()
+        name = self._config("preflight_older_than = 'soon'\n")
+        code, _, err = self.run_named(name, "impact")
+        self.assertEqual(code, 0, err)
+
+    def test_migrate_without_a_preflight_does_not_read_preflight_older_than(self):
+        name = self._config("preflight_older_than = 'soon'\n")
+        code, _, err = self.run_named(name, "migrate")
+        self.assertEqual(code, 0, err)
+
+    def _usage_error(self, *argv):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as exit:
+            main([*argv, "--config", self.config_name])
+        return exit.exception.code, stderr.getvalue()
+
+    def test_older_than_without_live_is_a_usage_error(self):
+        code, err = self._usage_error("impact", "--older-than", "5")
+        self.assertEqual(code, 2)
+        self.assertIn("--older-than needs --live", err)
+
+    def test_older_than_refuses_a_negative_or_nan_age(self):
+        for value in ("-1", "nan", "soon"):
+            with self.subTest(value=value):
+                code, err = self._usage_error("impact", "--live", "--older-than", value)
+                self.assertEqual(code, 2)
+                self.assertIn("is not a number of seconds, 0 or more", err)
 
     def _indexes(self):
         with contextlib.closing(self.db()) as conn:

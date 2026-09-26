@@ -298,6 +298,32 @@ class WithObservationsTestCase(unittest.TestCase):
         window = next(w for w in migration.windows if w.table == "orders")
         self.assertIs(window.blocks, Blocks.READS_AND_WRITES)
 
+    def test_a_lock_no_rule_named_is_kept_to_the_commit(self):
+        statements = [MigrationStatement("UPDATE orders SET c = 0", "001", True)]
+        after = sighting({ORDERS: {"ROW EXCLUSIVE"}, PARTS: {"ACCESS EXCLUSIVE"}})
+        observed = with_observations(
+            analyze(statements, PG),
+            {("001", 0): (sighting(), after)},
+            EXISTING,
+            PROFILE,
+        )
+        (statement,) = observed.statements
+        self.assertEqual(
+            [(t.table, t.hold) for t in statement.tables],
+            [("orders", Hold.TRANSACTION), ("parts", Hold.TRANSACTION)],
+        )
+
+    def test_outside_a_transaction_a_lock_no_rule_named_is_brief(self):
+        statements = [MigrationStatement("UPDATE orders SET c = 0", "001", False)]
+        after = sighting({ORDERS: {"ROW EXCLUSIVE"}, PARTS: {"ACCESS EXCLUSIVE"}})
+        observed = with_observations(
+            analyze(statements, PG),
+            {("001", 0): (sighting(), after)},
+            EXISTING,
+            PROFILE,
+        )
+        self.assertEqual(observed.statements[0].tables[1].hold, Hold.BRIEF)
+
     def test_no_observation_keeps_the_evidence(self):
         report = analyze(["CREATE INDEX ix ON orders (c)"], PG)
         observed = with_observations(report, {}, EXISTING, PROFILE)
@@ -339,7 +365,7 @@ class RehearseTraceTestCase(unittest.TestCase):
         migrator = self.migrator(connection, [Migration("001", up="SELECT 1")])
         with self.assertRaises(DialectError) as caught:
             migrator.rehearse(trace=True)
-        self.assertIn("POSTGRES", str(caught.exception))
+        self.assertIn("MariaDB, and SQL Server only, not SQLite", str(caught.exception))
 
     def test_without_trace_the_result_has_no_impact(self):
         connection = sqlite3.connect(":memory:")

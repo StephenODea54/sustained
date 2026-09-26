@@ -276,6 +276,37 @@ def title(name: str) -> str:
     return name
 
 
+# The engine each dialect stands for, for a dialect with no profile.
+_ENGINES = {
+    "ATHENA": "Athena",
+    "PRESTO": "Presto",
+    "MSSQL": "SQL Server",
+    "POSTGRES": "PostgreSQL",
+    "MYSQL": "MySQL",
+    "DUCKDB": "DuckDB",
+    "DEFAULT": "SQLite",
+}
+
+
+def engine(dialect: "Dialects") -> str:
+    """
+    The vendor's name for the engines a dialect stands for, such as
+    `SQLite` for `Dialects.DEFAULT`, or `MySQL and MariaDB`: the titles
+    of its profiles, for the messages that name a dialect.
+    """
+    titles = [profile.title for profile in profiles_for(dialect)]
+    if not titles:
+        return _ENGINES.get(dialect.name, dialect.name)
+    return " and ".join(titles)
+
+
+def listed(names: Sequence[str]) -> str:
+    """Names as a sentence lists them: `A`, `A and B`, or `A, B, and C`."""
+    if len(names) < 3:
+        return " and ".join(names)
+    return f"{', '.join(names[:-1])}, and {names[-1]}"
+
+
 def release(name: str, version: Tuple[int, ...]) -> str:
     """A version of the engine a profile name stands for, as people write it."""
     from sustained.impact.context import version_text
@@ -290,6 +321,11 @@ def release(name: str, version: Tuple[int, ...]) -> str:
 def supported(dialect: "Dialects") -> bool:
     """Whether the impact analysis has rules for the dialect."""
     return profile_for(dialect) is not None
+
+
+def all_profiles() -> List[Profile]:
+    """Every profile of every dialect."""
+    return [profile for profiles in _profiles().values() for profile in profiles]
 
 
 def all_rules() -> List[Rule]:

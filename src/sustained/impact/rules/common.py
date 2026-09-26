@@ -21,9 +21,11 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from sustained.impact.context import TableStats
 from sustained.impact.model import (
+    Blocks,
     Confidence,
     Evidence,
     Finding,
+    Hold,
     ImpactReport,
     MigrationImpact,
     Severity,
@@ -154,6 +156,19 @@ def work_mismatch(table: TableImpact, observed: Optional[Work], nothing: str) ->
     return f"the rules predicted {what} on {table.table}, and the server {nothing}"
 
 
+def _kept_to_commit(statement: StatementImpact) -> StatementImpact:
+    """
+    The statement with the hold of each lock that blocks something set
+    to `transaction`, for a migration whose locks last until the commit,
+    as the analysis sets it.
+    """
+    tables = tuple(
+        t._replace(hold=Hold.TRANSACTION) if t.blocks > Blocks.NOTHING else t
+        for t in statement.tables
+    )
+    return statement._replace(tables=tables)
+
+
 def with_observations(
     report: ImpactReport,
     observations: Mapping[Tuple[Optional[str], int], Any],
@@ -170,13 +185,15 @@ def with_observations(
     """
     migrations: List[MigrationImpact] = []
     for migration in report.migrations:
+        spans = migration.transactional and profile.transactional_ddl
         statements = []
         for index, statement in enumerate(migration.statements):
             key = (migration.migration_id, index)
             if key in observations:
                 statement = observe(statement, observations[key])
+                if spans:
+                    statement = _kept_to_commit(statement)
             statements.append(statement)
-        spans = migration.transactional and profile.transactional_ddl
         locks, windows, findings = aggregate(statements, spans, profile.locks_database)
         migrations.append(
             migration._replace(

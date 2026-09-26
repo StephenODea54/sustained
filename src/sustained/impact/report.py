@@ -6,7 +6,7 @@ The text form reads one migration at a time:
 
     20260926_orders_customer_idx  transaction
       CREATE INDEX ix_orders_customer ON orders (customer_id)
-        orders  SHARE  blocks writes  index_build  statement  [pg.create_index]
+        orders  SHARE  blocks writes  index_build  transaction  [pg.create_index]
         warn    writes to orders wait for the whole index build; ...
         fix     CREATE INDEX CONCURRENTLY ix_orders_customer ON orders (customer_id)
       window  orders: SHARE from statement 1, held to commit
@@ -276,7 +276,7 @@ def render(report: ImpactReport) -> str:
         scope = "transaction" if migration.transactional else "no transaction"
         lines.append(f"{migration.migration_id or '(no migration)'}  {scope}")
         for statement in migration.statements:
-            lines.append(f"  {statement.statement}")
+            lines.append(f"  {_one_line(statement.statement)}")
             for table in statement.tables:
                 lines.append(f"    {table_line(table)}")
             for finding in statement.findings:
@@ -332,7 +332,8 @@ def flagged_line(impact: StatementImpact) -> str:
         severity = impact.severity or Severity.INFO
         rules = [f.rule for f in impact.findings if f.severity >= Severity.WARN]
     unique = list(dict.fromkeys(rules))
-    return f"{severity!s:<6}  {impact.statement}  [{', '.join(unique)}]"
+    statement = _one_line(impact.statement)
+    return f"{severity!s:<6}  {statement}  [{', '.join(unique)}]"
 
 
 # --- preflight ---------------------------------------------------------
@@ -422,3 +423,23 @@ def render_preflight(preflight: "Preflight") -> str:
             lines.append(f"    last statement: {_one_line(session.query, 200)}")
     lines.append(f"  {preflight_summary(preflight)}")
     return "\n".join(lines)
+
+
+__all__ = [
+    "JsonValue",
+    "blocker_line",
+    "finding_data",
+    "flagged",
+    "flagged_line",
+    "migration_annotation",
+    "preflight_data",
+    "preflight_summary",
+    "render",
+    "render_preflight",
+    "report_data",
+    "statement_annotation",
+    "statement_data",
+    "summary",
+    "table_line",
+    "transaction_line",
+]

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import math
 import os
 import sys
 from types import ModuleType
@@ -62,9 +63,47 @@ def _load_config(module_name: str) -> ModuleType:
             pass
 
 
-def _assert_algorithm(config: ModuleType) -> bool:
-    """Whether the config module asks for asserted ALGORITHM and LOCK clauses."""
-    return bool(getattr(config, "assert_algorithm", False))
+def _assert_algorithm(config: ModuleType, args: argparse.Namespace) -> bool:
+    """
+    Whether the models' statements get asserted ALGORITHM and LOCK
+    clauses: the command's --assert-algorithm flag, or the config
+    module's assert_algorithm attribute.
+    """
+    return bool(
+        getattr(args, "assert_algorithm", False)
+        or getattr(config, "assert_algorithm", False)
+    )
+
+
+# The dialects each flag of the models' diff changes anything on.
+_FLAG_DIALECTS = {
+    "online": (
+        "--online",
+        frozenset({Dialects.POSTGRES, Dialects.MYSQL}),
+        "PostgreSQL, MySQL, and MariaDB",
+    ),
+    "assert_algorithm": (
+        "--assert-algorithm",
+        frozenset({Dialects.MYSQL}),
+        "MySQL and MariaDB",
+    ),
+}
+
+
+def _check_dialect_flags(args: argparse.Namespace, dialect: Dialects) -> None:
+    """
+    Raises ValueError for a flag the command was given that changes
+    nothing on the dialect, such as --online on SQLite, so the flag is
+    not read as having done something.
+    """
+    from sustained.impact.rules import engine
+
+    for attribute, (flag, dialects, names) in _FLAG_DIALECTS.items():
+        if getattr(args, attribute, False) and dialect not in dialects:
+            raise ValueError(
+                f"{flag} changes the migration the models generate on {names} "
+                f"only, not {engine(dialect)}."
+            )
 
 
 def _exact_counts(config: ModuleType, args: argparse.Namespace) -> bool:
@@ -103,12 +142,46 @@ def _older_than(config: ModuleType, args: argparse.Namespace) -> float:
     """
     The age from which the preflight lists an open transaction: the
     --older-than flag, or the config module's preflight_older_than
-    attribute, or 60 seconds.
+    attribute, or 60 seconds. Raises ValueError, naming the attribute,
+    for a value that is not a number of seconds, 0 or more.
     """
     flag = getattr(args, "older_than", None)
     if flag is not None:
         return float(flag)
-    return float(getattr(config, "preflight_older_than", 60.0))
+    value = getattr(config, "preflight_older_than", 60.0)
+    seconds = _as_seconds(value)
+    if seconds is None:
+        raise ValueError(
+            f"preflight_older_than must be a number of seconds, 0 or more, "
+            f"not {value!r}."
+        )
+    return seconds
+
+
+def _as_seconds(value: object) -> Optional[float]:
+    """A number of seconds, 0 or more, as a float, or None for anything else."""
+    if isinstance(value, bool):
+        return None
+    try:
+        seconds = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(seconds) or seconds < 0:
+        return None
+    return seconds
+
+
+def _seconds(value: str) -> float:
+    """
+    Reads an --older-than value and refuses anything that is not a
+    number of seconds, 0 or more, such as `nan` or a negative age.
+    """
+    seconds = _as_seconds(value)
+    if seconds is None:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a number of seconds, 0 or more."
+        )
+    return seconds
 
 
 def _close_quietly(connection: object) -> None:

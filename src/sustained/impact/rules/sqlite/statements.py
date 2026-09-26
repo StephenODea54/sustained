@@ -199,6 +199,7 @@ def _write_rows(facts: Facts) -> Outcome:
     what = f"the {facts.parsed.kind.upper()}"
     if facts.intent is not None and facts.intent.kind == "backfill":
         what = "the backfill"
+    batches = "delete" if facts.parsed.kind == "delete" else "backfill"
     return Outcome(
         (
             _effect(
@@ -207,7 +208,7 @@ def _write_rows(facts: Facts) -> Outcome:
                 table,
                 Work.ROWS,
                 f"{what} writes rows of {table}",
-                advice="on a large table, backfill in batches outside the DDL "
+                advice=f"on a large table, {batches} in batches outside the DDL "
                 "migration",
             ),
         )

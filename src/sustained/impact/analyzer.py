@@ -147,7 +147,9 @@ def analyze(
     """
     profile = profile_for(dialect, context.profile if context else None)
     if profile is None:
-        raise ValueError(f"Impact analysis does not cover {dialect.name} yet.")
+        from sustained.impact.rules import engine
+
+        raise ValueError(f"Impact analysis does not cover {engine(dialect)} yet.")
     guessed = context is None and len(profiles_for(dialect)) > 1
     if context is None:
         context = assumed(profile.name)
@@ -278,10 +280,8 @@ class _Run:
     ) -> MigrationImpact:
         spans = transactional and self.profile.transactional_ddl
         impacts = tuple(
-            self.statement(
-                text, migration_id, transactional, spans and i < len(statements)
-            )
-            for i, text in enumerate(statements, 1)
+            self.statement(text, migration_id, transactional, spans)
+            for text in statements
         )
         locks, windows, findings = aggregate(
             impacts, spans, self.profile.locks_database

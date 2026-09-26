@@ -10,7 +10,9 @@ this. `aggregate()` reads a migration's statements together:
   took it
 - `windows`: for each table blocked for writes or worse, the heaviest
   work that runs while the lock is held
-- a `window.held` finding when that work belongs to a later statement
+- a `window.held` finding when that work belongs to a later statement,
+  naming each level the table is blocked for and the first statement to
+  block it that far
 - a `window.lock_order` finding when more than one table is blocked for
   reads and writes at once, which can deadlock against application
   transactions that lock the same tables in another order
@@ -95,13 +97,14 @@ def _windows(
     works: Sequence[Work],
     scope: range,
     database: Optional[str] = None,
-) -> List[Tuple[Window, int]]:
+) -> List[Tuple[Window, Tuple[Tuple[Blocks, int], ...]]]:
     """
-    Each blocked table's window, with the position that opened it. With
-    `database`, every table's lock falls in the one window of that name.
+    Each blocked table's window, with the levels it reaches: each level
+    the table is blocked for, weakest first, with the position of the
+    first statement that blocks it that far. With `database`, every
+    table's lock falls in the one window of that name.
     """
-    first: Dict[str, int] = {}
-    worst: Dict[str, Tuple[Blocks, int]] = {}
+    levels: Dict[str, List[Tuple[Blocks, int]]] = {}
     names: Dict[str, str] = {}
     for index in scope:
         for table in statements[index].tables:
@@ -109,32 +112,37 @@ def _windows(
                 continue
             key = database or table.table.lower()
             names.setdefault(key, database or table.table)
-            first.setdefault(key, index)
-            if key not in worst or table.blocks > worst[key][0]:
-                worst[key] = (table.blocks, index + 1)
+            reached = levels.setdefault(key, [])
+            if not reached or table.blocks > reached[-1][0]:
+                reached.append((table.blocks, index + 1))
     windows = []
-    for key, start in first.items():
-        held = range(start, scope.stop)
-        during = max(held, key=lambda i: (works[i], -i))
-        blocked, taken_by = worst[key]
+    for key, reached in levels.items():
+        kept = range(reached[0][1] - 1, scope.stop)
+        during = max(kept, key=lambda i: (works[i], -i))
+        blocked, taken_by = reached[-1]
         window = Window(names[key], blocked, taken_by, works[during], during + 1)
-        windows.append((window, start + 1))
+        windows.append((window, tuple(reached)))
     return windows
 
 
-def _held(windows: Sequence[Tuple[Window, int]]) -> List[Finding]:
+def _held(
+    windows: Sequence[Tuple[Window, Tuple[Tuple[Blocks, int], ...]]],
+) -> List[Finding]:
     findings = []
-    for window, opened in windows:
+    for window, levels in windows:
+        opened = levels[0][1]
         if window.heaviest <= Work.CATALOG or window.during == opened:
             continue
+        blocked = " and ".join(
+            f"for {level} from statement {position}" for level, position in levels
+        )
         findings.append(
             Finding(
                 "window.held",
                 Severity.WARN,
-                f"{window.table} stays blocked for {window.blocks} from statement "
-                f"{opened} until the migration commits, across the "
-                f"{window.heaviest} work of statement {window.during}; move that "
-                "work to a migration of its own",
+                f"{window.table} stays blocked {blocked} until the migration "
+                f"commits, across the {window.heaviest} work of statement "
+                f"{window.during}; move that work to a migration of its own",
             )
         )
     return findings

@@ -261,11 +261,11 @@ async def async_read_context(
 
 
 def _plan(dialect: "Dialects", exact_counts: bool) -> ContextPlan:
-    from sustained.impact.rules import profile_for
+    from sustained.impact.rules import engine, profile_for
 
     profile = profile_for(dialect)
     if profile is None:
-        raise ValueError(f"Impact analysis does not cover {dialect.name} yet.")
+        raise ValueError(f"Impact analysis does not cover {engine(dialect)} yet.")
     return profile.context_plan(exact_counts)
 
 

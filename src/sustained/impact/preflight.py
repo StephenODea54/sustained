@@ -254,11 +254,11 @@ def preflight_plan(
     The dialect's preflight read for the statements' impacts. Raises
     ValueError for a dialect that has no preflight.
     """
-    from sustained.impact.rules import profile_for
+    from sustained.impact.rules import engine, profile_for
 
     profile = profile_for(dialect)
     if profile is None or profile.preflight is None:
-        raise ValueError(f"The live preflight does not cover {dialect.name}.")
+        raise ValueError(f"The live preflight does not cover {engine(dialect)}.")
     return profile.preflight(impacts, older_than)
 
 
@@ -331,5 +331,7 @@ async def async_preflight(
 
 def covered_or_raise(dialect: "Dialects") -> None:
     """Raises ValueError for a dialect that has no preflight."""
+    from sustained.impact.rules import engine
+
     if not covered(dialect):
-        raise ValueError(f"The live preflight does not cover {dialect.name}.")
+        raise ValueError(f"The live preflight does not cover {engine(dialect)}.")

@@ -727,11 +727,12 @@ def impact(
     from sustained.exceptions import DialectError
     from sustained.impact import analyze, supported
     from sustained.impact.preflight import covered, preflight_plan
+    from sustained.impact.rules import engine
 
     if not supported(m._dialect):
-        raise DialectError(f"Impact analysis does not cover {m._dialect.name} yet.")
+        raise DialectError(f"Impact analysis does not cover {engine(m._dialect)} yet.")
     if live and not covered(m._dialect):
-        raise DialectError(f"The live preflight does not cover {m._dialect.name}.")
+        raise DialectError(f"The live preflight does not cover {engine(m._dialect)}.")
     run = yield from bookkeeping.pending(m)
     if models:
         run = run + (

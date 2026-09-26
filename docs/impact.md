@@ -10,7 +10,7 @@ The impact analysis reads the statements a run would apply and reports, for each
 
 - the tables it locks, the engine's name for each lock, and what that lock blocks: other schema changes, writes, or reads and writes
 - the work it does on each table: a catalog change, a scan, an index build, a rewrite, or row changes
-- how long it holds each lock: a moment, the whole statement, or until the migration commits
+- how long each lock lasts: a moment, the whole statement, or until the migration commits
 - a safer form of the statement, when the engine has one
 
 The analysis covers PostgreSQL 12 and later, InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later, SQL Server 2012 and later, SQLite 3.35 and later, and DuckDB 1.0 and later. It reads the statement text, the intent Sustained attaches to the statements it generates, and, when it has a connection, the server's version, settings, and table sizes.
@@ -29,7 +29,7 @@ $ sustained impact
     warn    no lock_timeout in scope: while this statement waits for its lock, every query that conflicts with it on orders queues behind it, for as long as the longest open transaction runs
     fix     SET LOCAL lock_timeout = '5s'
   ALTER TABLE orders ADD COLUMN note text
-    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  ~41.2M rows, 12.4 GB  [pg.add_column]
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  transaction  ~41.2M rows, 12.4 GB  [pg.add_column]
     warn    no lock_timeout in scope: while this statement waits for its lock, every query that conflicts with it on orders queues behind it, for as long as the longest open transaction runs
     fix     SET LOCAL lock_timeout = '5s'
   window  orders: SHARE from statement 1, ACCESS EXCLUSIVE from statement 2, held to commit
@@ -64,7 +64,7 @@ impact
   info    GRANT SELECT ON orders TO reporting  [impact.unknown]
 ```
 
-A statement appears there when it has a `warn` or `danger` finding, or when the analysis could not read it. `plan` reads the same server facts as `impact`. The section leaves `plan`'s exit codes unchanged. In `plan --json`, every statement object carries an `impact` key, which is `null` on a dialect the analysis does not cover.
+A statement appears there when it has a `warn` or `danger` finding, or when the analysis could not read it. `plan` reads the same server facts as `impact`. The section leaves `plan`'s exit codes unchanged. In `plan --json`, every statement object has an `impact` key, which is `null` on a dialect the analysis does not cover.
 
 ## Reading a report
 
@@ -74,7 +74,7 @@ A table line reads, in order: the table, the engine's lock name, what the lock b
 
 A finding line starts with its severity. The lines under it that start with `fix`, and the unlabelled lines after those, are the safer statements, in the order to run them. A remedy is advice. Sustained never rewrites a statement.
 
-The `window` line closes a migration that runs inside a transaction. It names each blocked table and every lock the migration takes on it, all held until the commit.
+The `window` line closes a migration that runs inside a transaction. It names each blocked table and every lock the migration takes on it, each of which lasts until the commit. In such a migration, the hold of every lock that blocks something is `transaction`, on the last statement too.
 
 The last line counts the statements and findings and says what the answer rests on.
 
@@ -192,11 +192,11 @@ report = analyze(statements, Dialects.POSTGRES, context)
 
 ## Transaction windows
 
-Inside a transaction, PostgreSQL holds every lock until the commit. A brief `ACCESS EXCLUSIVE` from the first statement, followed by a backfill in the second, keeps the table unreadable for the whole backfill. The report reads each migration's statements together:
+Inside a transaction, PostgreSQL keeps every lock until the commit. A brief `ACCESS EXCLUSIVE` from the first statement, followed by a backfill in the second, keeps the table unreadable for the whole backfill. The report reads each migration's statements together:
 
 - `locks` lists every lock that blocks something, with the position of the statement that took it
 - `windows` gives, for each table blocked for writes or more, the heaviest work that runs while the lock is held
-- a `window.held` finding names a table that stays blocked across heavier work from a later statement
+- a `window.held` finding names a table that stays blocked across heavier work from a later statement, with each level the table is blocked for and the first statement to block it that far
 - a `window.lock_order` finding names a migration that blocks reads and writes on more than one table at once, which can deadlock against application transactions that lock the same tables in another order
 
 The NOT NULL flow the diff generates is one such case: it adds the column, backfills it with `UPDATE`, and then sets `NOT NULL`, all in one transaction.
@@ -205,10 +205,20 @@ The NOT NULL flow the diff generates is one such case: it adds the column, backf
 20260926_orders_region  transaction
   ALTER TABLE orders ADD COLUMN region text
     orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  transaction  [pg.add_column]
+    warn    no lock_timeout in scope: while this statement waits for its lock, every query that conflicts with it on orders queues behind it, for as long as the longest open transaction runs
+    fix     SET LOCAL lock_timeout = '5s'
   UPDATE orders SET region = 'us' WHERE region IS NULL
     orders  ROW EXCLUSIVE  blocks writes  rows  transaction  [pg.write_rows]
+    warn    writes to the rows the backfill changes on orders wait until the migration commits; on a large table, backfill in batches outside the DDL migration; the size of orders is unknown
   ALTER TABLE orders ALTER COLUMN region SET NOT NULL
-    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  scan  statement  [pg.set_not_null]
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  scan  transaction  [pg.set_not_null]
+    warn    reads and writes on orders wait while every row is checked for NULL, unless a valid CHECK (region IS NOT NULL) already proves it; add that check NOT VALID, validate it, then SET NOT NULL skips the scan; the size of orders is unknown
+    fix     ALTER TABLE orders ADD CONSTRAINT orders_region_not_null CHECK (region IS NOT NULL) NOT VALID
+            ALTER TABLE orders VALIDATE CONSTRAINT orders_region_not_null
+            ALTER TABLE orders ALTER COLUMN region SET NOT NULL
+            ALTER TABLE orders DROP CONSTRAINT orders_region_not_null
+    warn    no lock_timeout in scope: while this statement waits for its lock, every query that conflicts with it on orders queues behind it, for as long as the longest open transaction runs
+    fix     SET LOCAL lock_timeout = '5s'
   window  orders: ACCESS EXCLUSIVE from statement 1, ROW EXCLUSIVE from statement 2, ACCESS EXCLUSIVE from statement 3, held to commit
   warn    orders stays blocked for reads_and_writes from statement 1 until the migration commits, across the rows work of statement 2; move that work to a migration of its own
 ```
@@ -222,7 +232,7 @@ On PostgreSQL, the diff can generate the remedies in place of the direct stateme
 - The migration named with the generated id runs in one transaction and changes only the catalog. A new column goes in nullable and without its `UNIQUE` or `REFERENCES` clause. A new foreign key or check goes in `NOT VALID`, and so does the foreign key a new column's `REFERENCES` declares.
 - The migration named `<id>_online` has `transactional=False`, so each of its statements commits on its own and releases its locks when it ends. It runs, in this order: the backfills, as one `UPDATE ... WHERE c IS NULL` each; `CREATE INDEX CONCURRENTLY` for each new or changed index, and for a new column's `UNIQUE` a unique index built concurrently and attached with `ADD CONSTRAINT ... UNIQUE USING INDEX`; a foreign key `NOT VALID` that points at a key built in the same migration, which cannot go in before the key exists; `VALIDATE CONSTRAINT` for each constraint added `NOT VALID`; `SET NOT NULL` through a check, as `ADD CONSTRAINT <table>_<column>_not_null_check CHECK (c IS NOT NULL) NOT VALID`, `VALIDATE CONSTRAINT`, `SET NOT NULL`, and `DROP CONSTRAINT`; and the drops `allow_drops` generates, with `DROP INDEX CONCURRENTLY` for an index.
 
-A migration with no statement is left out, so a run that only adds an index generates `<id>_online` alone. A constraint that a new column declares takes the name PostgreSQL gives it, such as `orders_code_key` or `orders_customer_id_fkey`, so the schema reads the same as after the direct form. The down step of `<id>_online` undoes its statements in the reverse order, with `DROP INDEX CONCURRENTLY` for an index, and leaves the schema the first migration made. It holds no statement when `<id>_online` only validates or backfills, and it is missing when `<id>_online` drops a column or a table. The tracking row of a generated migration without a transaction stores `"transactional": false` beside its statements, so a later `down()` runs its down step outside a transaction too.
+A migration with no statement is left out, so a run that only adds an index generates `<id>_online` alone. A constraint that a new column declares takes the name PostgreSQL gives it, such as `orders_code_key` or `orders_customer_id_fkey`, so the schema reads the same as after the direct form. The down step of `<id>_online` undoes its statements in the reverse order, with `DROP INDEX CONCURRENTLY` for an index, and leaves the schema the first migration made. It has no statement when `<id>_online` only validates or backfills, and it is missing when `<id>_online` drops a column or a table. The tracking row of a generated migration without a transaction stores `"transactional": false` beside its statements, so a later `down()` runs its down step outside a transaction too.
 
 The NOT NULL example from [Transaction windows](#transaction-windows) becomes:
 
@@ -244,9 +254,9 @@ The NOT NULL example from [Transaction windows](#transaction-windows) becomes:
     orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.drop_constraint]
 ```
 
-The backfill stays one `UPDATE`, which holds its row locks until it ends. On a large table its `pg.write_rows` finding stays `danger`, and a batched backfill is still a migration you write. A statement of `<id>_online` that fails leaves the statements before it committed, and the migration's failed row stops the next `up()` until `repair()`. A failed `CREATE INDEX CONCURRENTLY` also leaves an invalid index behind, which has to be dropped before a retry.
+The backfill stays one `UPDATE`, which keeps its row locks until it ends. On a large table its `pg.write_rows` finding stays `danger`, and a batched backfill is still a migration you write. A statement of `<id>_online` that fails leaves the statements before it committed, and the migration's failed row stops the next `up()` until `repair()`. A failed `CREATE INDEX CONCURRENTLY` also leaves an invalid index behind, which has to be dropped before a retry.
 
-`up()`, `rehearse()`, `impact()`, and `preflight()` on either migrator take `online=True` with `models`, and `plan_migrations()` returns the list of migrations the models generate. `plan()` and `autogenerate()` return one migration and take no `online`. For the command line, pass `--online` to `plan`, `impact`, `rehearse`, or `migrate`, or set `online = True` in the config module.
+`up()`, `rehearse()`, `impact()`, and `preflight()` on either migrator take `online=True` with `models`, and `plan_migrations()` returns the list of migrations the models generate. `plan()` and `autogenerate()` return one migration and take no `online`. For the command line, pass `--online` to `plan`, `impact`, `rehearse`, or `migrate`, or set `online = True` in the config module. The flag exits 1 on a dialect other than PostgreSQL, MySQL, and MariaDB.
 
 ```python
 migrations = migrator.plan_migrations([Order], online=True)
@@ -258,7 +268,7 @@ applied = migrator.up(models=[Order], online=True)
 
 On MySQL and MariaDB, `online=True` does what `assert_algorithm=True` does; see [Asserting the algorithm](#asserting-the-algorithm). Other dialects ignore it.
 
-## What the analysis carries through a run
+## Run state
 
 The analysis reads the run in order, and each statement changes what it knows about the next:
 
@@ -266,7 +276,7 @@ The analysis reads the run in order, and each statement changes what it knows ab
 - **A renamed table keeps its identity.** A later statement that names the new name reads the size of the original table.
 - **An index the run created is known.** A `DROP INDEX` names the table the run created the index on. For an index that already exists, the schema read names its table.
 - **A lock timeout stays in scope** for as long as PostgreSQL keeps it: `SET LOCAL` until the migration commits, and `SET` for the rest of the session. A timeout the connection already has is in scope from the first statement. `no_lock_without_timeout()` reads the same scope from the statements alone. On MySQL and MariaDB, `SET`, `SET SESSION`, and `SET LOCAL` all set the session's value for the rest of the run. On SQL Server, `SET LOCK_TIMEOUT` sets it for the rest of the session, inside a transaction or not.
-- **A check can prove a column holds no NULL.** After a check whose expression is `c IS NOT NULL` is added without `NOT VALID`, or validated with `VALIDATE CONSTRAINT`, a PostgreSQL `SET NOT NULL` on the column reads as catalog work, until the run drops the check or the column.
+- **A check can prove a column has no NULL.** After a check whose expression is `c IS NOT NULL` is added without `NOT VALID`, or validated with `VALIDATE CONSTRAINT`, a PostgreSQL `SET NOT NULL` on the column reads as catalog work, until the run drops the check or the column.
 - **Session settings change later statements.** After `SET foreign_key_checks = 0`, a MySQL or MariaDB `ADD FOREIGN KEY` is read as the in-place form that checks no rows. `SET GLOBAL` and `SET PERSIST` leave the session's own value unchanged, so they change nothing the analysis reads.
 
 ## Generated statements
@@ -275,7 +285,7 @@ A statement the diff or a `DdlStep` generated has an intent: what the statement 
 
 ## Statements the analysis does not read
 
-The analysis recognizes the DDL and DML statements its rules cover. Any other statement, such as `GRANT`, a `DO` block, or a statement written in another engine's syntax, has confidence `unknown` and an `impact.unknown` finding that gives the reason. An unknown statement never counts as safe. A migration string that holds more than one statement is also unknown, so write one statement per list entry or per line-ending semicolon in a SQL file.
+The analysis recognizes the DDL and DML statements its rules cover. Any other statement, such as `GRANT`, a `DO` block, or a statement written in another engine's syntax, has confidence `unknown` and an `impact.unknown` finding that gives the reason. An unknown statement never counts as safe. A migration string with more than one statement is also unknown, so write one statement per list entry or per line-ending semicolon in a SQL file.
 
 A default the rules do not recognize as stable counts as volatile, so `ADD COLUMN ... DEFAULT some_function()` reads as a rewrite, with confidence `likely` and a finding that names the function.
 
@@ -348,7 +358,7 @@ A statement that needs a table lock another session already has waits until that
 $ sustained impact --live
 20260926_orders  transaction
   ALTER TABLE orders ADD COLUMN note text
-    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  ~41.2M rows, 12.4 GB  [pg.add_column]
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  transaction  ~41.2M rows, 12.4 GB  [pg.add_column]
     ...
 
 1 statement, 0 danger, 1 warn. Evidence: catalog (PostgreSQL 16.4)
@@ -420,8 +430,8 @@ for blocker in found.blockers:
 
 The rehearsal runs each statement of each up step on its own. Before and after each statement it reads two things inside the rehearsal transaction:
 
-- the table locks the transaction holds, from `pg_locks` for its own backend. Locks are held until the rollback, so a lock the statement took is one held after it and not before.
-- the file of each table the statement names and of each of the table's indexes, from `pg_relation_filenode()` and `pg_relation_size()`. A table whose file changed and still holds data was rewritten. An index that is new, or whose file changed, was built.
+- the table locks the transaction has, from `pg_locks` for its own backend. Locks last until the rollback, so a lock the statement took is one held after it and not before.
+- the file of each table the statement names and of each of the table's indexes, from `pg_relation_filenode()` and `pg_relation_size()`. A table whose file changed and still has data was rewritten. An index that is new, or whose file changed, was built.
 
 The observed lock and work replace the predicted ones, and the statement's evidence becomes `observed`. Each difference from the prediction is an `impact.mismatch` finding with severity `warn`:
 
@@ -500,7 +510,7 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 | `ADD CONSTRAINT ... USING INDEX` | `ACCESS EXCLUSIVE` | catalog | `pg.add_key.using_index` |
 | `ADD EXCLUDE` | `ACCESS EXCLUSIVE` | index build | `pg.add_exclusion` |
 | `DROP CONSTRAINT` | `ACCESS EXCLUSIVE` | catalog | `pg.drop_constraint` |
-| A statement that drops a foreign key: `DROP TABLE`, `DROP CONSTRAINT`, or `DROP COLUMN` on the table that holds the key, or with `CASCADE` on the table it points at. A type change of a column a key uses or points at re-creates the key. | `ACCESS EXCLUSIVE` on the table at the key's other end | catalog, or a scan of the table that holds a re-created key | `pg.drop_foreign_key` |
+| A statement that drops a foreign key: `DROP TABLE`, `DROP CONSTRAINT`, or `DROP COLUMN` on the table that has the key, or with `CASCADE` on the table it points at. A type change of a column a key uses or points at re-creates the key. | `ACCESS EXCLUSIVE` on the table at the key's other end | catalog, or a scan of the table that has a re-created key | `pg.drop_foreign_key` |
 | `VALIDATE CONSTRAINT` | `SHARE UPDATE EXCLUSIVE` | scan | `pg.validate_constraint` |
 | `RENAME`, `RENAME COLUMN`, `RENAME CONSTRAINT` | `ACCESS EXCLUSIVE` | catalog | `pg.rename` |
 | `ATTACH PARTITION` | `SHARE UPDATE EXCLUSIVE` on the parent, `ACCESS EXCLUSIVE` on the partition | scan of the partition | `pg.attach_partition` |
@@ -533,7 +543,7 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 
 A type change is binary coercible when PostgreSQL skips the rewrite: `varchar(n)` to a longer `varchar` or to `text`, `numeric(p,s)` to a wider precision at the same scale, and `timestamp` to `timestamptz` when the `TimeZone` setting is UTC. The rule needs the column's current type, which a generated statement's intent gives, and which the schema read gives for a hand-written statement. Without either, the change reads as a rewrite with confidence `likely`. Without the `TimeZone` setting, `timestamp` to `timestamptz` also reads as a rewrite with confidence `likely`.
 
-A `SET NOT NULL` skips its scan when a valid check constraint already proves the column holds no NULL. The remedy for a scan on a populated table is that route: add the check `NOT VALID`, validate it, set `NOT NULL`, and drop the check. The analysis reads the route as catalog work: a check whose expression is `c IS NOT NULL`, with or without parentheses around it, proves the column once the run adds it without `NOT VALID` or validates it, until the run drops the check or the column. A check the schema read holds proves it too, unless PostgreSQL reports it `NOT VALID`.
+A `SET NOT NULL` skips its scan when a valid check constraint already proves the column has no NULL. The remedy for a scan on a populated table is that route: add the check `NOT VALID`, validate it, set `NOT NULL`, and drop the check. The analysis reads the route as catalog work: a check whose expression is `c IS NOT NULL`, with or without parentheses around it, proves the column once the run adds it without `NOT VALID` or validates it, until the run drops the check or the column. A check the schema read finds proves it too, unless PostgreSQL reports it `NOT VALID`.
 
 The tables at the other end of a foreign key come from the schema read. Without it, a `DROP TABLE` or a `DROP CONSTRAINT` reports only the table it names, and a `DROP INDEX` reports its table as `(table of index ix)`.
 
@@ -659,7 +669,7 @@ For each ALTER TABLE, CREATE INDEX, or DROP INDEX the rules read as `INSTANT`, o
 
 With the clause, the server refuses the statement when it cannot run it that way. Without it, the server falls back to a slower algorithm or a stronger lock, as when a table has used its instant row versions. MySQL refuses a LOCK clause beside `ALGORITHM=INSTANT`, so the instant form names the algorithm alone. MariaDB's DROP INDEX takes no clause, so there the finding offers the `ALTER TABLE ... DROP INDEX` form.
 
-`assert_algorithm=True` writes that clause on the migration the models generate, so the server refuses a statement it cannot run as predicted instead of falling back. `plan()`, `up()`, `rehearse()`, and `impact()` on either migrator take it, and so does `sustained.autogenerate.autogenerate()`. For the command line, set `assert_algorithm = True` in the config module, and `plan`, `impact`, `migrate`, and `rehearse` pass it on. The rules read the server facts from the connection after the diff, as `impact()` reads them. A statement takes the clause when all of these hold:
+`assert_algorithm=True` writes that clause on the migration the models generate, so the server refuses a statement it cannot run as predicted instead of falling back. `plan()`, `up()`, `rehearse()`, and `impact()` on either migrator take it, and so does `sustained.autogenerate.autogenerate()`. For the command line, pass `--assert-algorithm` to `plan`, `impact`, `migrate`, or `rehearse`, or set `assert_algorithm = True` in the config module. The flag exits 1 on a dialect other than MySQL and MariaDB. The rules read the server facts from the connection after the diff, as `impact()` reads them. A statement takes the clause when all of these are true:
 
 - it is an ALTER TABLE, CREATE INDEX, or DROP INDEX that spells neither `ALGORITHM` nor `LOCK`
 - the rules predict `INSTANT`, `NOCOPY, LOCK=NONE`, or `INPLACE, LOCK=NONE` for it, with confidence `known`
@@ -710,7 +720,7 @@ The Enterprise, Developer, and Evaluation editions, Azure SQL Database, and Azur
 - a statement with `ONLINE = ON` gets an `info` finding that it fails on the other editions; on an edition that was read to lack it, the finding is `danger`
 - the remedy offers `ONLINE = ON` unless the edition was read to lack it
 
-An operation with `ONLINE = ON` runs holding `Sch-S`, so reads and writes go on, and takes `S`, or `Sch-M` for a clustered index, a key, a rebuild, or `ALTER COLUMN`, on the table when it ends. Inside a transaction, that lock is held until the migration commits, so the table line names it with the work, and the finding is `info` whatever the table's size. The finding says to run the statement in a migration with `transactional=False`, or last in its migration. In a migration with `transactional=False`, the table line names `Sch-S`.
+An operation with `ONLINE = ON` runs with `Sch-S`, so reads and writes go on, and takes `S`, or `Sch-M` for a clustered index, a key, a rebuild, or `ALTER COLUMN`, on the table when it ends. Inside a transaction, that lock is held until the migration commits, so the table line names it with the work, and the finding is `info` whatever the table's size. The finding says to run the statement in a migration with `transactional=False`, or last in its migration. In a migration with `transactional=False`, the table line names `Sch-S`.
 
 ### Lock timeouts on SQL Server
 
@@ -779,7 +789,7 @@ The rules follow the SQLite documentation for 3.35 and later. SQLite connections
 
 ### The database write lock
 
-SQLite locks the database file, not a table. The first write of a transaction takes the write lock, and holds it until the transaction commits, so every other connection's writes wait for it on every table, for as long as their `busy_timeout` lets them. Each table line names the lock `database write lock`. What else waits depends on the journal mode:
+SQLite locks the database file, not a table. The first write of a transaction takes the write lock, and keeps it until the transaction commits, so every other connection's writes wait for it on every table, for as long as their `busy_timeout` lets them. Each table line names the lock `database write lock`. What else waits depends on the journal mode:
 
 | Journal mode | Blocks |
 | --- | --- |
@@ -788,14 +798,14 @@ SQLite locks the database file, not a table. The first write of a transaction ta
 
 Without a read of the journal mode, the rules assume a rollback journal, and a finding for blocking work says the journal mode was not read.
 
-A migration inside a transaction holds the lock from its first write to its commit, whatever tables its statements name, so the report reads it as one window, `(database)`:
+A migration inside a transaction keeps the lock from its first write to its commit, whatever tables its statements name, so the report reads it as one window, `(database)`:
 
 ```console
 20260926_items  transaction
   ALTER TABLE items ADD COLUMN note text
     items  database write lock  blocks writes  catalog  transaction  ~2.0M rows, 1.4 GB  [sqlite.add_column]
   UPDATE items SET note = ''
-    items  database write lock  blocks writes  rows  statement  ~2.0M rows, 1.4 GB  [sqlite.write_rows]
+    items  database write lock  blocks writes  rows  transaction  ~2.0M rows, 1.4 GB  [sqlite.write_rows]
     danger  the UPDATE writes rows of items; writes to every table in the database wait until the migration commits; on a large table, backfill in batches outside the DDL migration
   window  (database): database write lock from statement 1, held to commit
 ```
@@ -820,13 +830,13 @@ Every write blocks the same connections, so the work of a later statement blocks
 | `ANALYZE` | scan | `sqlite.analyze` |
 | `VACUUM`, which copies the whole database into a new file | rewrite | `sqlite.vacuum` |
 
-The diff changes a column's type or constraints on SQLite by rebuilding the table: it creates a new table, copies every row into it, drops the old table, renames the new one, and creates the indexes again. Each statement of the recipe carries the `rebuild_table` intent, so the analysis reports the copy as a rewrite of the table being rebuilt, under `sqlite.rebuild`. The recipe's other statements act on the new table, which the run created, so they block nothing and draw no findings. A hand-written copy has no intent, and its INSERT reads as row writes on the new table.
+The diff changes a column's type or constraints on SQLite by rebuilding the table: it creates a new table, copies every row into it, drops the old table, renames the new one, and creates the indexes again. Each statement of the recipe has the `rebuild_table` intent, so the analysis reports the copy as a rewrite of the table being rebuilt, under `sqlite.rebuild`. The recipe's other statements act on the new table, which the run created, so they block nothing and draw no findings. A hand-written copy has no intent, and its INSERT reads as row writes on the new table.
 
 `VACUUM` cannot run inside a transaction, so inside a transactional migration it also draws a `danger` finding that says to run it in a migration with `transactional=False`. `REINDEX` with no name reindexes every index in the database, and is reported on `(database)`. A `REINDEX` name that is neither a table nor an index the run or the schema read knows may be a collation, whose indexes span tables, so its confidence is `likely`.
 
 A statement the rules do not read, such as an `ALTER TABLE` action other than a column add, drop, or rename, is unknown.
 
-The integration suite checks each rule's fixtures on a WAL database file. Each fixture runs inside a transaction while a second connection tries to take the write lock and to read the database: the write must wait when the rules predict the write lock, and the read must go on. Each fixture then runs again with automatic checkpoints off, and the frames it leaves in the WAL count the pages it wrote. A statement the rules say rewrites a table or builds an index must write at least half as many pages as the table holds, and one they say changes only the schema at most two.
+The integration suite checks each rule's fixtures on a WAL database file. Each fixture runs inside a transaction while a second connection tries to take the write lock and to read the database: the write must wait when the rules predict the write lock, and the read must go on. Each fixture then runs again with automatic checkpoints off, and the frames it leaves in the WAL count the pages it wrote. A statement the rules say rewrites a table or builds an index must write at least half as many pages as the table has, and one they say changes only the schema at most two.
 
 ## DuckDB
 
@@ -853,7 +863,7 @@ The finding for a statement that blocks writes says which transactions abort:
     items  altered table  blocks writes  catalog  transaction  ~2.0M rows  [duckdb.add_column]
     info    until the migration commits, INSERT, UPDATE, DELETE, and schema changes on items in other transactions abort with a conflict error instead of waiting, and a transaction that wrote to items before it fails to commit; reads go on
   ALTER TABLE items ALTER COLUMN price SET DATA TYPE decimal(12, 2)
-    items  altered table  blocks writes  rewrite  statement  ~2.0M rows  [duckdb.alter_column_type]
+    items  altered table  blocks writes  rewrite  transaction  ~2.0M rows  [duckdb.alter_column_type]
     danger  SET DATA TYPE writes every value of price again; until the migration commits, INSERT, UPDATE, DELETE, and schema changes on items in other transactions abort with a conflict error instead of waiting, and a transaction that wrote to items before it fails to commit; reads go on
   window  items: altered table from statement 1, altered table from statement 2, held to commit
   warn    items stays blocked for writes from statement 1 until the migration commits, across the rewrite work of statement 2; move that work to a migration of its own

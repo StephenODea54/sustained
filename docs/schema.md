@@ -502,6 +502,8 @@ migrations_dir = 'migrations'
 # models = [User, Post], dialect = 'postgres', table = '...',
 # rehearsal_table = '...', tracking_table_options = TableOptions(...),
 # guards = [no_drops()], get_rehearsal_connection(),
+# assert_algorithm = True, online = True, exact_counts = True,
+# preflight = 'warn', preflight_older_than = 60,
 # before_migrate(), after_migrate(), on_error()
 ```
 
@@ -511,7 +513,7 @@ $ sustained impact                  # the locks and work of each statement
 $ sustained impact --live           # the same, with the sessions each would wait behind now
 $ sustained status
 $ sustained rehearse                # run it all, forwards and back, then roll back
-$ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order, --unrehearsed, --preflight
+$ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order, --unrehearsed, --preflight, --exact-counts, --online, --assert-algorithm
 $ sustained down                    # --steps N (0 or more) or --to ID, --allow-changed
 $ sustained validate                # exits 1 when problems exist
 $ sustained repair
@@ -774,7 +776,7 @@ guards
   warn   no_table_rewrite  ALTER TABLE users ALTER COLUMN age TYPE BIGINT
 
 2 pending migrations, 2 guard verdicts
-blocked: fix the statement, or take the rule out of guards
+blocked: fix the statement, or take the rule out of the guard list to run it anyway
 
 $ sustained migrate
 error: A guard blocked this run:

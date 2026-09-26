@@ -52,12 +52,14 @@ def _trace(m: MigratorBase) -> Optional["Trace"]:
 def check_traceable(m: MigratorBase) -> None:
     """Refuses a trace on a dialect whose locks it cannot read."""
     from sustained.exceptions import DialectError
+    from sustained.impact.rules import all_profiles, engine, listed
 
     if _trace(m) is None:
+        traced = [p.title for p in all_profiles() if p.trace is not None]
         raise DialectError(
             f"rehearse(trace=True) observes the locks each statement takes, "
-            f"which it can do on POSTGRES, MYSQL, and MSSQL only, not "
-            f"{m._dialect.name}."
+            f"which it can do on {listed(traced)} only, not "
+            f"{engine(m._dialect)}."
         )
 
 
