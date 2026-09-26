@@ -507,6 +507,7 @@ migrations_dir = 'migrations'
 
 ```console
 $ sustained plan                    # what a run would do; exits 2 when work is waiting
+$ sustained impact                  # the locks and work of each statement, on Postgres
 $ sustained status
 $ sustained rehearse                # run it all, forwards and back, then roll back
 $ sustained migrate                 # --target ID, --no-validate, --allow-out-of-order, --unrehearsed
@@ -561,13 +562,15 @@ The footer points at `rehearse` rather than `migrate` when a pending migration h
 
 The drift section appears only when the config module names `models`. It reports every difference, drops included, while `migrate` never generates a drop. When drops are all that is left, the footer says so instead of offering `sustained migrate`. With no `models`, the plan says drift went unchecked rather than reporting none.
 
+On Postgres, `plan` also lists the statements whose impact on a live database merits a look in an `impact` section: a statement with a `warn` or `danger` finding, such as a `CREATE INDEX` that blocks writes for the whole build, and a statement the analysis could not read. `sustained impact` prints the full report. See [Statement impact](/impact).
+
 When the config module names `guards`, `plan` runs them and prints a fourth section, described under [Guards](#guards). The guards read the statements `migrate` would apply: the pending migrations, and the generated migration without the drops. The drift section is the wider set, so a drop it lists has no verdict, because no run would read it.
 
 `plan` exits 0 when the database is current, 2 when work is waiting, 3 when a guard blocked a statement, and 1 when validation found problems. Validation problems take priority over the other codes, and a blocked statement takes priority over work that is merely waiting. Note that argparse also exits 2 on a usage error, so a script that treats 2 as "work is waiting" should check stderr for an `error:` line.
 
 ### Machine-readable output
 
-`status`, `validate`, `plan`, and `rehearse` take `--json`, which prints one JSON object to stdout instead of the plain lines. Exit codes are the same either way.
+`status`, `validate`, `plan`, `impact`, and `rehearse` take `--json`, which prints one JSON object to stdout instead of the plain lines. Exit codes are the same either way.
 
 ```console
 $ sustained plan --json
@@ -593,7 +596,7 @@ $ sustained plan --json
 }
 ```
 
-Every command that reports SQL uses that statement object, `drift` included. `statements` is `null` for a callable step, which renders no SQL. A guard verdict is attached to the statement it flags and appears nowhere else, so there is one place to read what a statement will do. Statements no rule flagged have an empty `guards` list. `drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". `status --json` prints `{"migrations": [{"id": ..., "state": ...}], "error": null}` and `validate --json` prints `{"ok": ..., "problems": [...], "error": null}`. Output is plain in both modes; nothing is coloured.
+Every command that reports SQL uses that statement object, `drift` included. `statements` is `null` for a callable step, which renders no SQL. A guard verdict is attached to the statement it flags and appears nowhere else, so there is one place to read what a statement will do. Statements no rule flagged have an empty `guards` list. Each statement object also carries an `impact` key with the statement's [impact](/impact), which is `null` on a dialect the analysis does not cover. `drift` is `null`, not `[]`, when the config module names no models, so a caller can tell "nothing was compared" from "compared and found no gap". `status --json` prints `{"migrations": [{"id": ..., "state": ...}], "error": null}` and `validate --json` prints `{"ok": ..., "problems": [...], "error": null}`. Output is plain in both modes; nothing is coloured.
 
 A command that fails, such as one whose config module will not import or whose connection will not open, still prints one object. Every other key is `null` and `error` contains the message, so a script reads the same keys whatever the outcome.
 

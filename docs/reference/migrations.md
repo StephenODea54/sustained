@@ -116,6 +116,13 @@ statuses() -> list[tuple[str, str]]
 
 `(id, state)`, where state is `applied`, `pending`, or `changed`. `changed` marks a repeatable whose contents differ from its last run.
 
+```python
+impact(models=None) -> ImpactReport
+```
+{: .sig #impact}
+
+The impact of the run `up()` would make on a live database: the locks each statement takes, what they block, the work each does, and findings with safer forms. With `models`, the migration they generate is analyzed after the pending ones. The analysis is static and writes nothing. Raises `DialectError` on a dialect the analysis does not cover, which is every dialect but Postgres. See [Impact reference](/reference/impact#migrator-impact).
+
 `pending()`, `status()`, `statuses()`, and `validate()` read the tracking table without creating or upgrading it, on `Migrator` and `AsyncMigrator` alike, so they run on a read-only replica. A database with no tracking table reads as one with nothing applied.
 
 ### Running
@@ -513,6 +520,7 @@ Every method is a coroutine:
 - `script`
 - `plan`
 - `drift`
+- `impact`
 
 Both migrators compute the key the same way, so a row written by one migrator opens the gate for the other on the same database.
 

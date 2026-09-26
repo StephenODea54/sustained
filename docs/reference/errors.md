@@ -53,6 +53,8 @@ in a subquery instead.
 
 See [Dialect support](/reference/dialects) for the full matrix.
 
+`Migrator.impact()` and `AsyncMigrator.impact()` also raise `DialectError`, before any statement runs, on a dialect the impact analysis does not cover: `Impact analysis does not cover MYSQL yet.` `analyze()` raises `ValueError` with the same message.
+
 ## `MigrationError`
 
 Migration validation found problems.

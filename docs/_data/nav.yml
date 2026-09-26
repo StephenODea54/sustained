@@ -25,6 +25,8 @@
       url: /dialects
     - text: Schema and Migrations
       url: /schema
+    - text: Statement impact
+      url: /impact
 
 - title: API reference
   items:
@@ -40,6 +42,8 @@
       url: /reference/schema
     - text: Migrations
       url: /reference/migrations
+    - text: Impact
+      url: /reference/impact
     - text: Execution and pooling
       url: /reference/execution
     - text: Command line

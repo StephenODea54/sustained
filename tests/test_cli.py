@@ -665,7 +665,12 @@ class JsonOutputTestCase(CliBase):
                 "state": "pending",
                 "repeatable": False,
                 "statements": [
-                    {"sql": "DROP TABLE flags", "destructive": True, "guards": []}
+                    {
+                        "sql": "DROP TABLE flags",
+                        "destructive": True,
+                        "guards": [],
+                        "impact": None,
+                    }
                 ],
                 "destructive": ["DROP TABLE flags"],
             },
@@ -1473,6 +1478,177 @@ class GuardCliTestCase(CliBase):
         code, out, _ = self._run(name, "migrate")
         self.assertEqual(code, 0)
         self.assertIn("applied  001_users", out)
+
+
+class ImpactCliTestCase(CliBase):
+    """
+    The impact command and the plan's impact section.
+
+    The CLI tests run on SQLite, which has no impact rules yet, so the
+    tests that need an analysis read the migrations with the Postgres
+    profile standing in for SQLite's.
+    """
+
+    def _postgres_rules(self):
+        from sustained.impact.rules import postgres
+
+        patcher = mock.patch(
+            "sustained.impact.rules._profiles",
+            return_value={"DEFAULT": postgres.PROFILE},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _add_index(self):
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_index.up.sql",
+            "CREATE INDEX ix_users_id ON users (id);",
+        )
+
+    def test_impact_prints_the_report(self):
+        self._postgres_rules()
+        self.run_cli("migrate")
+        self._add_index()
+        code, out, _ = self.run_cli("impact")
+        self.assertEqual(code, 0)
+        self.assertIn("003_index  transaction", out)
+        self.assertIn("users  SHARE  blocks writes  index_build", out)
+        self.assertIn("fix     CREATE INDEX CONCURRENTLY ix_users_id", out)
+        self.assertIn("Evidence: static (assumed PostgreSQL 12)", out)
+
+    def test_impact_json_prints_the_report(self):
+        self._postgres_rules()
+        self.run_cli("migrate")
+        self._add_index()
+        code, out, _ = self.run_cli("impact", "--json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(
+            set(payload),
+            {"profile", "version", "evidence", "migrations", "counts", "error"},
+        )
+        self.assertEqual(payload["profile"], "postgres")
+        self.assertEqual(payload["evidence"], "static")
+        (migration,) = payload["migrations"]
+        self.assertEqual(migration["id"], "003_index")
+        (statement,) = migration["statements"]
+        self.assertEqual(statement["sql"], "CREATE INDEX ix_users_id ON users (id)")
+        self.assertEqual(statement["kind"], "create_index")
+        self.assertEqual(statement["tables"][0]["lock"], "SHARE")
+        self.assertIn("pg.create_index", [f["rule"] for f in statement["findings"]])
+
+    def test_impact_reads_the_models(self):
+        self._postgres_rules()
+        self.run_cli("migrate")
+        name = f"impact_models_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\nfrom sustained import create_model\n"
+                "from sustained.schema import Integer\n"
+                "Notes = create_model('Notes', 'notes')\n"
+                "Notes.tableColumns = {'id': Integer(primary_key=True)}\n"
+                "Notes.columns = ('id',)\n"
+                "models = [Notes]\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(["impact", "--config", name])
+        self.assertEqual(code, 0)
+        self.assertIn('CREATE TABLE "notes"', stdout.getvalue())
+
+    def test_impact_on_a_dialect_without_rules_exits_one(self):
+        code, _, err = self.run_cli("impact")
+        self.assertEqual(code, 1)
+        self.assertIn("Impact analysis does not cover DEFAULT yet", err)
+
+    def test_impact_json_failure_prints_null_keys(self):
+        code, out, _ = self.run_cli("impact", "--json")
+        self.assertEqual(code, 1)
+        payload = json.loads(out)
+        self.assertIsNone(payload["migrations"])
+        self.assertIn("does not cover", payload["error"])
+
+    def test_plan_lists_flagged_statements(self):
+        self._postgres_rules()
+        self.run_cli("migrate")
+        self._add_index()
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 2)
+        self.assertIn("impact\n", out)
+        self.assertIn(
+            "  warn    CREATE INDEX ix_users_id ON users (id)  "
+            "[pg.create_index, pg.lock_timeout]",
+            out,
+        )
+        self.assertIn("1 pending migration, 1 impact line", out)
+
+    def test_plan_lists_an_unknown_statement_as_info(self):
+        self._postgres_rules()
+        self.run_cli("migrate")
+        self._write(
+            os.path.join(self.dir.name, "migrations"),
+            "003_grant.up.sql",
+            "GRANT SELECT ON users TO app;",
+        )
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 2)
+        self.assertIn("  info    GRANT SELECT ON users TO app  [impact.unknown]", out)
+
+    def test_plan_leaves_quiet_statements_out(self):
+        self._postgres_rules()
+        code, out, _ = self.run_cli("plan")
+        self.assertEqual(code, 2)
+        self.assertNotIn("impact", out)
+
+    def test_plan_json_attaches_impact_to_every_statement(self):
+        self._postgres_rules()
+        self.run_cli("migrate")
+        self._add_index()
+        code, out, _ = self.run_cli("plan", "--json")
+        self.assertEqual(code, 2)
+        (pending,) = json.loads(out)["pending"]
+        (statement,) = pending["statements"]
+        self.assertEqual(statement["impact"]["kind"], "create_index")
+        self.assertEqual(statement["impact"]["severity"], "warn")
+        self.assertNotIn("sql", statement["impact"])
+
+    def test_plan_json_maps_drift_impact_by_position(self):
+        self._postgres_rules()
+        name = f"impact_drift_{id(self)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\nfrom sustained import create_model\n"
+                "from sustained.schema import Integer, Text\n"
+                "Users = create_model('Users', 'users')\n"
+                "Users.tableColumns = {'id': Integer(), 'bio': Text()}\n"
+                "Users.columns = ('id', 'bio')\n"
+                "Flags = create_model('Flags', 'flags')\n"
+                "Flags.tableColumns = {'id': Integer()}\n"
+                "Flags.columns = ('id',)\n"
+                "models = [Users, Flags]\n"
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        self.run_cli("migrate")
+        self._add_index()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            main(["plan", "--json", "--config", name])
+        payload = json.loads(stdout.getvalue())
+        (pending,) = payload["pending"]
+        self.assertEqual(pending["statements"][0]["impact"]["kind"], "create_index")
+        self.assertTrue(payload["drift"])
+        for statement in payload["drift"]:
+            self.assertEqual(statement["impact"]["kind"], "alter_table")
+
+    def test_plan_json_impact_is_null_without_rules(self):
+        self._add_index()
+        code, out, _ = self.run_cli("plan", "--json")
+        self.assertEqual(code, 2)
+        for pending in json.loads(out)["pending"]:
+            for statement in pending["statements"]:
+                self.assertIsNone(statement["impact"])
 
 
 if __name__ == "__main__":

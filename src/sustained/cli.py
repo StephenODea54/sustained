@@ -24,8 +24,9 @@ The config module names the pieces the migrator needs:
   `on_error(connection, migration_id, error)`: callbacks around the
   `migrate` command; `on_error` also runs when `down` fails (optional)
 
-Commands: status, plan, migrate, rehearse, down, validate, repair,
-script, baseline. Every command exits 0 on success and 1 on failure.
+Commands: status, plan, impact, migrate, rehearse, down, validate,
+repair, script, baseline. Every command exits 0 on success and 1 on
+failure.
 `plan` exits 2 when work is waiting. `plan` and `migrate` exit 3 when a
 guard blocked a statement. A run with problems exits 1 even when a guard
 also blocked: a plan that cannot be trusted outranks the rest.
@@ -34,7 +35,12 @@ also blocked: a plan that cannot be trusted outranks the rest.
 rehearsal has covered them, and exits 4. `--unrehearsed` applies them
 anyway and records the override on the database.
 
-`status`, `validate`, `plan`, and `rehearse` take `--json`, which prints
+`impact` prints the locks each statement of the run would take, what
+they block, and the work each does; see sustained.impact. It never
+gates: blocking on impact is the guards' job. `plan` lists the
+statements whose impact merits a look in an `impact` section.
+
+`status`, `validate`, `plan`, `impact`, and `rehearse` take `--json`, which prints
 one JSON object instead of the plain lines. A failure prints the object
 too, with every key null and `error` set to the message. The exit code
 stays the same either way.
@@ -70,6 +76,14 @@ from sustained.analysis import (
 from sustained.dialects import Dialects
 from sustained.exceptions import GuardBlocked, MigrationError, RehearsalRequired
 from sustained.guards import Verdict, blocking, run_guards
+from sustained.impact import StatementImpact, analyze, supported
+from sustained.impact.report import (
+    flagged,
+    flagged_line,
+    render,
+    report_data,
+    statement_data,
+)
 from sustained.migration_files import load_migrations
 from sustained.migrations import (
     REHEARSAL_PASSED,
@@ -193,6 +207,7 @@ def _build_migrator(config: ModuleType) -> Tuple[Migrator, Connection]:
 _JSON_KEYS: Dict[str, Tuple[str, ...]] = {
     "status": ("migrations",),
     "plan": ("pending", "problems", "drift"),
+    "impact": ("profile", "version", "evidence", "migrations", "counts"),
     "rehearse": ("rehearsed", "scratch", "key", "recorded", "ok"),
     "validate": ("ok", "problems"),
 }
@@ -266,13 +281,18 @@ def _drift_statements(
     Drops are included: a preview reports every difference, including
     tables and columns the models no longer declare, which migrate does
     not generate. The statements print in full, so a drop reads as a drop
-    without a separate label.
+    without a separate label. Each statement carries the preview's
+    migration id, so the impact analysis reads them as one migration.
     """
     if plans is None:
         return None
-    if plans.preview is None:
+    preview = plans.preview
+    if preview is None:
         return []
-    return migration_sql(plans.preview, "up", migrator.compiler)
+    return [
+        MigrationStatement(sql, preview.id, preview.transactional)
+        for sql in migration_sql(preview, "up", migrator.compiler)
+    ]
 
 
 def _migrate_drift_statements(
@@ -370,16 +390,53 @@ def _plan_verdicts(
     return by_statement
 
 
+class _PlanImpact(NamedTuple):
+    """
+    The impact of each statement the plan prints, by position: one list
+    per pending migration, None for a callable step, and one list for
+    the drift preview, None when the config module names no models.
+    """
+
+    pending: List[Optional[List[StatementImpact]]]
+    drift: Optional[List[StatementImpact]]
+
+
+def _plan_impact(
+    migrator: Migrator,
+    summaries: List[PendingSummary],
+    drift: Optional[List[str]],
+) -> Optional[_PlanImpact]:
+    """
+    The impact of the pending statements and the drift preview, analyzed
+    as one run in that order, or None on a dialect the analysis does not
+    cover. The analysis returns one entry per statement in run order, so
+    the entries map back to the statements by position.
+    """
+    if not supported(migrator.dialect):
+        return None
+    statements = [s for summary in summaries for s in summary.sql or []]
+    statements.extend(drift or [])
+    impacts = iter(analyze(statements, migrator.dialect).statements)
+
+    def take(group: Optional[List[str]]) -> Optional[List[StatementImpact]]:
+        if group is None:
+            return None
+        return [next(impacts) for _ in group]
+
+    return _PlanImpact([take(s.sql) for s in summaries], take(drift))
+
+
 def _statement_json(
     statements: Optional[List[str]],
     verdicts: Dict[str, List[Verdict]],
+    impacts: Optional[List[StatementImpact]] = None,
 ) -> Optional[List[Dict[str, JsonValue]]]:
     """
     One JSON object per statement, with the same keys everywhere a command
-    reports SQL: the statement, whether it removes data, and the guard
-    verdicts on it. None stays None, for a callable step that renders no
-    SQL. A verdict is reported on the statement it flags and nowhere
-    else.
+    reports SQL: the statement, whether it removes data, the guard
+    verdicts on it, and its impact, null on a dialect the analysis does
+    not cover. None stays None, for a callable step that renders no SQL.
+    A verdict is reported on the statement it flags and nowhere else.
     """
     if statements is None:
         return None
@@ -391,8 +448,9 @@ def _statement_json(
                 {"rule": v.rule, "verdict": v.verdict}
                 for v in verdicts.get(normalize_statement(statement), [])
             ],
+            "impact": statement_data(impacts[i]) if impacts is not None else None,
         }
-        for statement in statements
+        for i, statement in enumerate(statements)
     ]
 
 
@@ -401,6 +459,7 @@ def _plan_json(
     problems: List[str],
     drift: Optional[List[str]],
     verdicts: Dict[str, List[Verdict]],
+    impact: Optional[_PlanImpact],
 ) -> None:
     """
     Prints the plan as one JSON object. `drift` is null, not an empty
@@ -414,13 +473,19 @@ def _plan_json(
                     "id": summary.id,
                     "state": summary.state,
                     "repeatable": summary.repeatable,
-                    "statements": _statement_json(summary.sql, verdicts),
+                    "statements": _statement_json(
+                        summary.sql,
+                        verdicts,
+                        impact.pending[i] if impact is not None else None,
+                    ),
                     "destructive": summary.destructive,
                 }
-                for summary in summaries
+                for i, summary in enumerate(summaries)
             ],
             "problems": problems,
-            "drift": _statement_json(drift, verdicts),
+            "drift": _statement_json(
+                drift, verdicts, impact.drift if impact is not None else None
+            ),
         }
     )
 
@@ -434,6 +499,20 @@ def _print_guards(verdicts: List[Verdict]) -> None:
     width = max(len(v.rule) for v in verdicts)
     for verdict in verdicts:
         print(f"  {verdict.verdict:<5}  {verdict.rule:<{width}}  {verdict.statement}")
+
+
+def _flagged_impact(impact: Optional[_PlanImpact]) -> List[StatementImpact]:
+    """
+    The statements the impact section lists, in the order the plan
+    prints them: those with a `warn` or `danger` finding, and those the
+    analysis could not read.
+    """
+    if impact is None:
+        return []
+    groups = [g for g in impact.pending if g is not None]
+    if impact.drift is not None:
+        groups.append(impact.drift)
+    return flagged([s for group in groups for s in group])
 
 
 def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) -> int:
@@ -453,6 +532,7 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
     )
     verdicts = [v for group in by_statement.values() for v in group]
     blockers = blocking(verdicts)
+    impact = _plan_impact(migrator, summaries, drift)
 
     # Problems mean the plan itself cannot be trusted, so they outrank a
     # blocked statement, which outranks work merely waiting.
@@ -466,7 +546,7 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
         exit_code = 0
 
     if args.json:
-        _plan_json(summaries, problems, drift, by_statement)
+        _plan_json(summaries, problems, drift, by_statement, impact)
         return exit_code
 
     sections: List[str] = []
@@ -492,6 +572,14 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
             print()
         _print_guards(verdicts)
         sections.append(_count(len(verdicts), "guard verdict"))
+    listed = _flagged_impact(impact)
+    if listed:
+        if sections:
+            print()
+        print("impact")
+        for impact_statement in listed:
+            print(f"  {flagged_line(impact_statement)}")
+        sections.append(_count(len(listed), "impact line"))
 
     if not sections:
         if drift is None:
@@ -525,6 +613,18 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
                 "hand, or call Migrator.up(models, allow_drops=True)."
             )
     return exit_code
+
+
+def _cmd_impact(
+    migrator: Migrator, args: argparse.Namespace, config: ModuleType
+) -> int:
+    models = list(getattr(config, "models", None) or []) or None
+    report = migrator.impact(models)
+    if args.json:
+        _print_json(report_data(report))
+    else:
+        print(render(report))
+    return 0
 
 
 def _rehearsal_line(result: RehearsalResult, width: int) -> str:
@@ -783,6 +883,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "Show the pending migrations, the problems, and the model drift.",
         machine_readable=True,
     )
+    command(
+        "impact",
+        "Show the locks, blocking, and work of each statement in the run.",
+        machine_readable=True,
+    )
 
     # Ordered as they are used: plan reads, rehearse proves, migrate applies.
     command(
@@ -841,6 +946,7 @@ def _build_parser() -> argparse.ArgumentParser:
 _COMMANDS = {
     "status": _cmd_status,
     "plan": _cmd_plan,
+    "impact": _cmd_impact,
     "migrate": _cmd_migrate,
     "down": _cmd_down,
     "rehearse": _cmd_rehearse,

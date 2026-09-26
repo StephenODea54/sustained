@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Command line reference
-description: "Reference for the sustained command line: plan, status, rehearse, migrate, down, validate, repair, script, and baseline, with options and exit codes."
+description: "Reference for the sustained command line: plan, impact, status, rehearse, migrate, down, validate, repair, script, and baseline, with options and exit codes."
 ---
 
 The `sustained` console script installs with the package, and you can also run it as `python -m sustained`.
@@ -19,6 +19,7 @@ Guide: [Schema and Migrations](/schema#command-line).
 | Command | Options | Does |
 | --- | --- | --- |
 | `plan` | `--json` | Shows the pending migrations, the problems, and the model drift. |
+| `impact` | `--json` | Shows the locks, blocking, and work of each statement in the run. |
 | `status` | `--json` | Shows every migration's state: applied, pending, or changed. |
 | `rehearse` | `--json` | Runs the pending migrations up and back down, then rolls it all back. |
 | `migrate` | `--target ID`, `--no-validate`, `--allow-out-of-order`, `--unrehearsed` | Applies pending migrations in order. |
@@ -51,6 +52,8 @@ Guide: [Schema and Migrations](/schema#command-line).
 A `migrate` that fails part way leaves the migrations it already applied in place. Their ids print on stdout as `applied  <id>` lines before the error, whatever stopped the run: a failing statement, a guard block, or a refusal on the migration generated from the models.
 
 `validate` exits 1 when it finds problems, and 0 when it finds none. The exit codes are the same with and without `--json`.
+
+`impact` exits 0 when it prints the report, whatever the report says, and 1 on a failure, including a dialect the analysis does not cover. Blocking a run on impact is the job of guards.
 
 ## The config module
 
@@ -150,6 +153,30 @@ guards
   warn   no_table_rewrite  ALTER TABLE users ALTER COLUMN age TYPE BIGINT
 ```
 
+An `impact` section follows the guards section, with one line per statement that has a `warn` or `danger` finding or that the analysis could not read. Each line gives the worst severity, the statement, and the rules at `warn` or above. The section appears only on a dialect the analysis covers, and it does not change the exit code. See [Statement impact](/impact).
+
+```console
+impact
+  warn    CREATE INDEX ix_orders_customer ON orders (customer_id)  [pg.create_index, pg.lock_timeout]
+  info    GRANT SELECT ON orders TO reporting  [impact.unknown]
+```
+
+`impact` prints the report for the run `migrate` would make: the pending migrations, then the migration the config's `models` generate.
+
+```console
+$ sustained impact
+20260926_orders  transaction
+  CREATE INDEX ix_orders_customer ON orders (customer_id)
+    orders  SHARE  blocks writes  index_build  statement  [pg.create_index]
+    warn    writes to orders wait for the whole index build; build it CONCURRENTLY in a migration with transactional=False; the size of orders is unknown
+    fix     CREATE INDEX CONCURRENTLY ix_orders_customer ON orders (customer_id)
+    warn    no lock_timeout in scope: while this statement waits for its lock, every query that conflicts with it on orders queues behind it, for as long as the longest open transaction runs
+    fix     SET LOCAL lock_timeout = '5s'
+  window  orders: SHARE from statement 1, held to commit
+
+1 statement, 0 danger, 2 warn. Evidence: static (assumed PostgreSQL 12)
+```
+
 The drift section appears only when the config names `models`. It reports every difference, drops included, even though `migrate` never generates a drop. A drift section that contains only drops says so instead of offering the command. The `run:` line prints only when validation found no problems.
 
 ```console
@@ -181,7 +208,7 @@ Errors go to stderr as `error: <message>`, or as `error in '<migration id>': <me
 
 ## JSON output
 
-`status`, `validate`, `plan`, and `rehearse` take `--json` and print one object to stdout.
+`status`, `validate`, `plan`, `impact`, and `rehearse` take `--json` and print one object to stdout.
 
 ```console
 $ sustained plan --json
@@ -195,7 +222,34 @@ $ sustained plan --json
         {
           "sql": "ALTER TABLE users DROP COLUMN legacy",
           "destructive": true,
-          "guards": [{"rule": "no_drops", "verdict": "block"}]
+          "guards": [{"rule": "no_drops", "verdict": "block"}],
+          "impact": {
+            "kind": "alter_table",
+            "severity": "warn",
+            "confidence": "known",
+            "evidence": "static",
+            "tables": [
+              {
+                "table": "users",
+                "lock": "ACCESS EXCLUSIVE",
+                "blocks": "reads_and_writes",
+                "work": "catalog",
+                "hold": "brief",
+                "rows": null,
+                "bytes": null,
+                "rule": "pg.drop_column"
+              }
+            ],
+            "findings": [
+              {
+                "rule": "pg.lock_timeout",
+                "severity": "warn",
+                "message": "no lock_timeout in scope: while this statement waits for its lock, every query that conflicts with it on users queues behind it, for as long as the longest open transaction runs",
+                "remedy": ["SET LOCAL lock_timeout = '5s'"],
+                "source": "https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-LOCK-TIMEOUT"
+              }
+            ]
+          }
         }
       ],
       "destructive": ["ALTER TABLE users DROP COLUMN legacy"]
@@ -207,7 +261,9 @@ $ sustained plan --json
 }
 ```
 
-Every place a command reports SQL uses that statement object, including `drift`. When the config names no models, `drift` is `null` rather than `[]`, so a caller can tell "nothing was compared" from "compared and found no gap". `statements` is `null` for a callable step, which renders no SQL; before version 2.13.0 `statements` was a count. A guard verdict appears on the statement it flags, as `{"rule", "verdict"}`, and a statement no guard flagged has `[]`. The `guards` key is present from version 2.15.0 onward.
+Every place a command reports SQL uses that statement object, including `drift`. When the config names no models, `drift` is `null` rather than `[]`, so a caller can tell "nothing was compared" from "compared and found no gap". `statements` is `null` for a callable step, which renders no SQL; before version 2.13.0 `statements` was a count. A guard verdict appears on the statement it flags, as `{"rule", "verdict"}`, and a statement no guard flagged has `[]`. The `guards` key is present from version 2.15.0 onward. `impact` holds the statement's impact in the form [`statement_data()`](/reference/impact#statement_data) gives, and is `null` on a dialect the analysis does not cover.
+
+`impact --json` prints the report in the form [`report_data()`](/reference/impact#report_data) gives, with the top-level keys `profile`, `version`, `evidence`, `migrations`, `counts`, and `error`. Each statement in a migration has `sql` and the keys of the plan's `impact` object.
 
 `rehearse --json` prints:
 

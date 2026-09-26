@@ -22,6 +22,7 @@ from sustained.migrations.checks import (
     _is_current,
     _validation_problems,
     check_guards,
+    run_statements,
 )
 from sustained.migrations.core import bookkeeping
 from sustained.migrations.core.base import MigratorBase
@@ -58,6 +59,7 @@ from sustained.types import Connection
 
 if TYPE_CHECKING:
     from sustained.guards import Verdict
+    from sustained.impact import ImpactReport
     from sustained.introspect import Snapshot
     from sustained.model import Model
 
@@ -494,6 +496,27 @@ def plan(
         ignore_undeclared=ignore_undeclared,
         snapshot=snapshot,
     )
+
+
+def impact(
+    m: MigratorBase, models: Optional[List[Type["Model"]]] = None
+) -> Core["ImpactReport"]:
+    """
+    The pending run, plus the migration the models generate, analyzed
+    statically. The dialect is checked before anything is read, so a
+    dialect without rules costs no round trip.
+    """
+    from sustained.exceptions import DialectError
+    from sustained.impact import analyze, supported
+
+    if not supported(m._dialect):
+        raise DialectError(f"Impact analysis does not cover {m._dialect.name} yet.")
+    run = yield from bookkeeping.pending(m)
+    if models:
+        generated = yield from plan(m, list(models))
+        if generated is not None:
+            run = run + [generated]
+    return analyze(run_statements(run, m._compiler), m._dialect)
 
 
 def drift(

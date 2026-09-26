@@ -66,6 +66,7 @@ from sustained.types import Connection, Cursor, SqlValue
 
 if TYPE_CHECKING:
     from sustained.guards import Guard
+    from sustained.impact import ImpactReport
     from sustained.introspect import Snapshot
     from sustained.model import Model
     from sustained.schema import TableOptions
@@ -677,6 +678,24 @@ class Migrator(MigratorBase):
                 snapshot=snapshot,
             )
         )
+
+    def impact(self, models: Optional[List[Type["Model"]]] = None) -> "ImpactReport":
+        """
+        The impact of the run up() would make: every pending migration,
+        plus the migration the models generate when models are given,
+        with the locks each statement takes, what they block, the work
+        each does, and findings with safer forms where one exists. See
+        sustained.impact.
+
+        The analysis is static: the rules assume the dialect's support
+        floor and read no table sizes. The generated migration is diffed
+        against the schema as it is now, before the pending migrations
+        run, as plan() is. Nothing is written.
+
+        Raises DialectError on a dialect the analysis does not cover
+        yet.
+        """
+        return self._drive(runs.impact(self, models))
 
     def read_schema(self, models: List[Type["Model"]]) -> "Snapshot":
         """

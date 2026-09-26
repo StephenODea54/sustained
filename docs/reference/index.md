@@ -15,6 +15,7 @@ If you are looking for how to do something specific, [Recipes](/recipes) is the 
 | [Predicates and expressions](/reference/predicates) | `col`, `Predicate`, `Column`, `Literal`, `Func`, `Subquery`, the function registry |
 | [Schema types](/reference/schema) | Column types, `ColumnDef` options, `Enum`, `Check`, `ForeignKey`, `Index`, `TableOptions`, DDL rendering |
 | [Migrations](/reference/migrations) | `Migration`, `Migrator`, `AsyncMigrator`, ddl steps, autogeneration, guards, SQL files, analysis |
+| [Impact](/reference/impact) | `analyze()`, `ImpactReport` and its parts, `Thresholds`, `EngineContext`, the report's text and JSON forms |
 | [Execution and pooling](/reference/execution) | Transactions, `ConnectionPool`, async adapters, the statement listener |
 | [Command line](/reference/cli) | Every subcommand, flag, exit code, and config-module attribute |
 | [Dialect support](/reference/dialects) | What each dialect supports, and what it refuses |

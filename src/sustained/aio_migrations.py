@@ -77,6 +77,7 @@ from sustained.types import RowValue, SqlValue
 
 if TYPE_CHECKING:
     from sustained.guards import Guard
+    from sustained.impact import ImpactReport
     from sustained.introspect import Snapshot
     from sustained.model import Model
     from sustained.schema import TableOptions
@@ -612,6 +613,16 @@ class AsyncMigrator(MigratorBase):
                 ignore_undeclared=ignore_undeclared,
             )
         )
+
+    async def impact(
+        self, models: Optional[List[Type["Model"]]] = None
+    ) -> "ImpactReport":
+        """
+        The impact of the run up() would make, analyzed statically.
+        Mirrors Migrator.impact(); the generated migration is diffed as
+        plan() diffs it here, from a replay of one schema read.
+        """
+        return await self._drive(runs.impact(self, models))
 
     async def drift(
         self,
