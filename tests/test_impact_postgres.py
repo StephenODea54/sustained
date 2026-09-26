@@ -18,27 +18,48 @@ from sustained.impact.context import FLOORS, assumed
 from sustained.impact.rules import all_rules
 from sustained.impact.rules import postgres as pg
 from sustained.impact.rules import profile_for
-from sustained.introspect.model import IntrospectedColumn, IntrospectedTable, Snapshot
+from sustained.introspect.model import (
+    IntrospectedColumn,
+    IntrospectedForeignKey,
+    IntrospectedIndex,
+    IntrospectedTable,
+    Snapshot,
+)
 
 PG = Dialects.POSTGRES
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# The newest server, with the fixture table's column types read.
-FIXTURE_CONTEXT = EngineContext(
-    "postgres",
-    (18,),
-    schema=Snapshot(
-        {
-            "t": IntrospectedTable(
-                {
-                    "id": IntrospectedColumn("integer", False, True),
-                    "c": IntrospectedColumn("integer", True, False),
-                    "name": IntrospectedColumn("character varying(100)", True, False),
-                }
-            )
-        }
-    ),
+# The fixture schema's two keyed tables, as the schema read reports them.
+FIXTURE_SCHEMA = Snapshot(
+    {
+        "r": IntrospectedTable(
+            {"id": IntrospectedColumn("integer", False, True)},
+            primary_key=("id",),
+            name="r",
+        ),
+        "t": IntrospectedTable(
+            {
+                "id": IntrospectedColumn("integer", False, True),
+                "c": IntrospectedColumn("integer", True, False),
+                "name": IntrospectedColumn("character varying(100)", True, False),
+                "r_id": IntrospectedColumn("integer", True, False),
+            },
+            primary_key=("id",),
+            foreign_keys={
+                "t_r_id_fkey": IntrospectedForeignKey(
+                    ("r_id",), "r", ("id",), name="t_r_id_fkey"
+                )
+            },
+            indexes={"ix": IntrospectedIndex(("c",), True, name="ix")},
+            checks={"ck": "c > 0"},
+            check_names={"ck": "ck"},
+            name="t",
+        ),
+    }
 )
+
+# The newest server, with the fixture schema read.
+FIXTURE_CONTEXT = EngineContext("postgres", (18,), schema=FIXTURE_SCHEMA)
 
 
 def impact(sql, context=None):
@@ -390,7 +411,7 @@ class LockTableTestCase(unittest.TestCase):
             "REFRESH MATERIALIZED VIEW CONCURRENTLY t",
             "EXCLUSIVE",
             Blocks.WRITES,
-            Work.REWRITE,
+            Work.ROWS,
             "pg.refresh_materialized_view.concurrently",
         ),
         (
@@ -517,6 +538,132 @@ class ForeignKeyTestCase(unittest.TestCase):
     def test_create_partition_locks_the_parent(self):
         found = table("CREATE TABLE p2 PARTITION OF t FOR VALUES IN (2)")
         self.assertEqual((found.table, found.lock), ("t", "ACCESS EXCLUSIVE"))
+
+
+class DroppedForeignKeyTestCase(unittest.TestCase):
+    """
+    A statement that drops or re-creates a foreign key locks the table
+    at the key's other end, which the schema read names.
+    """
+
+    def locks(self, sql, context=FIXTURE_CONTEXT):
+        statement = impact(sql, context)
+        return {(t.table, t.lock, t.work, t.rule) for t in statement.tables}
+
+    def test_drop_table_locks_what_its_keys_reference(self):
+        self.assertEqual(
+            self.locks("DROP TABLE t"),
+            {
+                ("t", "ACCESS EXCLUSIVE", Work.CATALOG, "pg.drop_table"),
+                ("r", "ACCESS EXCLUSIVE", Work.CATALOG, "pg.drop_foreign_key"),
+            },
+        )
+        # Without the schema, the statement names only t.
+        self.assertEqual({t.table for t in impact("DROP TABLE t").tables}, {"t"})
+
+    def test_drop_table_cascade_locks_the_tables_whose_keys_point_at_it(self):
+        self.assertEqual({t for t, *_ in self.locks("DROP TABLE r")}, {"r"})
+        self.assertEqual(
+            self.locks("DROP TABLE r CASCADE"),
+            {
+                ("r", "ACCESS EXCLUSIVE", Work.CATALOG, "pg.drop_table"),
+                ("t", "ACCESS EXCLUSIVE", Work.CATALOG, "pg.drop_foreign_key"),
+            },
+        )
+
+    def test_dropping_both_ends_locks_each_once(self):
+        self.assertEqual(
+            self.locks("DROP TABLE t, r"),
+            {
+                ("t", "ACCESS EXCLUSIVE", Work.CATALOG, "pg.drop_table"),
+                ("r", "ACCESS EXCLUSIVE", Work.CATALOG, "pg.drop_table"),
+            },
+        )
+
+    def test_a_renamed_table_reads_its_keys_under_the_old_name(self):
+        report = analyze(
+            [
+                MigrationStatement("ALTER TABLE t RENAME TO u", "m1"),
+                MigrationStatement("DROP TABLE u", "m2"),
+            ],
+            PG,
+            FIXTURE_CONTEXT,
+        )
+        (statement,) = report.migrations[1].statements
+        self.assertEqual({t.table for t in statement.tables}, {"u", "r"})
+
+    def test_truncate_cascade_empties_every_table_that_points_at_it(self):
+        self.assertEqual({t for t, *_ in self.locks("TRUNCATE t")}, {"t"})
+        self.assertEqual({t for t, *_ in self.locks("TRUNCATE r")}, {"r"})
+        schema = Snapshot(
+            {
+                **FIXTURE_SCHEMA,
+                "q": IntrospectedTable(
+                    {"t_id": IntrospectedColumn("integer", True, False)},
+                    foreign_keys={
+                        "q_t_id_fkey": IntrospectedForeignKey(("t_id",), "t", ("id",))
+                    },
+                    name="q",
+                ),
+            }
+        )
+        context = FIXTURE_CONTEXT._replace(schema=schema)
+        self.assertEqual(
+            self.locks("TRUNCATE r CASCADE", context),
+            {
+                ("r", "ACCESS EXCLUSIVE", Work.CATALOG, "pg.drop_table"),
+                ("t", "ACCESS EXCLUSIVE", Work.CATALOG, "pg.drop_table"),
+                ("q", "ACCESS EXCLUSIVE", Work.CATALOG, "pg.drop_table"),
+            },
+        )
+
+    def test_drop_constraint_of_a_foreign_key_locks_its_table(self):
+        self.assertIn(
+            ("r", "ACCESS EXCLUSIVE", Work.CATALOG, "pg.drop_foreign_key"),
+            self.locks("ALTER TABLE t DROP CONSTRAINT t_r_id_fkey"),
+        )
+        self.assertEqual(
+            {t for t, *_ in self.locks("ALTER TABLE t DROP CONSTRAINT ck")}, {"t"}
+        )
+
+    def test_drop_constraint_cascade_of_a_key_locks_the_tables_pointing_at_it(self):
+        self.assertEqual(
+            {t for t, *_ in self.locks("ALTER TABLE r DROP CONSTRAINT r_pkey")}, {"r"}
+        )
+        self.assertEqual(
+            {t for t, *_ in self.locks("ALTER TABLE r DROP CONSTRAINT r_pkey CASCADE")},
+            {"r", "t"},
+        )
+        # A check constraint locks nothing more.
+        self.assertEqual(
+            {t for t, *_ in self.locks("ALTER TABLE t DROP CONSTRAINT ck CASCADE")},
+            {"t"},
+        )
+
+    def test_drop_column_drops_the_keys_that_use_it(self):
+        self.assertIn(
+            ("r", "ACCESS EXCLUSIVE", Work.CATALOG, "pg.drop_foreign_key"),
+            self.locks("ALTER TABLE t DROP COLUMN r_id"),
+        )
+        self.assertEqual(
+            {t for t, *_ in self.locks("ALTER TABLE t DROP COLUMN c")}, {"t"}
+        )
+        self.assertEqual(
+            {t for t, *_ in self.locks("ALTER TABLE r DROP COLUMN id CASCADE")},
+            {"r", "t"},
+        )
+
+    def test_a_type_change_re_creates_the_keys_on_the_column(self):
+        self.assertIn(
+            ("r", "ACCESS EXCLUSIVE", Work.CATALOG, "pg.drop_foreign_key"),
+            self.locks("ALTER TABLE t ALTER COLUMN r_id TYPE bigint"),
+        )
+        statement = impact("ALTER TABLE r ALTER COLUMN id TYPE bigint", FIXTURE_CONTEXT)
+        found = next(t for t in statement.tables if t.table == "t")
+        self.assertEqual((found.lock, found.work), ("ACCESS EXCLUSIVE", Work.SCAN))
+        self.assertEqual(statement.confidence, Confidence.LIKELY)
+        finding = next(f for f in statement.findings if f.rule == "pg.drop_foreign_key")
+        self.assertIn("the foreign key from t to r is re-created", finding.message)
 
 
 class RemedyTestCase(unittest.TestCase):
@@ -742,6 +889,12 @@ class IndexTableTestCase(unittest.TestCase):
             PG,
         )
         self.assertEqual(report.migrations[1].statements[0].tables[0].table, "t")
+
+    def test_drop_index_reads_the_table_from_the_schema(self):
+        self.assertEqual(table("DROP INDEX ix", context=FIXTURE_CONTEXT).table, "t")
+        self.assertEqual(table("DROP INDEX app.ix", context=FIXTURE_CONTEXT).table, "t")
+        found = table("REINDEX INDEX ix", context=FIXTURE_CONTEXT)
+        self.assertEqual(found.table, "t")
 
     def test_drop_index_reads_the_table_from_its_intent(self):
         statement = with_intent("DROP INDEX ix", "drop_index", "orders", name="ix")

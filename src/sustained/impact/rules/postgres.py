@@ -102,31 +102,31 @@ ADD_COLUMN = Rule(
     "pg.add_column",
     _ALTER_TABLE,
     (
-        "ALTER TABLE t ADD COLUMN c integer",
-        "ALTER TABLE t ADD COLUMN c integer NOT NULL DEFAULT 0",
-        "ALTER TABLE t ADD COLUMN c timestamptz DEFAULT now()",
+        "ALTER TABLE t ADD COLUMN d integer",
+        "ALTER TABLE t ADD COLUMN d integer NOT NULL DEFAULT 0",
+        "ALTER TABLE t ADD COLUMN d timestamptz DEFAULT now()",
     ),
 )
 ADD_COLUMN_REWRITE = Rule(
     "pg.add_column.rewrite",
     _ALTER_TABLE,
     (
-        "ALTER TABLE t ADD COLUMN c uuid DEFAULT gen_random_uuid()",
-        "ALTER TABLE t ADD COLUMN c serial",
-        "ALTER TABLE t ADD COLUMN c integer GENERATED ALWAYS AS (id * 2) STORED",
+        "ALTER TABLE t ADD COLUMN d uuid DEFAULT gen_random_uuid()",
+        "ALTER TABLE t ADD COLUMN d serial",
+        "ALTER TABLE t ADD COLUMN d integer GENERATED ALWAYS AS (id * 2) STORED",
     ),
 )
 ADD_COLUMN_KEY = Rule(
     "pg.add_column.key",
     _ALTER_TABLE,
-    ("ALTER TABLE t ADD COLUMN c integer UNIQUE",),
+    ("ALTER TABLE t ADD COLUMN d integer UNIQUE",),
 )
 ADD_COLUMN_CHECKED = Rule(
     "pg.add_column.checked",
     _ALTER_TABLE,
     (
-        "ALTER TABLE t ADD COLUMN c integer CHECK (c > 0)",
-        "ALTER TABLE t ADD COLUMN c integer REFERENCES r (id)",
+        "ALTER TABLE t ADD COLUMN d integer CHECK (d > 0)",
+        "ALTER TABLE t ADD COLUMN d integer REFERENCES r (id)",
     ),
 )
 DROP_COLUMN = Rule("pg.drop_column", _ALTER_TABLE, ("ALTER TABLE t DROP COLUMN c",))
@@ -152,7 +152,7 @@ COLUMN_CATALOG = Rule(
         "ALTER TABLE t ALTER COLUMN c DROP NOT NULL",
         "ALTER TABLE t ALTER COLUMN c SET DEFAULT 0",
         "ALTER TABLE t ALTER COLUMN c DROP DEFAULT",
-        "ALTER TABLE t ALTER COLUMN c SET STORAGE EXTERNAL",
+        "ALTER TABLE t ALTER COLUMN name SET STORAGE EXTERNAL",
     ),
 )
 SET_STATISTICS = Rule(
@@ -163,12 +163,12 @@ SET_STATISTICS = Rule(
 ADD_CHECK = Rule(
     "pg.add_check",
     _ALTER_TABLE,
-    ("ALTER TABLE t ADD CONSTRAINT ck CHECK (c > 0)",),
+    ("ALTER TABLE t ADD CONSTRAINT ck2 CHECK (c > 0)",),
 )
 ADD_CHECK_NOT_VALID = Rule(
     "pg.add_check.not_valid",
     _ALTER_TABLE,
-    ("ALTER TABLE t ADD CONSTRAINT ck CHECK (c > 0) NOT VALID",),
+    ("ALTER TABLE t ADD CONSTRAINT ck2 CHECK (c > 0) NOT VALID",),
 )
 ADD_FOREIGN_KEY = Rule(
     "pg.add_foreign_key",
@@ -188,7 +188,7 @@ ADD_KEY = Rule(
     _ALTER_TABLE,
     (
         "ALTER TABLE t ADD CONSTRAINT uq UNIQUE (c)",
-        "ALTER TABLE t ADD PRIMARY KEY (id)",
+        "ALTER TABLE p ADD PRIMARY KEY (id)",
     ),
 )
 ADD_KEY_USING_INDEX = Rule(
@@ -199,10 +199,23 @@ ADD_KEY_USING_INDEX = Rule(
 ADD_EXCLUSION = Rule(
     "pg.add_exclusion",
     _ALTER_TABLE,
-    ("ALTER TABLE t ADD CONSTRAINT ex EXCLUDE USING gist (c WITH =)",),
+    ("ALTER TABLE t ADD CONSTRAINT ex EXCLUDE (c WITH =)",),
 )
 DROP_CONSTRAINT = Rule(
     "pg.drop_constraint", _ALTER_TABLE, ("ALTER TABLE t DROP CONSTRAINT ck",)
+)
+DROP_FOREIGN_KEY = Rule(
+    "pg.drop_foreign_key",
+    _ALTER_TABLE,
+    (
+        "DROP TABLE t",
+        "DROP TABLE r CASCADE",
+        "ALTER TABLE t DROP CONSTRAINT t_r_id_fkey",
+        "ALTER TABLE r DROP CONSTRAINT r_pkey CASCADE",
+        "ALTER TABLE t DROP COLUMN r_id",
+        "ALTER TABLE t ALTER COLUMN r_id TYPE bigint",
+        "ALTER TABLE r ALTER COLUMN id TYPE bigint",
+    ),
 )
 VALIDATE = Rule(
     "pg.validate_constraint",
@@ -221,17 +234,17 @@ RENAME = Rule(
 ATTACH_PARTITION = Rule(
     "pg.attach_partition",
     _ALTER_TABLE,
-    ("ALTER TABLE t ATTACH PARTITION p FOR VALUES IN (1)",),
+    ("ALTER TABLE pt ATTACH PARTITION p FOR VALUES IN (2)",),
 )
 DETACH_PARTITION = Rule(
     "pg.detach_partition",
     _ALTER_TABLE,
-    ("ALTER TABLE t DETACH PARTITION p",),
+    ("ALTER TABLE pt DETACH PARTITION pt1",),
 )
 DETACH_PARTITION_CONCURRENTLY = Rule(
     "pg.detach_partition.concurrently",
     _ALTER_TABLE,
-    ("ALTER TABLE t DETACH PARTITION p CONCURRENTLY",),
+    ("ALTER TABLE pt DETACH PARTITION pt1 CONCURRENTLY",),
     lambda version: version >= (14,),
 )
 TABLE_REWRITE = Rule(
@@ -239,7 +252,7 @@ TABLE_REWRITE = Rule(
     _ALTER_TABLE,
     (
         "ALTER TABLE t SET TABLESPACE pg_default",
-        "ALTER TABLE t SET LOGGED",
+        "ALTER TABLE ul SET LOGGED",
         "ALTER TABLE t SET UNLOGGED",
     ),
 )
@@ -248,7 +261,7 @@ TABLE_CATALOG = Rule(
     _ALTER_TABLE,
     (
         "ALTER TABLE t SET SCHEMA s",
-        "ALTER TABLE t OWNER TO u",
+        "ALTER TABLE t OWNER TO CURRENT_USER",
         "ALTER TABLE t ENABLE ROW LEVEL SECURITY",
         "ALTER TABLE t SET (autovacuum_enabled = false, user_catalog_table = true)",
     ),
@@ -266,12 +279,12 @@ TRIGGER_STATE = Rule(
 CREATE_INDEX = Rule(
     "pg.create_index",
     _DOCS + "sql-createindex.html",
-    ("CREATE INDEX ix ON t (c)", "CREATE UNIQUE INDEX ix ON t (c)"),
+    ("CREATE INDEX ix2 ON t (c)", "CREATE UNIQUE INDEX ix2 ON t (c)"),
 )
 CREATE_INDEX_CONCURRENTLY = Rule(
     "pg.create_index.concurrently",
     _DOCS + "sql-createindex.html#SQL-CREATEINDEX-CONCURRENTLY",
-    ("CREATE INDEX CONCURRENTLY ix ON t (c)",),
+    ("CREATE INDEX CONCURRENTLY ix2 ON t (c)",),
 )
 DROP_INDEX = Rule("pg.drop_index", _DOCS + "sql-dropindex.html", ("DROP INDEX ix",))
 DROP_INDEX_CONCURRENTLY = Rule(
@@ -284,13 +297,13 @@ CREATE_TABLE = Rule(
     _DOCS + "sql-createtable.html",
     (
         "CREATE TABLE n (id integer, r_id integer REFERENCES r (id))",
-        "CREATE TABLE p2 PARTITION OF t FOR VALUES IN (2)",
+        "CREATE TABLE pt2 PARTITION OF pt FOR VALUES IN (3)",
     ),
 )
 DROP_TABLE = Rule(
     "pg.drop_table",
     _DOCS + "sql-droptable.html",
-    ("DROP TABLE t", "TRUNCATE t"),
+    ("DROP TABLE t", "TRUNCATE t", "TRUNCATE r CASCADE"),
 )
 WRITE_ROWS = Rule(
     "pg.write_rows",
@@ -298,7 +311,7 @@ WRITE_ROWS = Rule(
     ("UPDATE t SET c = 0 WHERE c IS NULL", "DELETE FROM t WHERE c < 0"),
 )
 INSERT_ROWS = Rule(
-    "pg.insert", _DOCS + "sql-insert.html", ("INSERT INTO t (c) VALUES (1)",)
+    "pg.insert", _DOCS + "sql-insert.html", ("INSERT INTO t (id, c) VALUES (100, 100)",)
 )
 REINDEX = Rule("pg.reindex", _DOCS + "sql-reindex.html", ("REINDEX TABLE t",))
 REINDEX_CONCURRENTLY = Rule(
@@ -326,7 +339,7 @@ TRIGGER = Rule(
     "pg.trigger",
     _DOCS + "sql-createtrigger.html",
     (
-        "CREATE TRIGGER tr BEFORE UPDATE ON t FOR EACH ROW EXECUTE FUNCTION f()",
+        "CREATE TRIGGER tr2 BEFORE UPDATE ON t FOR EACH ROW EXECUTE FUNCTION f()",
         "DROP TRIGGER tr ON t",
     ),
 )
@@ -341,6 +354,36 @@ LOCK_TABLE = Rule(
 )
 DROP_SCHEMA = Rule(
     "pg.drop_schema", _DOCS + "sql-dropschema.html", ("DROP SCHEMA s CASCADE",)
+)
+
+# The objects the fixtures above name, with a few rows in each table.
+# The ground-truth tests create them, then run each fixture alone inside
+# a transaction that is rolled back. The views read `w`, so a fixture
+# that drops `t` or changes a column of `r` does not fail on a view.
+FIXTURE_SCHEMA = (
+    "CREATE TABLE r (id integer PRIMARY KEY)",
+    "INSERT INTO r VALUES (1), (2), (3)",
+    "CREATE TABLE t (id integer PRIMARY KEY, c integer, name varchar(100), "
+    "r_id integer REFERENCES r (id))",
+    "INSERT INTO t SELECT g, g, 'n' || g, 1 FROM generate_series(1, 20) g",
+    "CREATE UNIQUE INDEX ix ON t (c)",
+    "ALTER TABLE t ADD CONSTRAINT ck CHECK (c > 0) NOT VALID",
+    "CREATE FUNCTION f() RETURNS trigger LANGUAGE plpgsql "
+    "AS 'BEGIN RETURN NEW; END'",
+    "CREATE TRIGGER tr BEFORE UPDATE ON t FOR EACH ROW EXECUTE FUNCTION f()",
+    "CREATE TABLE pt (id integer) PARTITION BY LIST (id)",
+    "CREATE TABLE pt1 PARTITION OF pt FOR VALUES IN (1)",
+    "INSERT INTO pt VALUES (1)",
+    "CREATE TABLE p (id integer)",
+    "INSERT INTO p VALUES (2)",
+    "CREATE UNLOGGED TABLE ul (id integer)",
+    "INSERT INTO ul VALUES (1)",
+    "CREATE TABLE w (id integer)",
+    "INSERT INTO w VALUES (1)",
+    "CREATE MATERIALIZED VIEW mv AS SELECT id FROM w",
+    "CREATE UNIQUE INDEX mv_id ON mv (id)",
+    "CREATE VIEW v AS SELECT id FROM w",
+    "CREATE SCHEMA s",
 )
 
 # --- remedies ----------------------------------------------------------
@@ -458,7 +501,7 @@ def _drop_index(facts: Facts) -> Outcome:
     concurrently = bool(options.get("concurrently"))
     effects = []
     for name in names:
-        table = facts.state.index_table(name)
+        table = facts.state.index_table(name) or facts.context.index_table(name)
         if table is None and facts.intent is not None and len(names) == 1:
             table = facts.intent.table
         label = _table_label(name, table)
@@ -527,11 +570,79 @@ def _tables(facts: Facts) -> List[str]:
 
 
 def _drop_table(facts: Facts) -> Outcome:
-    return Outcome(
-        tuple(
-            Effect(DROP_TABLE, table, ACCESS_EXCLUSIVE, Work.CATALOG)
-            for table in _tables(facts)
-        )
+    """
+    DROP TABLE and TRUNCATE lock each named table. A dropped table's
+    foreign keys go with it, and so does the lock on each table they
+    point at. With CASCADE, DROP also drops the keys that point at the
+    table, and TRUNCATE also empties the tables those keys belong to,
+    and the tables that point at those in turn.
+    """
+    named = _tables(facts)
+    effects = [
+        Effect(DROP_TABLE, table, ACCESS_EXCLUSIVE, Work.CATALOG) for table in named
+    ]
+    seen = {table.lower() for table in named}
+    context = facts.context
+    cascade = bool(facts.parsed.options.get("cascade"))
+    if facts.parsed.kind == "truncate":
+        pending = list(named) if cascade else []
+        while pending:
+            table = pending.pop(0)
+            for other in context.referenced_by(facts.state.original(table)):
+                if other.lower() in seen:
+                    continue
+                seen.add(other.lower())
+                pending.append(other)
+                effects.append(
+                    Effect(
+                        DROP_TABLE,
+                        other,
+                        ACCESS_EXCLUSIVE,
+                        Work.CATALOG,
+                        message=f"TRUNCATE ... CASCADE also empties {other}, whose "
+                        f"foreign key points at {table}; reads and writes on "
+                        f"{other} wait until it commits",
+                    )
+                )
+        return Outcome(tuple(effects))
+    for table in named:
+        live = facts.state.original(table)
+        for other in context.references(live):
+            if other.lower() not in seen:
+                seen.add(other.lower())
+                effects.append(_foreign_key_effect(table, other, "dropped"))
+        if cascade:
+            for other in context.referenced_by(live):
+                if other.lower() not in seen:
+                    seen.add(other.lower())
+                    effects.append(_foreign_key_effect(other, table, "dropped", other))
+    return Outcome(tuple(effects))
+
+
+def _foreign_key_effect(
+    source: str,
+    target: str,
+    change: str,
+    locked: Optional[str] = None,
+    work: Work = Work.CATALOG,
+    confidence: Confidence = Confidence.KNOWN,
+) -> Effect:
+    """
+    The lock on one end of a foreign key from `source` to `target` that
+    the statement drops or re-creates: on `target` unless `locked` names
+    the other end. Postgres takes ACCESS EXCLUSIVE on both tables of a
+    key it drops, to remove the key's triggers from each.
+    """
+    table = locked or target
+    return Effect(
+        DROP_FOREIGN_KEY,
+        table,
+        ACCESS_EXCLUSIVE,
+        work,
+        confidence,
+        message=f"the foreign key from {source} to {target} is {change}, which "
+        f"locks {table} ACCESS EXCLUSIVE: reads and writes on {table} wait until "
+        "the statement commits",
     )
 
 
@@ -582,7 +693,8 @@ def _reindex(facts: Facts) -> Outcome:
     if target == "table":
         label = name
     elif target == "index":
-        label = _table_label(name, facts.state.index_table(name))
+        table = facts.state.index_table(name) or facts.context.index_table(name)
+        label = _table_label(name, table)
     else:
         label = f"(every table in {target} {name})"
     if options.get("concurrently"):
@@ -656,7 +768,9 @@ def _refresh(facts: Facts) -> Outcome:
     options = facts.parsed.options
     work = Work.REWRITE if options.get("with_data", True) else Work.CATALOG
     if options.get("concurrently"):
-        return Outcome((Effect(REFRESH_CONCURRENTLY, view, EXCLUSIVE, work),))
+        # The query runs in full, and only the rows that differ are
+        # written into the view, whose file stays in place.
+        return Outcome((Effect(REFRESH_CONCURRENTLY, view, EXCLUSIVE, Work.ROWS),))
     concurrent = _insert_after(facts.statement, "VIEW", "CONCURRENTLY")
     return Outcome(
         (
@@ -838,6 +952,61 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
             )
         )
     return Outcome(tuple(effects), confidence=confidence)
+
+
+def _drop_column(facts: Facts, action: Action) -> Outcome:
+    table = _table(facts)
+    live = facts.state.original(table)
+    column = [action.column] if action.column else []
+    effects = [Effect(DROP_COLUMN, table, ACCESS_EXCLUSIVE, Work.CATALOG)]
+    for other in facts.context.references(live, column):
+        effects.append(_foreign_key_effect(table, other, "dropped with the column"))
+    if action.options.get("cascade"):
+        for other in facts.context.referenced_by(live, column):
+            effects.append(
+                _foreign_key_effect(other, table, "dropped with the column", other)
+            )
+    return Outcome(tuple(effects))
+
+
+def _drop_constraint(facts: Facts, action: Action) -> Outcome:
+    table = _table(facts)
+    live = facts.state.original(table)
+    effects = [Effect(DROP_CONSTRAINT, table, ACCESS_EXCLUSIVE, Work.CATALOG)]
+    name = action.options.get("name")
+    if not name:
+        return Outcome(tuple(effects))
+    context = facts.context
+    target = context.foreign_key_target(live, str(name))
+    if target is not None:
+        if target.lower() != table.lower():
+            effects.append(_foreign_key_effect(table, target, "dropped"))
+    elif action.options.get("cascade"):
+        columns = _constraint_columns(context, live, str(name))
+        if columns:
+            for other in context.referenced_by(live, columns):
+                effects.append(_foreign_key_effect(other, table, "dropped", other))
+    return Outcome(tuple(effects))
+
+
+def _constraint_columns(
+    context: EngineContext, table: str, name: str
+) -> Tuple[str, ...]:
+    """
+    The columns of a unique or primary key constraint, from the schema
+    read. The read keeps the columns of a primary key but not its name,
+    so a named constraint that is neither a unique constraint nor a
+    check is taken for the primary key.
+    """
+    found = context.table(table)
+    if found is None:
+        return ()
+    index = found.indexes.get(name.lower())
+    if index is not None:
+        return index.columns if index.constraint else ()
+    if name.lower() in found.check_names or name.lower() in found.checks:
+        return ()
+    return found.primary_key
 
 
 def _set_not_null(facts: Facts, action: Action) -> Outcome:
@@ -1232,6 +1401,17 @@ _TRIVIAL_USING_RE = re.compile(r'\s*"?(?P<column>[^"\s:]+)"?\s*(::.*)?', re.DOTA
 
 
 def _alter_column_type(facts: Facts, action: Action) -> Outcome:
+    outcome = _column_type(facts, action)
+    keys = _type_keys(facts, action)
+    if not keys:
+        return outcome
+    confidence = min([outcome.confidence] + [e.confidence for e in keys])
+    return outcome._replace(
+        effects=outcome.effects + tuple(keys), confidence=confidence
+    )
+
+
+def _column_type(facts: Facts, action: Action) -> Outcome:
     table = _table(facts)
     column = action.column or "?"
     to_type = str(action.options.get("type"))
@@ -1267,6 +1447,29 @@ def _alter_column_type(facts: Facts, action: Action) -> Outcome:
     return _type_rewrite(table, column, confidence, reason)
 
 
+def _type_keys(facts: Facts, action: Action) -> List[Effect]:
+    """
+    A column type change re-creates each foreign key that uses the
+    column or points at it. The table at the key's other end is locked,
+    and when that table holds the key, its rows are checked again
+    unless the old and new types compare the same way.
+    """
+    table = _table(facts)
+    live = facts.state.original(table)
+    column = [action.column] if action.column else []
+    effects = [
+        _foreign_key_effect(table, other, "re-created")
+        for other in facts.context.references(live, column)
+    ]
+    effects.extend(
+        _foreign_key_effect(
+            other, table, "re-created", other, Work.SCAN, Confidence.LIKELY
+        )
+        for other in facts.context.referenced_by(live, column)
+    )
+    return effects
+
+
 def _type_rewrite(
     table: str, column: str, confidence: Confidence, reason: str
 ) -> Outcome:
@@ -1292,7 +1495,7 @@ def _type_rewrite(
 _ActionHandler = Callable[[Facts, Action], Outcome]
 _ACTIONS: Dict[str, _ActionHandler] = {
     "add_column": _add_column,
-    "drop_column": _simple(DROP_COLUMN, ACCESS_EXCLUSIVE, Work.CATALOG),
+    "drop_column": _drop_column,
     "alter_column_type": _alter_column_type,
     "set_not_null": _set_not_null,
     "drop_not_null": _simple(COLUMN_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
@@ -1301,7 +1504,7 @@ _ACTIONS: Dict[str, _ActionHandler] = {
     "set_storage": _simple(COLUMN_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
     "set_statistics": _simple(SET_STATISTICS, SHARE_UPDATE_EXCLUSIVE, Work.CATALOG),
     "add_constraint": _add_constraint,
-    "drop_constraint": _simple(DROP_CONSTRAINT, ACCESS_EXCLUSIVE, Work.CATALOG),
+    "drop_constraint": _drop_constraint,
     "validate_constraint": _simple(VALIDATE, SHARE_UPDATE_EXCLUSIVE, Work.SCAN),
     "rename_column": _rename,
     "rename_to": _rename,
@@ -1476,4 +1679,5 @@ PROFILE = Profile(
     rules=_rules(),
     timeout_source=_DOCS + "runtime-config-client.html#GUC-LOCK-TIMEOUT",
     context_plan=context_plan,
+    fixture_schema=FIXTURE_SCHEMA,
 )

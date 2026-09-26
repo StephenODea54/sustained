@@ -126,6 +126,13 @@ A failed build, a failed check, or a declined prompt removes the local commit an
     ```
 3.  `QueryBuilder.select_func()` then validates the new function against the active dialect. If the function requires special rendering syntax for a specific dialect, you can add a custom renderer.
 
+### Adding an Impact Rule
+
+1.  Declare a `Rule` in the profile's module, such as `sustained/impact/rules/postgres.py`, with its id, the documentation URL it relies on, and at least one fixture statement.
+2.  Write each fixture so it runs alone against the objects the module's `FIXTURE_SCHEMA` creates. Add to `FIXTURE_SCHEMA` when a fixture needs an object it lacks.
+3.  Return an `Effect` for the rule from the statement's handler.
+4.  Run the `impact` cover on the floor and latest servers. `tests/integration/impact.py` runs every fixture in a transaction, reads the locks and files before and after, and fails on any difference from the rule's prediction. A fixture the server refuses inside a transaction block goes in that module's `UNOBSERVED` list, with the reason.
+
 ## Dynamic Method Resolution with `__getattr__`
 
 The `QueryBuilder` uses a `__getattr__` method to provide a wide, expressive API without having to explicitly define dozens of similar methods. This is how it supports variations like `where`, `orWhere`, `whereIn`, `andWhereLike`, etc.

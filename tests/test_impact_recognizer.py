@@ -581,6 +581,16 @@ class CreateAndDropTestCase(RecognizerTestCase):
             with self.subTest(sql):
                 self.assertUnknown(sql)
 
+    def test_cascade(self):
+        self.assertTrue(recognize("DROP TABLE t CASCADE").options["cascade"])
+        self.assertFalse(recognize("DROP TABLE t RESTRICT").options["cascade"])
+        self.assertTrue(recognize("TRUNCATE r CASCADE").options["cascade"])
+        self.assertFalse(recognize("TRUNCATE r").options["cascade"])
+        (drop,) = recognize("ALTER TABLE t DROP CONSTRAINT k CASCADE").actions
+        self.assertTrue(drop.options["cascade"])
+        (drop,) = recognize("ALTER TABLE t DROP COLUMN c").actions
+        self.assertFalse(drop.options["cascade"])
+
 
 class DmlTestCase(RecognizerTestCase):
     def test_update(self):

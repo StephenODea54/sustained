@@ -175,6 +175,17 @@ The server facts the rules read: the profile, the version as a tuple of ints, th
 
 `read_context()` keys each table as `schema.table`, and also by its bare name when the search path finds it under that name. `stats(table)` returns a table's `TableStats`, or unknown stats for a table the read did not see.
 
+These methods read the schema, and return `None` or an empty tuple when the schema was not read or does not hold what they look for. A dotted name finds a table by its last part, since the read covers one schema.
+
+| Method | Returns |
+| --- | --- |
+| `table(name)` | The `IntrospectedTable` |
+| `column_type(table, column)` | The column's current type |
+| `index_table(index)` | The name of the table the index is on |
+| `references(table, columns=None)` | The tables the table's foreign keys point at; with `columns`, only the keys that use one of them |
+| `referenced_by(table, columns=None)` | The other tables whose foreign keys point at the table; with `columns`, only the keys that point at one of them |
+| `foreign_key_target(table, name)` | The table the named foreign key points at |
+
 `TableStats(rows=None, bytes=None)` holds one table's size estimates. On PostgreSQL, `rows` is `None` for a table that was never vacuumed or analyzed.
 
 ## Report forms

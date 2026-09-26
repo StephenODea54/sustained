@@ -51,7 +51,9 @@ class Rule(NamedTuple):
     """
     One piece of engine behaviour. `versions` says whether the rule
     holds on a server version; `fixtures` are statements that exercise
-    it, which the ground-truth tests run against real servers.
+    it, which the ground-truth tests run against real servers. Each
+    fixture runs alone against the objects its profile's
+    `fixture_schema` creates.
     """
 
     id: str
@@ -121,6 +123,8 @@ class Profile(NamedTuple):
     migration commits. `prefix` starts the id of every rule the profile
     owns, such as `pg` in `pg.create_index`. `context_plan()` is the
     catalog read that fills an `EngineContext` from a live server.
+    `fixture_schema` creates the objects the rules' fixtures name, for
+    the ground-truth tests.
     """
 
     name: str
@@ -134,6 +138,7 @@ class Profile(NamedTuple):
     rules: Tuple[Rule, ...]
     timeout_source: str
     context_plan: Callable[[], ContextPlan]
+    fixture_schema: Tuple[str, ...] = ()
 
 
 def _profiles() -> Mapping[str, Profile]:

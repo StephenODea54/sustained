@@ -35,7 +35,7 @@ The **Covered** column names the feature sets the integration suite runs against
 - `transactions` is commit and rollback as observed from a second connection, savepoint nesting, and `ConnectionPool`.
 - `migrations` is the migration lifecycle: `migrate`, `rehearse`, `down`, `validate`, and `repair`, plus schema introspection, column type and column comment round trips, and SQL file migrations.
 - `async` is `arun()`, `async_transaction()`, and `AsyncMigrator` on an async driver.
-- `impact` is the [statement impact](/impact) analysis on a live server: the version, settings, and table sizes `read_context()` reads, and `Migrator.impact()`.
+- `impact` is the [statement impact](/impact) analysis on a live server: the version, settings, and table sizes `read_context()` reads, `Migrator.impact()`, `rehearse(trace=True)`, and every rule's fixture statements run under the trace's reads, where the lock and work the server shows must match the rule's prediction.
 
 Where a dialect does not implement a feature (for example `RETURNING` on MySQL), we test that `to_sql()` raises `DialectError` and that nothing reaches the server.
 

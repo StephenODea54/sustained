@@ -130,7 +130,7 @@ A lock that blocks writes or more, with no lock timeout in scope, draws a `pg.lo
 | `TimeZone` | `current_setting()` | Whether `timestamp` to `timestamptz` rewrites the table |
 | `lock_timeout` | `current_setting()` | Whether a lock timeout covers the run before any `SET` |
 | Table sizes | `pg_class.reltuples` and `pg_total_relation_size()` | The severity of blocking work |
-| Schema | the schema read `plan()` uses | The current type of a column a hand-written type change names |
+| Schema | the schema read `plan()` uses | The current type of a column a hand-written type change names, the table an index to drop is on, and the tables at the other end of a foreign key a statement drops or re-creates |
 
 The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
 
@@ -176,7 +176,7 @@ The analysis reads the run in order, and each statement changes what it knows ab
 
 - **A table the run created is empty.** No other session can see it yet, so work on it blocks nothing and draws no findings. A plain `CREATE INDEX` on a table created earlier in the run is not flagged.
 - **A renamed table keeps its identity.** A later statement that names the new name reads the size of the original table.
-- **An index the run created is known.** A `DROP INDEX` names the table the run created the index on.
+- **An index the run created is known.** A `DROP INDEX` names the table the run created the index on. For an index that already exists, the schema read names its table.
 - **A lock timeout stays in scope** for as long as PostgreSQL keeps it: `SET LOCAL` until the migration commits, and `SET` for the rest of the session. A timeout the connection already has is in scope from the first statement. `no_lock_without_timeout()` reads the same scope from the statements alone.
 
 ## Generated statements
@@ -207,7 +207,7 @@ The observed lock and work replace the predicted ones, and the statement's evide
     warn    the rules predicted a rewrite on orders, and the server copied no file
 ```
 
-A lock of `SHARE UPDATE EXCLUSIVE` or stronger on a table no rule named, such as the table a dropped foreign key references, is a mismatch too, and the table joins the statement's tables. The windows are read again from the observed facts.
+A lock of `SHARE UPDATE EXCLUSIVE` or stronger on a table no rule named is a mismatch too, and the table joins the statement's tables. The windows are read again from the observed facts.
 
 What the observation can and cannot show:
 
@@ -243,6 +243,7 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 | `ADD CONSTRAINT ... USING INDEX` | `ACCESS EXCLUSIVE` | catalog | `pg.add_key.using_index` |
 | `ADD EXCLUDE` | `ACCESS EXCLUSIVE` | index build | `pg.add_exclusion` |
 | `DROP CONSTRAINT` | `ACCESS EXCLUSIVE` | catalog | `pg.drop_constraint` |
+| A statement that drops a foreign key: `DROP TABLE`, `DROP CONSTRAINT`, or `DROP COLUMN` on the table that holds the key, or with `CASCADE` on the table it points at. A type change of a column a key uses or points at re-creates the key. | `ACCESS EXCLUSIVE` on the table at the key's other end | catalog, or a scan of the table that holds a re-created key | `pg.drop_foreign_key` |
 | `VALIDATE CONSTRAINT` | `SHARE UPDATE EXCLUSIVE` | scan | `pg.validate_constraint` |
 | `RENAME`, `RENAME COLUMN`, `RENAME CONSTRAINT` | `ACCESS EXCLUSIVE` | catalog | `pg.rename` |
 | `ATTACH PARTITION` | `SHARE UPDATE EXCLUSIVE` on the parent, `ACCESS EXCLUSIVE` on the partition | scan of the partition | `pg.attach_partition` |
@@ -257,7 +258,7 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 | `DROP INDEX` | `ACCESS EXCLUSIVE` on the table | catalog | `pg.drop_index` |
 | `DROP INDEX CONCURRENTLY` | `SHARE UPDATE EXCLUSIVE` on the table | catalog | `pg.drop_index.concurrently` |
 | `CREATE TABLE ... REFERENCES`, `CREATE TABLE ... PARTITION OF` | `SHARE ROW EXCLUSIVE` on the referenced table, `ACCESS EXCLUSIVE` on the parent | catalog | `pg.create_table` |
-| `DROP TABLE`, `TRUNCATE` | `ACCESS EXCLUSIVE` | catalog | `pg.drop_table` |
+| `DROP TABLE`, `TRUNCATE` | `ACCESS EXCLUSIVE`, and with `TRUNCATE ... CASCADE` on every table it empties through a foreign key | catalog | `pg.drop_table` |
 | `UPDATE`, `DELETE` | `ROW EXCLUSIVE`, plus row locks on the rows changed | rows | `pg.write_rows` |
 | `INSERT` | `ROW EXCLUSIVE` | rows | `pg.insert` |
 | `REINDEX` | `SHARE` | index build | `pg.reindex` |
@@ -265,7 +266,7 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 | `VACUUM`, `ANALYZE` | `SHARE UPDATE EXCLUSIVE` | scan | `pg.vacuum` |
 | `VACUUM FULL`, `CLUSTER` | `ACCESS EXCLUSIVE` | rewrite | `pg.vacuum_full` |
 | `REFRESH MATERIALIZED VIEW` | `ACCESS EXCLUSIVE` | rewrite | `pg.refresh_materialized_view` |
-| `REFRESH MATERIALIZED VIEW CONCURRENTLY` | `EXCLUSIVE` | rewrite | `pg.refresh_materialized_view.concurrently` |
+| `REFRESH MATERIALIZED VIEW CONCURRENTLY` | `EXCLUSIVE` | rows | `pg.refresh_materialized_view.concurrently` |
 | `CREATE TRIGGER` | `SHARE ROW EXCLUSIVE` | catalog | `pg.trigger` |
 | `DROP TRIGGER` | `ACCESS EXCLUSIVE` | catalog | `pg.trigger` |
 | `COMMENT ON` | `SHARE UPDATE EXCLUSIVE` | catalog | `pg.comment` |
@@ -276,6 +277,10 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 A type change is binary coercible when PostgreSQL skips the rewrite: `varchar(n)` to a longer `varchar` or to `text`, `numeric(p,s)` to a wider precision at the same scale, and `timestamp` to `timestamptz` when the `TimeZone` setting is UTC. The rule needs the column's current type, which a generated statement's intent gives, and which the schema read gives for a hand-written statement. Without either, the change reads as a rewrite with confidence `likely`. Without the `TimeZone` setting, `timestamp` to `timestamptz` also reads as a rewrite with confidence `likely`.
 
 A `SET NOT NULL` skips its scan when a valid check constraint already proves the column holds no NULL. The remedy for a scan on a populated table is that route: add the check `NOT VALID`, validate it, set `NOT NULL`, and drop the check.
+
+The tables at the other end of a foreign key come from the schema read. Without it, a `DROP TABLE` or a `DROP CONSTRAINT` reports only the table it names, and a `DROP INDEX` reports its table as `(table of index ix)`.
+
+The integration suite checks every rule against PostgreSQL 14 and 18. It creates the tables the rules' fixture statements name, runs each fixture alone in a transaction under the same reads as `rehearse --trace`, and fails on any `impact.mismatch`. A fixture that PostgreSQL refuses inside a transaction block, such as `CREATE INDEX CONCURRENTLY` or `VACUUM`, is not observed. Neither is `SET TABLESPACE`, because the test servers have no second tablespace to move a table to.
 
 ### Remedies
 

@@ -1,7 +1,10 @@
 """
 The impact analysis, run against every server whose support.json row
 claims the `impact` cover: the server facts read_context() reads,
-Migrator.impact() on a live connection, and rehearse(trace=True).
+Migrator.impact() on a live connection, rehearse(trace=True), and the
+ground truth for every rule: each rule fixture runs on the server under
+the observer, and what the server did must match what the rule
+predicted for that server's version and settings.
 """
 
 import asyncio
@@ -9,7 +12,16 @@ import unittest
 
 from sustained.aio_migrations import AsyncMigrator
 from sustained.dialects import Dialects
-from sustained.impact import Evidence, Work, async_read_context, read_context
+from sustained.impact import (
+    Evidence,
+    Work,
+    analyze,
+    async_read_context,
+    read_context,
+)
+from sustained.impact.rules import profile_for
+from sustained.impact.trace import observe, sighting_plan, tables_plan
+from sustained.introspect.runner import run_plan
 from sustained.migrations import Migration, Migrator
 
 from . import aio_lifecycle, harness
@@ -21,6 +33,27 @@ TABLES = (
     "it_impact_migrations",
     "it_impact_rehearsals",
 )
+
+# The schema the rule fixtures run in, and the schema their fixtures
+# move a table into and drop.
+FIXTURE_SCHEMA = "it_impact_fixtures"
+FIXTURE_SCHEMAS = (FIXTURE_SCHEMA, "s")
+
+# Fixtures the ground truth cannot observe, with the reason. A statement
+# that refuses to run inside a transaction block cannot be read between
+# two sightings in one transaction.
+UNOBSERVED = {
+    "ALTER TABLE pt DETACH PARTITION pt1 CONCURRENTLY": "no transaction block",
+    "ALTER TABLE t SET TABLESPACE pg_default": (
+        "t is already in pg_default, and the test server has no other "
+        "tablespace to move it to, so nothing is copied"
+    ),
+    "CREATE INDEX CONCURRENTLY ix2 ON t (c)": "no transaction block",
+    "DROP INDEX CONCURRENTLY ix": "no transaction block",
+    "REINDEX TABLE CONCURRENTLY t": "no transaction block",
+    "VACUUM t": "no transaction block",
+    "VACUUM FULL t": "no transaction block",
+}
 
 
 class ImpactCase(unittest.TestCase):
@@ -52,9 +85,12 @@ class ImpactCase(unittest.TestCase):
 
     def drop(self):
         self.connection.rollback()
+        self.execute("RESET search_path")
         for table in TABLES:
             self.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
         self.execute("DROP DOMAIN IF EXISTS it_impact_text")
+        for schema in FIXTURE_SCHEMAS:
+            self.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
 
     def execute(self, *statements):
         cursor = self.connection.cursor()
@@ -270,3 +306,46 @@ class ImpactCase(unittest.TestCase):
             [s.tables for s in report.statements],
             [s.tables for s in blocking.statements],
         )
+
+    def test_each_rule_fixture_does_what_its_rule_predicts(self):
+        profile = profile_for(self.DIALECT)
+        self.execute(
+            f"CREATE SCHEMA {FIXTURE_SCHEMA}",
+            f"SET search_path TO {FIXTURE_SCHEMA}",
+            *profile.fixture_schema,
+            "ANALYZE",
+        )
+        context = read_context(self.connection, self.DIALECT)
+        self.connection.rollback()
+        fixtures = [(rule, f) for rule in profile.rules for f in rule.fixtures]
+        self.assertLessEqual(set(UNOBSERVED), {f for _, f in fixtures})
+        for rule, fixture in fixtures:
+            if fixture in UNOBSERVED:
+                continue
+            with self.subTest(rule=rule.id, fixture=fixture):
+                statement = self.observe_fixture(fixture, context, profile)
+                self.assertIs(statement.evidence, Evidence.OBSERVED)
+                reached = {t.rule for t in statement.tables}
+                reached |= {f.rule for f in statement.findings}
+                self.assertIn(rule.id, reached)
+                mismatches = [
+                    f.message for f in statement.findings if f.rule == "impact.mismatch"
+                ]
+                self.assertEqual(mismatches, [])
+
+    def observe_fixture(self, fixture, context, profile):
+        """
+        The fixture's predicted impact with what the server did in its
+        place, read between two sightings in a transaction that is then
+        rolled back.
+        """
+        (predicted,) = analyze([fixture], self.DIALECT, context).statements
+        tables = [t.table for t in predicted.tables]
+        try:
+            existing = run_plan(self.connection, self.DIALECT, tables_plan())
+            before = run_plan(self.connection, self.DIALECT, sighting_plan(tables))
+            self.connection.cursor().execute(fixture)
+            after = run_plan(self.connection, self.DIALECT, sighting_plan(tables))
+        finally:
+            self.connection.rollback()
+        return observe(predicted, before, after, existing, profile)

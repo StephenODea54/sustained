@@ -31,8 +31,8 @@ The statement kinds, and the options each one sets:
 - `drop_type`: names
 - `drop_table`, `truncate`, `drop_view`, `optimize_table`,
   `lock_table`, `vacuum`, `analyze`: tables, plus if_exists where the
-  statement may spell it, `mode` and `nowait` for LOCK, `full` for
-  VACUUM
+  statement may spell it, `cascade` for DROP and TRUNCATE, `mode` and
+  `nowait` for LOCK, `full` for VACUUM
 - `rename_table`: new, renames (every old and new pair)
 - `update`, `delete`: where, limited (a LIMIT or TOP caps the rows)
 - `insert`: source (`values`, `select`, or `default`), rows (the row
@@ -815,11 +815,13 @@ class _Parser:
         if_exists = self.accept("IF", "EXISTS")
         tables = self.names()
         self.table = tables[0]
-        self.accept_any("CASCADE", "RESTRICT")
+        cascade = self.accept_any("CASCADE", "RESTRICT") == "CASCADE"
         return ParsedStatement(
             kind,
             tables[0],
-            options=_frozen({"tables": tuple(tables), "if_exists": if_exists}),
+            options=_frozen(
+                {"tables": tuple(tables), "if_exists": if_exists, "cascade": cascade}
+            ),
         )
 
     def drop_index(self) -> ParsedStatement:
@@ -1071,8 +1073,12 @@ class _Parser:
         if self.accept("CONSTRAINT"):
             if_exists = self.accept("IF", "EXISTS")
             name = self.name()
-            self.accept_any("CASCADE", "RESTRICT")
-            options: _Options = {"name": name, "if_exists": if_exists}
+            cascade = self.accept_any("CASCADE", "RESTRICT") == "CASCADE"
+            options: _Options = {
+                "name": name,
+                "if_exists": if_exists,
+                "cascade": cascade,
+            }
             return Action("drop_constraint", None, _frozen(options))
         if self.accept("FOREIGN", "KEY"):
             return Action(
@@ -1097,8 +1103,12 @@ class _Parser:
         self.accept("COLUMN")
         if_exists = self.accept("IF", "EXISTS")
         column = self.name()
-        self.accept_any("CASCADE", "RESTRICT")
-        return Action("drop_column", column, _frozen({"if_exists": if_exists}))
+        cascade = self.accept_any("CASCADE", "RESTRICT") == "CASCADE"
+        return Action(
+            "drop_column",
+            column,
+            _frozen({"if_exists": if_exists, "cascade": cascade}),
+        )
 
     def action_alter(self) -> Action:
         self.accept("COLUMN")
@@ -1537,9 +1547,11 @@ class _Parser:
         self.accept_op("*")
         if self.accept_any("RESTART", "CONTINUE"):
             self.expect("IDENTITY")
-        self.accept_any("CASCADE", "RESTRICT")
+        cascade = self.accept_any("CASCADE", "RESTRICT") == "CASCADE"
         return ParsedStatement(
-            "truncate", tables[0], options=_frozen({"tables": tuple(tables)})
+            "truncate",
+            tables[0],
+            options=_frozen({"tables": tuple(tables), "cascade": cascade}),
         )
 
     def rename(self) -> ParsedStatement:
