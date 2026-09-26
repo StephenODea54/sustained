@@ -21,7 +21,6 @@ from typing import Dict, List, Mapping, Optional, Sequence, Union
 from sustained.impact.context import version_text
 from sustained.impact.model import (
     Confidence,
-    Evidence,
     Finding,
     ImpactReport,
     MigrationImpact,
@@ -81,6 +80,7 @@ def report_data(report: ImpactReport) -> Dict[str, JsonValue]:
         "profile": report.profile,
         "version": version_text(report.version),
         "evidence": str(report.evidence),
+        "read": sorted(report.read),
         "migrations": [_migration_data(m) for m in report.migrations],
         "counts": {str(s): report.count(s) for s in Severity},
     }
@@ -214,10 +214,8 @@ def summary(report: ImpactReport) -> str:
         parts.append(f"{unknown} unknown")
     title = _TITLES.get(report.profile, report.profile)
     version = version_text(report.version)
-    if report.evidence is Evidence.STATIC:
-        basis = f"static (assumed {title} {version})"
-    else:
-        basis = f"{report.evidence} ({title} {version})"
+    assumed = "" if "version" in report.read else "assumed "
+    basis = f"{report.evidence} ({assumed}{title} {version})"
     return f"{', '.join(parts)}. Evidence: {basis}"
 
 

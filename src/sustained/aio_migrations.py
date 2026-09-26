@@ -29,6 +29,7 @@ from typing import (
     Sequence,
     Tuple,
     Type,
+    Union,
 )
 
 from sustained.aio import (
@@ -62,6 +63,7 @@ from sustained.migrations.core.requests import (
     Fetch,
     Fire,
     PinnedTransaction,
+    ReadContext,
     ReadSchema,
     RefuseOpenTransaction,
     RefuseRehearsal,
@@ -180,9 +182,8 @@ class AsyncMigrator(MigratorBase):
             if inspect.isawaitable(result):
                 await result
             return None
-        if isinstance(request, ReadSchema):
-            schema, _ = await self._read_schema()
-            return schema
+        if isinstance(request, (ReadSchema, ReadContext)):
+            return await self._read(request)
         if isinstance(request, DiffSource):
             snapshot, read = await self._read_schema(request.schemas)
             return read.connection(), snapshot
@@ -210,6 +211,15 @@ class AsyncMigrator(MigratorBase):
                 await adapter.execute(begin, ())
             return None
         raise TypeError(f"Unknown migrator request: {request!r}")
+
+    async def _read(self, request: Union[ReadSchema, ReadContext]) -> Any:
+        """Reads the live schema, or the server facts the impact rules use."""
+        if isinstance(request, ReadSchema):
+            schema, _ = await self._read_schema()
+            return schema
+        from sustained.impact import async_read_context
+
+        return await async_read_context(self._adapter, self._dialect)
 
     async def _run_step(self, step: MigrationStep) -> None:
         elements = _step_elements(step)
@@ -618,9 +628,10 @@ class AsyncMigrator(MigratorBase):
         self, models: Optional[List[Type["Model"]]] = None
     ) -> "ImpactReport":
         """
-        The impact of the run up() would make, analyzed statically.
-        Mirrors Migrator.impact(); the generated migration is diffed as
-        plan() diffs it here, from a replay of one schema read.
+        The impact of the run up() would make, with the server facts read
+        through the adapter. Mirrors Migrator.impact(); the generated
+        migration is diffed as plan() diffs it here, from a replay of one
+        schema read.
         """
         return await self._drive(runs.impact(self, models))
 

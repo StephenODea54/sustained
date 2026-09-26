@@ -16,7 +16,7 @@ The ANSI dialect has no server to run, so Sustained compiles SQL for it and unit
 
 | Database | Versions | Where it runs | Covered | Notes |
 | --- | --- | --- | --- | --- |
-| PostgreSQL | 12 and later; suite runs 14 and 18 | Container (postgres:14-alpine, postgres:18-alpine) | queries, writes, transactions, migrations, async | Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE inside a transaction sets the floor. |
+| PostgreSQL | 12 and later; suite runs 14 and 18 | Container (postgres:14-alpine, postgres:18-alpine) | queries, writes, transactions, migrations, async, impact | Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE inside a transaction sets the floor. |
 | MySQL | 8.0.19 and later; suite runs 8.4 and 26.7 | Container (mysql:8.4, mysql:26.7) | queries, writes, transactions, migrations | No transactional DDL, so rehearse needs scratch=True. ALTER TABLE DROP CONSTRAINT sets the floor. |
 | MariaDB | 10.6 and later; suite runs 11.4 and 12.3 | Container (mariadb:11.4, mariadb:12.3) | queries, writes, transactions, migrations | Same dialect as MySQL. SKIP LOCKED sets the floor. JSON columns read back through their json_valid check. |
 | SQL Server | 2012 and later; suite runs 2022 and 2025 | Container (mcr.microsoft.com/mssql/server:2022-latest, mcr.microsoft.com/mssql/server:2025-latest) | queries, writes, transactions, migrations | Off the rehearsal allowlist, so rehearse refuses without scratch=True. OFFSET with FETCH sets the floor. pyodbc needs the ODBC driver installed. |
@@ -35,6 +35,7 @@ The **Covered** column names the feature sets the integration suite runs against
 - `transactions` is commit and rollback as observed from a second connection, savepoint nesting, and `ConnectionPool`.
 - `migrations` is the migration lifecycle: `migrate`, `rehearse`, `down`, `validate`, and `repair`, plus schema introspection, column type and column comment round trips, and SQL file migrations.
 - `async` is `arun()`, `async_transaction()`, and `AsyncMigrator` on an async driver.
+- `impact` is the [statement impact](/impact) analysis on a live server: the version, settings, and table sizes `read_context()` reads, and `Migrator.impact()`.
 
 Where a dialect does not implement a feature (for example `RETURNING` on MySQL), we test that `to_sql()` raises `DialectError` and that nothing reaches the server.
 

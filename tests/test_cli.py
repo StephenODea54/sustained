@@ -1486,7 +1486,9 @@ class ImpactCliTestCase(CliBase):
 
     The CLI tests run on SQLite, which has no impact rules yet, so the
     tests that need an analysis read the migrations with the Postgres
-    profile standing in for SQLite's.
+    profile standing in for SQLite's. SQLite refuses the Postgres
+    catalog statements, so the context holds only the schema read and
+    the version stays assumed.
     """
 
     def _postgres_rules(self):
@@ -1515,7 +1517,7 @@ class ImpactCliTestCase(CliBase):
         self.assertIn("003_index  transaction", out)
         self.assertIn("users  SHARE  blocks writes  index_build", out)
         self.assertIn("fix     CREATE INDEX CONCURRENTLY ix_users_id", out)
-        self.assertIn("Evidence: static (assumed PostgreSQL 12)", out)
+        self.assertIn("Evidence: catalog (assumed PostgreSQL 12)", out)
 
     def test_impact_json_prints_the_report(self):
         self._postgres_rules()
@@ -1526,10 +1528,19 @@ class ImpactCliTestCase(CliBase):
         payload = json.loads(out)
         self.assertEqual(
             set(payload),
-            {"profile", "version", "evidence", "migrations", "counts", "error"},
+            {
+                "profile",
+                "version",
+                "evidence",
+                "read",
+                "migrations",
+                "counts",
+                "error",
+            },
         )
         self.assertEqual(payload["profile"], "postgres")
-        self.assertEqual(payload["evidence"], "static")
+        self.assertEqual(payload["evidence"], "catalog")
+        self.assertEqual(payload["read"], ["schema"])
         (migration,) = payload["migrations"]
         self.assertEqual(migration["id"], "003_index")
         (statement,) = migration["statements"]

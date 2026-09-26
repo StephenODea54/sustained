@@ -4,7 +4,9 @@ database while it runs, such as the locks it takes, what those locks
 block, and whether the table is rewritten.
 
 `analyze()` reads the statements a run would apply and returns an
-`ImpactReport`, with no database. The pieces:
+`ImpactReport`, with no database. `read_context()` and
+`async_read_context()` read the server facts it takes as its context.
+The pieces:
 
 - `sustained.impact.tokens`: the tokenizer the textual scan shares
 - `sustained.impact.recognizer`: statement text to a `ParsedStatement`
@@ -16,7 +18,12 @@ block, and whether the table is rewritten.
 """
 
 from sustained.impact.analyzer import analyze
-from sustained.impact.context import EngineContext, TableStats
+from sustained.impact.context import (
+    EngineContext,
+    TableStats,
+    async_read_context,
+    read_context,
+)
 from sustained.impact.model import (
     Blocks,
     Confidence,
@@ -37,6 +44,8 @@ from sustained.impact.rules import supported
 
 __all__ = [
     "analyze",
+    "async_read_context",
+    "read_context",
     "supported",
     "Blocks",
     "Confidence",

@@ -20,6 +20,7 @@ from typing import (
     Sequence,
     Tuple,
     Type,
+    Union,
 )
 
 from sustained.dialects import Dialects
@@ -43,6 +44,7 @@ from sustained.migrations.core.requests import (
     Fetch,
     Fire,
     PinnedTransaction,
+    ReadContext,
     ReadSchema,
     RefuseOpenTransaction,
     RefuseRehearsal,
@@ -195,10 +197,8 @@ class Migrator(MigratorBase):
         if isinstance(request, Fire):
             request.hook(connection, *request.args)
             return None
-        if isinstance(request, ReadSchema):
-            from sustained.autogenerate import introspect_schema
-
-            return introspect_schema(connection, self._dialect)
+        if isinstance(request, (ReadSchema, ReadContext)):
+            return self._read(request)
         if isinstance(request, DiffSource):
             # The diff reads the connection itself, and can ask whether a
             # table holds rows.
@@ -229,6 +229,16 @@ class Migrator(MigratorBase):
             # pinned_transaction() sent the BEGIN on the way in.
             return None
         raise TypeError(f"Unknown migrator request: {request!r}")
+
+    def _read(self, request: Union[ReadSchema, ReadContext]) -> Any:
+        """Reads the live schema, or the server facts the impact rules use."""
+        if isinstance(request, ReadSchema):
+            from sustained.autogenerate import introspect_schema
+
+            return introspect_schema(self._connection, self._dialect)
+        from sustained.impact import read_context
+
+        return read_context(self._connection, self._dialect)
 
     def _execute(
         self, cursor: "Cursor", sql: str, params: Tuple[SqlValue, ...]
@@ -687,10 +697,13 @@ class Migrator(MigratorBase):
         each does, and findings with safer forms where one exists. See
         sustained.impact.
 
-        The analysis is static: the rules assume the dialect's support
-        floor and read no table sizes. The generated migration is diffed
-        against the schema as it is now, before the pending migrations
-        run, as plan() is. Nothing is written.
+        The rules read the server's version, its settings, the size of
+        each table, and the schema from the connection, as
+        sustained.impact.read_context() reads them. A fact the read could
+        not get, for example on a missing privilege, falls back to the
+        dialect's support floor or the worst case. The generated
+        migration is diffed against the schema as it is now, before the
+        pending migrations run, as plan() is. Nothing is written.
 
         Raises DialectError on a dialect the analysis does not cover
         yet.

@@ -183,7 +183,7 @@ class RenderTestCase(unittest.TestCase):
             "postgres",
             (16, 4),
             tables={"orders": TableStats(10, 8192)},
-            read=frozenset({"sizes"}),
+            read=frozenset({"version", "sizes"}),
         )
         report = analyze([m(INDEX)], PG, context)
         self.assertTrue(summary(report).endswith("Evidence: catalog (PostgreSQL 16.4)"))

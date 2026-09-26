@@ -33,6 +33,7 @@ from sustained.migrations.core.requests import (
     DiffSource,
     Execute,
     Fire,
+    ReadContext,
     RefuseOpenTransaction,
     RunStep,
     T,
@@ -503,8 +504,9 @@ def impact(
 ) -> Core["ImpactReport"]:
     """
     The pending run, plus the migration the models generate, analyzed
-    statically. The dialect is checked before anything is read, so a
-    dialect without rules costs no round trip.
+    with the server facts read from the connection. The dialect is
+    checked before anything is read, so a dialect without rules costs no
+    round trip.
     """
     from sustained.exceptions import DialectError
     from sustained.impact import analyze, supported
@@ -516,7 +518,8 @@ def impact(
         generated = yield from plan(m, list(models))
         if generated is not None:
             run = run + [generated]
-    return analyze(run_statements(run, m._compiler), m._dialect)
+    context = yield ReadContext()
+    return analyze(run_statements(run, m._compiler), m._dialect, context)
 
 
 def drift(

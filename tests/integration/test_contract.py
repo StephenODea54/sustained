@@ -12,7 +12,15 @@ on every plain test run, not only under matrix.py.
 import importlib
 import unittest
 
-from . import aio_lifecycle, harness, lifecycle, queries, transactions, writes
+from . import (
+    aio_lifecycle,
+    harness,
+    impact,
+    lifecycle,
+    queries,
+    transactions,
+    writes,
+)
 
 COVERS = {
     "queries": queries.QueriesCase,
@@ -20,6 +28,7 @@ COVERS = {
     "transactions": transactions.TransactionsCase,
     "migrations": lifecycle.ServerCase,
     "async": aio_lifecycle.AsyncCase,
+    "impact": impact.ImpactCase,
 }
 
 

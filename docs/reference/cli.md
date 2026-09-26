@@ -157,7 +157,7 @@ An `impact` section follows the guards section, with one line per statement that
 
 ```console
 impact
-  warn    CREATE INDEX ix_orders_customer ON orders (customer_id)  [pg.create_index, pg.lock_timeout]
+  danger  CREATE INDEX ix_orders_customer ON orders (customer_id)  [pg.create_index, pg.lock_timeout]
   info    GRANT SELECT ON orders TO reporting  [impact.unknown]
 ```
 
@@ -167,14 +167,14 @@ impact
 $ sustained impact
 20260926_orders  transaction
   CREATE INDEX ix_orders_customer ON orders (customer_id)
-    orders  SHARE  blocks writes  index_build  statement  [pg.create_index]
-    warn    writes to orders wait for the whole index build; build it CONCURRENTLY in a migration with transactional=False; the size of orders is unknown
+    orders  SHARE  blocks writes  index_build  statement  ~41.2M rows, 12.4 GB  [pg.create_index]
+    danger  writes to orders wait for the whole index build; build it CONCURRENTLY in a migration with transactional=False
     fix     CREATE INDEX CONCURRENTLY ix_orders_customer ON orders (customer_id)
     warn    no lock_timeout in scope: while this statement waits for its lock, every query that conflicts with it on orders queues behind it, for as long as the longest open transaction runs
     fix     SET LOCAL lock_timeout = '5s'
   window  orders: SHARE from statement 1, held to commit
 
-1 statement, 0 danger, 2 warn. Evidence: static (assumed PostgreSQL 12)
+1 statement, 1 danger, 1 warn. Evidence: catalog (PostgreSQL 16.4)
 ```
 
 The drift section appears only when the config names `models`. It reports every difference, drops included, even though `migrate` never generates a drop. A drift section that contains only drops says so instead of offering the command. The `run:` line prints only when validation found no problems.
@@ -263,7 +263,7 @@ $ sustained plan --json
 
 Every place a command reports SQL uses that statement object, including `drift`. When the config names no models, `drift` is `null` rather than `[]`, so a caller can tell "nothing was compared" from "compared and found no gap". `statements` is `null` for a callable step, which renders no SQL; before version 2.13.0 `statements` was a count. A guard verdict appears on the statement it flags, as `{"rule", "verdict"}`, and a statement no guard flagged has `[]`. The `guards` key is present from version 2.15.0 onward. `impact` holds the statement's impact in the form [`statement_data()`](/reference/impact#statement_data) gives, and is `null` on a dialect the analysis does not cover.
 
-`impact --json` prints the report in the form [`report_data()`](/reference/impact#report_data) gives, with the top-level keys `profile`, `version`, `evidence`, `migrations`, `counts`, and `error`. Each statement in a migration has `sql` and the keys of the plan's `impact` object.
+`impact --json` prints the report in the form [`report_data()`](/reference/impact#report_data) gives, with the top-level keys `profile`, `version`, `evidence`, `read`, `migrations`, `counts`, and `error`. Each statement in a migration has `sql` and the keys of the plan's `impact` object.
 
 `rehearse --json` prints:
 

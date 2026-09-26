@@ -11,14 +11,34 @@ Without a live connection the rules assume the profile's support floor,
 the oldest version `support.json` claims, which is the worst supported
 case. `assumed()` builds that context. A test keeps `FLOORS` in step
 with `support.json`.
+
+`read_context()` reads a context from a blocking connection, and
+`async_read_context()` from an async adapter. Both run the profile's
+catalog read plan, then read the schema as `introspect_schema()` does.
+A statement that fails, for example on a missing privilege, leaves its
+facts out of `read`, and the read goes on without them.
 """
 
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import TYPE_CHECKING, FrozenSet, Mapping, NamedTuple, Optional, Tuple
+from typing import (
+    TYPE_CHECKING,
+    FrozenSet,
+    Generator,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+)
+
+from sustained.types import Connection, RowValue
 
 if TYPE_CHECKING:
+    from sustained.aio import AsyncAdapter
+    from sustained.dialects import Dialects
     from sustained.introspect.model import Snapshot
 
 # The oldest server version each profile supports, from support.json.
@@ -71,6 +91,58 @@ class EngineContext(NamedTuple):
             if name.lower() == column.lower():
                 return spec.raw_type
         return None
+
+
+ContextPlan = Generator[str, List[Sequence[RowValue]], "EngineContext"]
+"""
+A profile's catalog read: it yields one statement at a time, receives
+its rows, has a failed statement's error thrown in, and returns the
+context it read, without the schema.
+"""
+
+
+def read_context(connection: Connection, dialect: "Dialects") -> EngineContext:
+    """
+    The server facts the dialect's rules read, from a blocking
+    connection: the version, the settings, the table sizes, and the
+    schema of the connection's own schema. Raises ValueError for a
+    dialect that has no impact rules yet.
+    """
+    from sustained.introspect.runner import introspect_schema, run_plan
+
+    context = run_plan(connection, dialect, _plan(dialect))
+    try:
+        schema = introspect_schema(connection, dialect)
+    except Exception:
+        return context
+    return _with_schema(context, schema)
+
+
+async def async_read_context(
+    adapter: "AsyncAdapter", dialect: "Dialects"
+) -> EngineContext:
+    """What read_context() reads, through an async adapter."""
+    from sustained.introspect.runner import async_introspect_schema, async_run_plan
+
+    context = await async_run_plan(adapter, dialect, _plan(dialect))
+    try:
+        schema = await async_introspect_schema(adapter, dialect)
+    except Exception:
+        return context
+    return _with_schema(context, schema)
+
+
+def _plan(dialect: "Dialects") -> ContextPlan:
+    from sustained.impact.rules import profile_for
+
+    profile = profile_for(dialect)
+    if profile is None:
+        raise ValueError(f"Impact analysis does not cover {dialect.name} yet.")
+    return profile.context_plan()
+
+
+def _with_schema(context: EngineContext, schema: "Snapshot") -> EngineContext:
+    return context._replace(schema=schema, read=context.read | {"schema"})
 
 
 def assumed(profile: str) -> EngineContext:

@@ -15,7 +15,7 @@ The requests fall into four groups.
 Statements: Execute, ExecuteMany, Fetch, TakeLock, RunStep, Commit and
 Rollback. ReadSchema and DiffSource read the live schema, the one for a
 rehearsal's before-and-after comparison and the other for a diff against
-the models.
+the models. ReadContext reads the server facts the impact analysis uses.
 
 Callbacks: Fire calls one of the migrator's callbacks with the connection
 or adapter in front of its arguments, and awaits what it returns on the
@@ -156,6 +156,13 @@ class DiffSource(NamedTuple):
     schemas: Sequence[str]
 
 
+class ReadContext(NamedTuple):
+    """
+    The server facts the impact rules read, answered with the
+    EngineContext that read_context() or async_read_context() returns.
+    """
+
+
 class RefuseOpenTransaction(NamedTuple):
     """
     Raises when a transaction block is open on the connection: the run
@@ -233,6 +240,7 @@ Request = Union[
     Fire,
     ReadSchema,
     DiffSource,
+    ReadContext,
     RefuseOpenTransaction,
     RefuseRehearsal,
     Transaction,

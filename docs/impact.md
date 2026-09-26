@@ -13,7 +13,7 @@ The impact analysis reads the statements a run would apply and reports, for each
 - how long it holds each lock: a moment, the whole statement, or until the migration commits
 - a safer form of the statement, when the engine has one
 
-The analysis covers PostgreSQL 12 and later. It connects to no database: it reads the statement text, and the intent Sustained attaches to the statements it generates.
+The analysis covers PostgreSQL 12 and later. It reads the statement text, the intent Sustained attaches to the statements it generates, and, when it has a connection, the server's version, settings, and table sizes.
 
 ## Running it
 
@@ -23,18 +23,18 @@ The analysis covers PostgreSQL 12 and later. It connects to no database: it read
 $ sustained impact
 20260926_orders  transaction
   CREATE INDEX ix_orders_customer ON orders (customer_id)
-    orders  SHARE  blocks writes  index_build  transaction  [pg.create_index]
-    warn    writes to orders wait for the whole index build; build it CONCURRENTLY in a migration with transactional=False; the size of orders is unknown
+    orders  SHARE  blocks writes  index_build  transaction  ~41.2M rows, 12.4 GB  [pg.create_index]
+    danger  writes to orders wait for the whole index build; build it CONCURRENTLY in a migration with transactional=False
     fix     CREATE INDEX CONCURRENTLY ix_orders_customer ON orders (customer_id)
     warn    no lock_timeout in scope: while this statement waits for its lock, every query that conflicts with it on orders queues behind it, for as long as the longest open transaction runs
     fix     SET LOCAL lock_timeout = '5s'
   ALTER TABLE orders ADD COLUMN note text
-    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.add_column]
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  ~41.2M rows, 12.4 GB  [pg.add_column]
     warn    no lock_timeout in scope: while this statement waits for its lock, every query that conflicts with it on orders queues behind it, for as long as the longest open transaction runs
     fix     SET LOCAL lock_timeout = '5s'
   window  orders: SHARE from statement 1, ACCESS EXCLUSIVE from statement 2, held to commit
 
-2 statements, 0 danger, 3 warn. Evidence: static (assumed PostgreSQL 12)
+2 statements, 1 danger, 2 warn. Evidence: catalog (PostgreSQL 16.4)
 ```
 
 `sustained impact` exits 0 when it prints the report and 1 on a failure, including a dialect the analysis does not cover. It never blocks a run. `--json` prints the report as one object; see [JSON output](/reference/cli#json-output).
@@ -58,11 +58,11 @@ for statement in report.statements:
 
 ```console
 impact
-  warn    CREATE INDEX ix_orders_customer ON orders (customer_id)  [pg.create_index, pg.lock_timeout]
+  danger  CREATE INDEX ix_orders_customer ON orders (customer_id)  [pg.create_index, pg.lock_timeout]
   info    GRANT SELECT ON orders TO reporting  [impact.unknown]
 ```
 
-A statement appears there when it has a `warn` or `danger` finding, or when the analysis could not read it. The section leaves `plan`'s exit codes unchanged. In `plan --json`, every statement object carries an `impact` key, which is `null` on a dialect the analysis does not cover.
+A statement appears there when it has a `warn` or `danger` finding, or when the analysis could not read it. `plan` reads the same server facts as `impact`. The section leaves `plan`'s exit codes unchanged. In `plan --json`, every statement object carries an `impact` key, which is `null` on a dialect the analysis does not cover.
 
 ## Reading a report
 
@@ -102,7 +102,7 @@ The last line counts the statements and findings and says what the answer rests 
 
 **Hold**: `brief` for a lock taken and released within the statement's catalog change, `statement` for a lock held while the statement's work runs, and `transaction` for a lock held until the migration commits.
 
-**Evidence**: `static` when the answer rests on the rule alone, `catalog` when it also rests on the server's version, settings, and table sizes, and `observed` when the server was seen to do it. Every report today is `static`.
+**Evidence**: `static` when the answer rests on the rule alone, `catalog` when it also rests on facts read from the server, and `observed` when the server was seen to do it. `sustained impact`, `sustained plan`, and `Migrator.impact()` read the server, so their reports are `catalog`. A report from `analyze()` without a context is `static`.
 
 **Confidence**: `known`, `likely` when the answer depends on a fact that was not read, which the finding names, and `unknown` for a statement the analysis could not read.
 
@@ -118,7 +118,32 @@ Work that blocks writes, or reads and writes, is rated against the table's size:
 
 A static report reads no sizes, so blocking work is `warn`. `analyze()` takes a `Thresholds(rows, bytes)` to move the limits.
 
-A lock that blocks writes or more, with no lock timeout in scope, draws a `pg.lock_timeout` finding whatever the table's size. The statement waits for its lock behind the longest open transaction on the table, and every query that conflicts with the lock waits behind the statement. The remedy is `SET LOCAL lock_timeout` inside a transaction, or `SET lock_timeout` outside one. A `LOCK TABLE ... NOWAIT` never waits, so it draws no timeout finding.
+A lock that blocks writes or more, with no lock timeout in scope, draws a `pg.lock_timeout` finding whatever the table's size. The statement waits for its lock behind the longest open transaction on the table, and every query that conflicts with the lock waits behind the statement. The remedy is `SET LOCAL lock_timeout` inside a transaction, or `SET lock_timeout` outside one. A `LOCK TABLE ... NOWAIT` never waits, so it draws no timeout finding. A `lock_timeout` the connection already has, from the role, the database, or the connection string, covers the whole run.
+
+## Server facts
+
+`Migrator.impact()`, `sustained impact`, and `sustained plan` read these facts from the connection before the analysis runs:
+
+| Fact | Read from | Used for |
+| --- | --- | --- |
+| Version | `server_version_num` | Rules that depend on the version, such as `DETACH PARTITION ... CONCURRENTLY` on 14 and later |
+| `TimeZone` | `current_setting()` | Whether `timestamp` to `timestamptz` rewrites the table |
+| `lock_timeout` | `current_setting()` | Whether a lock timeout covers the run before any `SET` |
+| Table sizes | `pg_class.reltuples` and `pg_total_relation_size()` | The severity of blocking work |
+| Schema | the schema read `plan()` uses | The current type of a column a hand-written type change names |
+
+The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
+
+A statement that fails, for example for lack of a privilege, leaves its facts out, and the rules fall back to the support floor or the worst case for them. Each statement runs inside a savepoint, so a failure does not abort the connection's open transaction. The report's `read` lists the facts that came from the server, and the last line of the text report says `assumed` before the version when the version was not read.
+
+`read_context(connection, dialect)` returns these facts as an `EngineContext`, and `await async_read_context(adapter, dialect)` reads them through an async adapter. Pass the context to `analyze()` to rate any list of statements against the live server:
+
+```python
+from sustained.impact import analyze, read_context
+
+context = read_context(connection, Dialects.POSTGRES)
+report = analyze(statements, Dialects.POSTGRES, context)
+```
 
 ## Transaction windows
 
@@ -152,7 +177,7 @@ The analysis reads the run in order, and each statement changes what it knows ab
 - **A table the run created is empty.** No other session can see it yet, so work on it blocks nothing and draws no findings. A plain `CREATE INDEX` on a table created earlier in the run is not flagged.
 - **A renamed table keeps its identity.** A later statement that names the new name reads the size of the original table.
 - **An index the run created is known.** A `DROP INDEX` names the table the run created the index on.
-- **A lock timeout stays in scope** for as long as PostgreSQL keeps it: `SET LOCAL` until the migration commits, and `SET` for the rest of the session. `no_lock_without_timeout()` reads the same scope.
+- **A lock timeout stays in scope** for as long as PostgreSQL keeps it: `SET LOCAL` until the migration commits, and `SET` for the rest of the session. A timeout the connection already has is in scope from the first statement. `no_lock_without_timeout()` reads the same scope from the statements alone.
 
 ## Generated statements
 
@@ -218,7 +243,7 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 | `LOCK TABLE` | the mode it names | catalog | `pg.lock_table` |
 | `DROP SCHEMA ... CASCADE` | `ACCESS EXCLUSIVE` on every table in the schema, which the statement does not name, so the report lists no tables | catalog | `pg.drop_schema` |
 
-A type change is binary coercible when PostgreSQL skips the rewrite: `varchar(n)` to a longer `varchar` or to `text`, `numeric(p,s)` to a wider precision at the same scale, and `timestamp` to `timestamptz` when the `TimeZone` setting is UTC. The rule needs the column's current type, which a generated statement's intent gives. A hand-written type change has no current type in a static report, so it reads as a rewrite with confidence `likely`. A static report has not read `TimeZone` either, so `timestamp` to `timestamptz` also reads as a rewrite with confidence `likely`.
+A type change is binary coercible when PostgreSQL skips the rewrite: `varchar(n)` to a longer `varchar` or to `text`, `numeric(p,s)` to a wider precision at the same scale, and `timestamp` to `timestamptz` when the `TimeZone` setting is UTC. The rule needs the column's current type, which a generated statement's intent gives, and which the schema read gives for a hand-written statement. Without either, the change reads as a rewrite with confidence `likely`. Without the `TimeZone` setting, `timestamp` to `timestamptz` also reads as a rewrite with confidence `likely`.
 
 A `SET NOT NULL` skips its scan when a valid check constraint already proves the column holds no NULL. The remedy for a scan on a populated table is that route: add the check `NOT VALID`, validate it, set `NOT NULL`, and drop the check.
 

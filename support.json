@@ -24,7 +24,7 @@
         "dsn_env": "SUSTAINED_TEST_POSTGRES_LATEST_DSN",
         "dsn": "postgresql://sustained:sustained@127.0.0.1:55532/sustained"
       },
-      "covers": ["queries", "writes", "transactions", "migrations", "async"],
+      "covers": ["queries", "writes", "transactions", "migrations", "async", "impact"],
       "note": "Rehearsal, advisory locks, and transactional DDL all run here. Enum ADD VALUE inside a transaction sets the floor."
     },
     {

@@ -28,7 +28,7 @@ from typing import (
     Tuple,
 )
 
-from sustained.impact.context import EngineContext
+from sustained.impact.context import ContextPlan, EngineContext
 from sustained.impact.model import (
     Blocks,
     Confidence,
@@ -119,7 +119,8 @@ class Profile(NamedTuple):
     timeout, for a migration inside a transaction or not.
     `transactional_ddl` says whether DDL holds its locks until the
     migration commits. `prefix` starts the id of every rule the profile
-    owns, such as `pg` in `pg.create_index`.
+    owns, such as `pg` in `pg.create_index`. `context_plan()` is the
+    catalog read that fills an `EngineContext` from a live server.
     """
 
     name: str
@@ -132,6 +133,7 @@ class Profile(NamedTuple):
     transactional_ddl: bool
     rules: Tuple[Rule, ...]
     timeout_source: str
+    context_plan: Callable[[], ContextPlan]
 
 
 def _profiles() -> Mapping[str, Profile]:

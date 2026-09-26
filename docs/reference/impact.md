@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Impact reference
-description: "Reference for sustained.impact: analyze(), the ImpactReport model, EngineContext, thresholds, and the report's text and JSON forms."
+description: "Reference for sustained.impact: analyze(), read_context(), the ImpactReport model, EngineContext, thresholds, and the report's text and JSON forms."
 ---
 
 These names live in `sustained.impact`, except where a section names another module.
@@ -26,6 +26,18 @@ supported(dialect) -> bool
 
 Whether the analysis has rules for the dialect. Only `Dialects.POSTGRES` has rules.
 
+## `read_context()`
+
+```python
+read_context(connection, dialect) -> EngineContext
+await async_read_context(adapter, dialect) -> EngineContext
+```
+{: .sig #read_context}
+
+The server facts the dialect's rules read, from a blocking connection or an async adapter. On PostgreSQL that is the version from `server_version_num`, the `TimeZone` and `lock_timeout` settings, each table's estimated rows and total bytes, and the schema of the connection's own schema. Nothing is written.
+
+Each statement runs inside a savepoint. A statement that fails leaves its facts out of `read`, and the read goes on. Both raise `ValueError` for a dialect without impact rules.
+
 ## `Migrator.impact()`
 
 ```python
@@ -36,16 +48,16 @@ await AsyncMigrator.impact(models=None) -> ImpactReport
 
 The impact of the run `up()` would make: every pending migration, then the migration the models generate when `models` is given. The generated migration is diffed against the schema as it is now, before the pending migrations run, as `plan()` diffs it. A callable step renders no SQL and is left out. Nothing is written.
 
-The analysis is static: the rules assume the support floor and read no table sizes. Both raise `DialectError` on a dialect the analysis does not cover, before any statement runs.
+The context comes from `read_context()` on the migrator's connection, or `async_read_context()` on its adapter. Both raise `DialectError` on a dialect the analysis does not cover, before any statement runs.
 
 ## `ImpactReport`
 
 ```python
-ImpactReport(profile, version, evidence, migrations)
+ImpactReport(profile, version, evidence, migrations, read=frozenset())
 ```
 {: .sig}
 
-`profile` is the rule profile, such as `'postgres'`. `version` is the server version the rules assumed, as a tuple of ints. `evidence` is what the report rests on. `migrations` is a tuple of `MigrationImpact`, in run order.
+`profile` is the rule profile, such as `'postgres'`. `version` is the server version the rules assumed, as a tuple of ints. `evidence` is what the report rests on. `migrations` is a tuple of `MigrationImpact`, in run order. `read` is the context's `read`: the facts that came from the server.
 
 | Member | Returns |
 | --- | --- |
@@ -95,7 +107,7 @@ The analysis itself raises these findings:
 | --- | --- | --- |
 | `impact.unknown` | `info` | The recognizer could not read the statement. The message gives the reason. |
 | `impact.intent_mismatch` | `warn` | A generated statement's text reads as something other than its intent. The analysis follows the text. |
-| `pg.lock_timeout` | `warn` | A lock that blocks writes or more waits with no `lock_timeout` in scope. |
+| `pg.lock_timeout` | `warn` | A lock that blocks writes or more waits with no `lock_timeout` in scope, from a `SET` earlier in the run or from the connection's settings. |
 | `window.held` | `warn` | A table stays blocked until the commit across heavier work from a later statement. |
 | `window.lock_order` | `warn` | One migration blocks reads and writes on more than one table at once. |
 
@@ -128,9 +140,11 @@ EngineContext(profile, version, edition=None, settings={}, tables={}, schema=Non
 ```
 {: .sig}
 
-The server facts the rules read: the profile, the version as a tuple of ints, the edition, settings such as `TimeZone`, a mapping of lower case table name to `TableStats`, the schema `Snapshot`, and `read`, the names of the facts that came from a server. With `read` empty, the report's evidence is `static`, and `catalog` otherwise. Sustained does not yet read a context from a connection, so a context passed to `analyze()` is one you build.
+The server facts the rules read: the profile, the version as a tuple of ints, the edition, settings such as `TimeZone` and `lock_timeout`, a mapping of lower case table name to `TableStats`, the schema `Snapshot`, and `read`, the names of the facts that came from a server: `version`, `settings`, `sizes`, and `schema`. With `read` empty, the report's evidence is `static`, and `catalog` otherwise. `read_context()` builds one from a connection.
 
-`TableStats(rows=None, bytes=None)` holds one table's size estimates.
+`read_context()` keys each table as `schema.table`, and also by its bare name when the search path finds it under that name. `stats(table)` returns a table's `TableStats`, or unknown stats for a table the read did not see.
+
+`TableStats(rows=None, bytes=None)` holds one table's size estimates. On PostgreSQL, `rows` is `None` for a table that was never vacuumed or analyzed.
 
 ## Report forms
 
@@ -148,7 +162,7 @@ report_data(report) -> dict
 ```
 {: .sig #report_data}
 
-The report as plain data that `json.dumps` accepts, with the keys `profile`, `version` (a string such as `"12"`), `evidence`, `migrations`, and `counts`. Each migration has `id`, `transactional`, `statements`, `locks`, `windows`, and `findings`. Each statement is `{"sql": ...}` merged with `statement_data()`.
+The report as plain data that `json.dumps` accepts, with the keys `profile`, `version` (a string such as `"12"`), `evidence`, `read` (a sorted list), `migrations`, and `counts`. Each migration has `id`, `transactional`, `statements`, `locks`, `windows`, and `findings`. Each statement is `{"sql": ...}` merged with `statement_data()`.
 
 ```python
 statement_data(impact) -> dict

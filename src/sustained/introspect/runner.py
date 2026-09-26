@@ -2,11 +2,24 @@
 Running a schema read. introspect_schema() drives a dialect's plan on a
 blocking connection and async_introspect_schema() on an async adapter,
 both inside the same savepoint guard.
+
+run_plan() and async_run_plan() are the two loops, for any plan that
+yields SQL and takes rows back. The impact analysis reads its server
+facts through them too.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple, cast
+from typing import (
+    TYPE_CHECKING,
+    Generator,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+    cast,
+)
 
 from sustained.dialects import Dialects
 from sustained.execution import cursor_scope
@@ -25,6 +38,16 @@ from sustained.types import Connection, RowValue
 
 if TYPE_CHECKING:
     from sustained.aio import AsyncAdapter
+
+T = TypeVar("T")
+
+ReadPlan = Generator[str, List[Sequence[RowValue]], T]
+"""
+A read as a sequence of queries: the plan yields one statement at a
+time and receives its rows back. A statement that fails is thrown back
+in, and the plan decides whether to degrade or give up. It returns what
+it read.
+"""
 
 
 def _finished(stop: StopIteration) -> Snapshot:
@@ -77,7 +100,16 @@ def introspect_schema(
     information_schema and degrade to column-only data when constraint
     views are unavailable. Names are keyed lowercase.
     """
-    plan = _schema_plan(dialect, tuple(schemas))
+    return run_plan(connection, dialect, _schema_plan(dialect, tuple(schemas)))
+
+
+def run_plan(connection: Connection, dialect: Dialects, plan: ReadPlan[T]) -> T:
+    """
+    Drives a read plan on a blocking connection and returns what it
+    read. On an engine where one failed statement stops the transaction,
+    each statement runs inside a savepoint, so a failure the plan
+    recovers from leaves the transaction usable.
+    """
     guarded = [_dooms_transaction(dialect)]
     # An open transaction reads on its own cursor: a rehearsal introspects
     # a schema its uncommitted statements just changed, and on DuckDB a
@@ -127,12 +159,12 @@ def introspect_schema(
                 try:
                     sql = plan.throw(error)
                 except StopIteration as stop:
-                    return _finished(stop)
+                    return cast(T, stop.value)
                 continue
             try:
                 sql = plan.send(rows)
             except StopIteration as stop:
-                return _finished(stop)
+                return cast(T, stop.value)
 
 
 async def async_introspect_schema(
@@ -151,7 +183,22 @@ async def async_introspect_schema(
     statement are not recorded: they are this read's own bookkeeping, and
     a replay takes its own.
     """
-    plan = _schema_plan(dialect, tuple(schemas))
+    return await async_run_plan(
+        adapter, dialect, _schema_plan(dialect, tuple(schemas)), recorder
+    )
+
+
+async def async_run_plan(
+    adapter: "AsyncAdapter",
+    dialect: Dialects,
+    plan: ReadPlan[T],
+    recorder: Optional["SchemaRecorder"] = None,
+) -> T:
+    """
+    Drives a read plan on an async adapter, as run_plan() does on a
+    blocking connection. `recorder` is given every plan statement and
+    what it returned or raised.
+    """
     guarded = _dooms_transaction(dialect)
 
     async def release() -> None:
@@ -197,14 +244,14 @@ async def async_introspect_schema(
             try:
                 sql = plan.throw(error)
             except StopIteration as stop:
-                return _finished(stop)
+                return cast(T, stop.value)
             continue
         if recorder is not None:
             recorder.record(sql, list(rows))
         try:
             sql = plan.send(rows)
         except StopIteration as stop:
-            return _finished(stop)
+            return cast(T, stop.value)
 
 
 def _schema_plan(dialect: Dialects, schemas: Tuple[str, ...] = ()) -> SchemaPlan:

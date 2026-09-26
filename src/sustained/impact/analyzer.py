@@ -10,7 +10,8 @@ For each statement, in run order, the analyzer:
 3. rates blocking work against the table's size: `danger` past the
    thresholds, `info` below them, and `warn` when the size is unknown
 4. adds a lock-timeout finding when a lock that blocks reads or writes
-   has no timeout in scope
+   has no timeout in scope; a timeout the context's settings show on
+   the connection covers the whole run
 5. takes the statement's changes into the run state
 
 Then it groups the statements by migration and reads each migration's
@@ -52,7 +53,7 @@ from sustained.impact.model import (
 )
 from sustained.impact.recognizer import recognize
 from sustained.impact.rules import Effect, Facts, Profile, profile_for
-from sustained.impact.state import RunState
+from sustained.impact.state import RunState, sets_a_timeout
 from sustained.impact.window import aggregate
 
 if TYPE_CHECKING:
@@ -146,7 +147,9 @@ def analyze(
         run.migration(migration_id, transactional, group)
         for migration_id, transactional, group in _groups(statements)
     )
-    return ImpactReport(profile.name, context.version, evidence, migrations)
+    return ImpactReport(
+        profile.name, context.version, evidence, migrations, context.read
+    )
 
 
 def _groups(
@@ -204,6 +207,11 @@ class _Run:
         self.thresholds = thresholds
         self.evidence = evidence
         self.state = RunState(profile.timeout_setting)
+        # A timeout the connection already has, from the role, the
+        # database, or the connection string, covers the whole run.
+        configured = context.settings.get(profile.timeout_setting)
+        if configured is not None and sets_a_timeout(configured):
+            self.state.timeouts.session = True
 
     def migration(
         self, migration_id: Optional[str], transactional: bool, statements: List[str]

@@ -76,7 +76,7 @@ from sustained.analysis import (
 from sustained.dialects import Dialects
 from sustained.exceptions import GuardBlocked, MigrationError, RehearsalRequired
 from sustained.guards import Verdict, blocking, run_guards
-from sustained.impact import StatementImpact, analyze, supported
+from sustained.impact import StatementImpact, analyze, read_context, supported
 from sustained.impact.report import (
     flagged,
     flagged_line,
@@ -207,7 +207,7 @@ def _build_migrator(config: ModuleType) -> Tuple[Migrator, Connection]:
 _JSON_KEYS: Dict[str, Tuple[str, ...]] = {
     "status": ("migrations",),
     "plan": ("pending", "problems", "drift"),
-    "impact": ("profile", "version", "evidence", "migrations", "counts"),
+    "impact": ("profile", "version", "evidence", "read", "migrations", "counts"),
     "rehearse": ("rehearsed", "scratch", "key", "recorded", "ok"),
     "validate": ("ok", "problems"),
 }
@@ -408,15 +408,17 @@ def _plan_impact(
 ) -> Optional[_PlanImpact]:
     """
     The impact of the pending statements and the drift preview, analyzed
-    as one run in that order, or None on a dialect the analysis does not
-    cover. The analysis returns one entry per statement in run order, so
-    the entries map back to the statements by position.
+    as one run in that order with the server facts the connection gives,
+    or None on a dialect the analysis does not cover. The analysis
+    returns one entry per statement in run order, so the entries map
+    back to the statements by position.
     """
     if not supported(migrator.dialect):
         return None
     statements = [s for summary in summaries for s in summary.sql or []]
     statements.extend(drift or [])
-    impacts = iter(analyze(statements, migrator.dialect).statements)
+    context = read_context(migrator.connection, migrator.dialect)
+    impacts = iter(analyze(statements, migrator.dialect, context).statements)
 
     def take(group: Optional[List[str]]) -> Optional[List[StatementImpact]]:
         if group is None:

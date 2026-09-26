@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, List, Mapping, NamedTuple, Optional, Tuple
+from typing import Any, FrozenSet, List, Mapping, NamedTuple, Optional, Tuple
 
 _NO_DETAILS: Mapping[str, object] = MappingProxyType({})
 
@@ -329,12 +329,16 @@ class ImpactReport(NamedTuple):
     The impact of a run: one entry per migration, in run order, and what
     the report rests on. `profile` is the rule profile used, such as
     `postgres`, and `version` the server version the rules assumed.
+    `read` names the facts read from the server, such as `version` or
+    `sizes`, as `EngineContext.read` does; it is empty for a static
+    report.
     """
 
     profile: str
     version: Tuple[int, ...]
     evidence: Evidence
     migrations: Tuple[MigrationImpact, ...]
+    read: FrozenSet[str] = frozenset()
 
     @property
     def statements(self) -> Tuple[StatementImpact, ...]:
