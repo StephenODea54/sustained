@@ -128,9 +128,11 @@ A failed build, a failed check, or a declined prompt removes the local commit an
 
 ### Adding an Impact Rule
 
-1.  Declare a `Rule` in the profile's module, such as `sustained/impact/rules/postgres.py`, with its id, the documentation URL it relies on, and at least one fixture statement.
-2.  Write each fixture so it runs alone against the objects the module's `FIXTURE_SCHEMA` creates. Add to `FIXTURE_SCHEMA` when a fixture needs an object it lacks.
-3.  Return an `Effect` for the rule from the statement's handler.
+Each profile is a package under `sustained/impact/rules/`, such as `postgres/` or `mysql/`. Its `catalog.py` declares the rules, and the other modules contain the handlers, one per statement kind or ALTER TABLE action. `sustained/impact/rules/common.py` contains the handler helpers every profile uses.
+
+1.  Declare a `Rule` in the profile's `catalog.py`, such as `sustained/impact/rules/postgres/catalog.py`, with its id, the documentation URL it relies on, and at least one fixture statement. The MySQL catalog declares each rule once as a `_Spec`, with a source for each of MySQL and MariaDB.
+2.  Write each fixture so it runs alone against the objects the catalog's `FIXTURE_SCHEMA` creates. Add to `FIXTURE_SCHEMA` when a fixture needs an object it lacks.
+3.  Return an `Effect` for the rule from the handler of the statement kind or action. A new statement kind or action also needs an entry in the table that maps kinds to handlers: `_STATEMENTS` and `_ACTIONS` in `postgres/__init__.py`, or `STATEMENTS` in `mysql/statements.py` and `ACTIONS` in `mysql/actions.py`.
 4.  Run the `impact` cover on the floor and latest servers. `tests/integration/impact.py` runs every fixture in a transaction, reads the locks and files before and after, and fails on any difference from the rule's prediction. A fixture the server refuses inside a transaction block goes in that module's `UNOBSERVED` list, with the reason.
 
 ## Dynamic Method Resolution with `__getattr__`

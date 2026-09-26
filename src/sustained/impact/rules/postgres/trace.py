@@ -62,7 +62,6 @@ from sustained.impact.model import (
 from sustained.impact.window import aggregate
 
 if TYPE_CHECKING:
-    from sustained.dialects import Dialects
     from sustained.impact.rules import Profile
 
 
