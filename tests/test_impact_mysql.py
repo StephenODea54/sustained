@@ -20,6 +20,7 @@ from sustained.impact.context import FLOORS, assumed
 from sustained.impact.recognizer import recognize
 from sustained.impact.report import render
 from sustained.impact.rules import mysql, profile_for, profiles_for
+from sustained.impact.rules.mysql.column_types import length_bytes
 from sustained.introspect.model import (
     IntrospectedColumn,
     IntrospectedForeignKey,
@@ -392,12 +393,12 @@ class ModifyTestCase(unittest.TestCase):
                     self.assertEqual(table(sql).work, work)
 
     def test_a_length_prefix_read_without_the_character_set(self):
-        self.assertEqual(mysql._length_bytes(20, 63, None), (True, Confidence.KNOWN))
-        self.assertEqual(mysql._length_bytes(20, 64, None), (False, Confidence.LIKELY))
+        self.assertEqual(length_bytes(20, 63, None), (True, Confidence.KNOWN))
+        self.assertEqual(length_bytes(20, 64, None), (False, Confidence.LIKELY))
         self.assertEqual(
-            mysql._length_bytes(20, 200, "latin1_swedish_ci"), (True, Confidence.KNOWN)
+            length_bytes(20, 200, "latin1_swedish_ci"), (True, Confidence.KNOWN)
         )
-        self.assertEqual(mysql._length_bytes(300, 400, None), (True, Confidence.KNOWN))
+        self.assertEqual(length_bytes(300, 400, None), (True, Confidence.KNOWN))
 
     def test_without_the_schema_a_modify_counts_as_a_copy(self):
         statement = impact(

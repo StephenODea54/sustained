@@ -1,0 +1,148 @@
+"""
+The MySQL and MariaDB rules, for InnoDB tables on MySQL 8.0.19 and
+later and MariaDB 10.6 and later.
+
+Both servers run an ALTER TABLE with one of the algorithms InnoDB
+offers, and let other sessions read and write the table as far as the
+LOCK level allows:
+
+- `INSTANT` changes only the data dictionary
+- `NOCOPY` (MariaDB) changes the table in place without rebuilding it
+- `INPLACE` changes the table in place, and may rebuild it in place
+- `COPY` copies every row into a new table
+
+The engine's lock name in a report is the clause the server accepts for
+the statement, such as `INSTANT`, `INPLACE, LOCK=NONE`, or `COPY,
+LOCK=SHARED`. What each blocks while the statement's work runs:
+
+- `LOCK=NONE`: reads and writes go on; other DDL waits (`ddl`)
+- `LOCK=SHARED`: reads go on; writes wait (`writes`)
+- `LOCK=EXCLUSIVE`: everything waits (`reads_and_writes`)
+- `INSTANT`: only an exclusive metadata lock, taken and released in a
+  moment, during which everything waits (`reads_and_writes`)
+
+Every ALTER TABLE, and DROP TABLE, TRUNCATE, RENAME TABLE, and CREATE
+TRIGGER, takes an exclusive metadata lock (MDL) at least briefly. It
+queues behind every open transaction that has read the table, and every
+later query on the table queues behind it, until `lock_wait_timeout`
+runs out. So each of these statements draws the lock-timeout finding
+unless a timeout is in scope, whatever its LOCK level. DROP TABLE,
+TRUNCATE, RENAME TABLE, and CREATE TRIGGER report the lock as `MDL
+EXCLUSIVE`. INSERT, UPDATE, and DELETE hold an intention lock on the
+table, reported as `IX`, and lock the rows they change.
+
+A statement the rules leave unknown here includes ANALYZE TABLE, LOCK
+TABLES, and anything in another engine's syntax.
+
+MySQL commits each DDL statement on its own, so every statement is a
+transaction window of its own.
+
+`context_plan()` reads what the rules use: `VERSION()`, which also names
+the server MySQL or MariaDB, `foreign_key_checks` and
+`lock_wait_timeout`, each table's size, row format, and FULLTEXT indexes
+from `information_schema`, and on MySQL 8.0.29 and later the instant row
+versions each table has used from `INNODB_TABLES.TOTAL_ROW_VERSIONS`.
+"""
+
+from __future__ import annotations
+
+from sustained.impact.rules import Facts, Outcome, Profile, common
+from sustained.impact.rules.mysql.catalog import (
+    FIXTURE_SCHEMA,
+    MARIADB_DOCS,
+    MYSQL_DOCS,
+    RULE_SETS,
+)
+from sustained.impact.rules.mysql.context import context_plan, server_version
+from sustained.impact.rules.mysql.locks import (
+    ALGORITHMS,
+    COPY_EXCLUSIVE,
+    COPY_NONE,
+    COPY_SHARED,
+    INPLACE_EXCLUSIVE,
+    INPLACE_NONE,
+    INPLACE_SHARED,
+    INSTANT,
+    LEVELS,
+    LOCKS,
+    MDL_EXCLUSIVE,
+    NOCOPY_NONE,
+    ROW_LOCKS,
+    Online,
+    blocks,
+    bounded,
+    lock_rank,
+    parse_label,
+    queues,
+    timeout_statement,
+)
+from sustained.impact.rules.mysql.online import assertion
+from sustained.impact.rules.mysql.statements import (
+    STATEMENTS,
+)
+
+
+def effects(facts: Facts) -> Outcome:
+    """What the statement does on MySQL or MariaDB, table by table."""
+    return common.dispatch(facts, STATEMENTS)
+
+
+def _profile(name: str) -> Profile:
+    mariadb = name == "mariadb"
+    return Profile(
+        name=name,
+        title="MariaDB" if mariadb else "MySQL",
+        prefix=name,
+        effects=effects,
+        blocks=blocks,
+        lock_rank=lock_rank,
+        timeout_setting="lock_wait_timeout",
+        timeout_statement=timeout_statement,
+        transactional_ddl=False,
+        rules=RULE_SETS[name].all(),
+        timeout_source=(
+            MARIADB_DOCS + "server-system-variables/#lock_wait_timeout"
+            if mariadb
+            else MYSQL_DOCS + "server-system-variables.html#sysvar_lock_wait_timeout"
+        ),
+        context_plan=context_plan,
+        fixture_schema=FIXTURE_SCHEMA,
+        queues=queues,
+        bounded=bounded,
+        local_scope=False,
+    )
+
+
+MYSQL = _profile("mysql")
+MARIADB = _profile("mariadb")
+
+
+__all__ = [
+    "ALGORITHMS",
+    "COPY_EXCLUSIVE",
+    "COPY_NONE",
+    "COPY_SHARED",
+    "FIXTURE_SCHEMA",
+    "INPLACE_EXCLUSIVE",
+    "INPLACE_NONE",
+    "INPLACE_SHARED",
+    "INSTANT",
+    "LEVELS",
+    "LOCKS",
+    "MARIADB",
+    "MDL_EXCLUSIVE",
+    "MYSQL",
+    "NOCOPY_NONE",
+    "Online",
+    "ROW_LOCKS",
+    "assertion",
+    "blocks",
+    "bounded",
+    "context_plan",
+    "effects",
+    "lock_rank",
+    "parse_label",
+    "queues",
+    "server_version",
+    "timeout_statement",
+]
