@@ -95,6 +95,7 @@ from sustained.autogenerate.diff import (
     _orphaned_enum_types,
     _rename_in_expression,
 )
+from sustained.autogenerate.online import ONLINE_GROUPS, online_id
 from sustained.autogenerate.statements import (
     _add_enum_check,
     _add_foreign_key,
@@ -194,6 +195,7 @@ __all__ = [
     "Snapshot",
     "async_introspect_schema",
     "autogenerate",
+    "autogenerate_migrations",
     "diff_schema",
     "diff_snapshots",
     "introspect_schema",
@@ -344,6 +346,146 @@ def autogenerate(
             The server facts are read from the connection with
             sustained.impact.read_context(). Other dialects ignore it.
     """
+    state = _generate(
+        connection,
+        models,
+        dialect,
+        allow_drops,
+        ignore_changed_columns,
+        exclude_tables,
+        renames,
+        table_renames,
+        type_casts,
+        ignore_undeclared,
+        snapshot,
+        online=False,
+    )
+    if not state.up_steps:
+        return None
+    migration = Migration(
+        id=id,
+        up=state.up_steps,
+        down=state.down_steps if state.reversible and state.down_steps else None,
+        transactional=state.transactional,
+    )
+    if not assert_algorithm or dialect is not Dialects.MYSQL:
+        return migration
+    return _asserted(connection, dialect, [migration])[0]
+
+
+def autogenerate_migrations(
+    connection: Connection,
+    models: List[Type["Model"]],
+    id: str,
+    dialect: Dialects = Dialects.DEFAULT,
+    allow_drops: bool = False,
+    ignore_changed_columns: bool = False,
+    exclude_tables: Tuple[str, ...] = ("sustained_migrations",),
+    renames: Optional[Dict[str, str]] = None,
+    table_renames: Optional[Dict[str, str]] = None,
+    type_casts: Optional[Dict[str, str]] = None,
+    ignore_undeclared: bool = False,
+    snapshot: Optional[Snapshot] = None,
+    assert_algorithm: bool = False,
+    online: bool = False,
+) -> List[Migration]:
+    """
+    Diffs the database against the models and builds the migrations for
+    the differences, which is an empty list when the schema is up to
+    date. The arguments are autogenerate()'s, and without online the list
+    holds the one migration autogenerate() returns.
+
+    On PostgreSQL, online=True splits the work in two, as
+    sustained.autogenerate.online describes. The migration named `id`
+    runs in one transaction and changes only the catalog: new columns go
+    in nullable and without their UNIQUE and REFERENCES clauses, and new
+    foreign keys and checks go in NOT VALID. The migration named
+    `<id>_online` runs with transactional=False, so each statement
+    commits on its own. It holds the backfills, CREATE INDEX
+    CONCURRENTLY, VALIDATE CONSTRAINT, SET NOT NULL through a validated
+    check, and the drops allow_drops generates, in that order. Either
+    one is left out when it would hold no statement. On MySQL and
+    MariaDB, online=True does what assert_algorithm=True does. Other
+    dialects ignore it.
+    """
+    split = online and dialect is Dialects.POSTGRES
+    state = _generate(
+        connection,
+        models,
+        dialect,
+        allow_drops,
+        ignore_changed_columns,
+        exclude_tables,
+        renames,
+        table_renames,
+        type_casts,
+        ignore_undeclared,
+        snapshot,
+        online=split,
+    )
+    migrations: List[Migration] = []
+    if state.up_steps:
+        migrations.append(
+            Migration(
+                id=id,
+                up=state.up_steps,
+                down=(
+                    state.down_steps if state.reversible and state.down_steps else None
+                ),
+                transactional=state.transactional,
+            )
+        )
+    online_up = [s for group in ONLINE_GROUPS for s in state.online_up[group]]
+    if online_up:
+        # The down step may hold no statement, since a validation or a
+        # backfill leaves nothing to undo that the first migration's
+        # down step does not undo, and down() still has to pass it.
+        online_down = [
+            s for group in reversed(ONLINE_GROUPS) for s in state.online_down[group]
+        ]
+        migrations.append(
+            Migration(
+                id=online_id(id),
+                up=online_up,
+                down=online_down if state.online_reversible else None,
+                transactional=False,
+            )
+        )
+    if (assert_algorithm or online) and dialect is Dialects.MYSQL and migrations:
+        return _asserted(connection, dialect, migrations)
+    return migrations
+
+
+def _asserted(
+    connection: Connection, dialect: Dialects, migrations: List[Migration]
+) -> List[Migration]:
+    """
+    The migrations with the ALGORITHM and LOCK clauses the MySQL impact
+    rules predict, from one read of the server facts.
+    """
+    from sustained.impact import read_context
+    from sustained.migrations.planning import asserted_migration
+
+    compiler = Dialects.get_compiler(dialect)
+    context = read_context(connection, dialect)
+    return [asserted_migration(m, dialect, compiler, context) for m in migrations]
+
+
+def _generate(
+    connection: Connection,
+    models: List[Type["Model"]],
+    dialect: Dialects,
+    allow_drops: bool,
+    ignore_changed_columns: bool,
+    exclude_tables: Tuple[str, ...],
+    renames: Optional[Dict[str, str]],
+    table_renames: Optional[Dict[str, str]],
+    type_casts: Optional[Dict[str, str]],
+    ignore_undeclared: bool,
+    snapshot: Optional[Snapshot],
+    online: bool,
+) -> _Generation:
+    """Runs every phase of the diff, and returns what they built."""
     compiler = Dialects.get_compiler(dialect)
     renames = renames or {}
     table_renames = table_renames or {}
@@ -378,6 +520,7 @@ def autogenerate(
         allow_drops,
         ignore_changed_columns,
         type_casts,
+        online,
     )
     # Renames first, so later steps address the new names.
     _table_rename_steps(state, table_renames)
@@ -399,18 +542,4 @@ def autogenerate(
     _drop_steps(state)
     _created_enum_type_downs(state)
 
-    if not state.up_steps:
-        return None
-    migration = Migration(
-        id=id,
-        up=state.up_steps,
-        down=state.down_steps if state.reversible and state.down_steps else None,
-        transactional=state.transactional,
-    )
-    if not assert_algorithm or dialect is not Dialects.MYSQL:
-        return migration
-    from sustained.impact import read_context
-    from sustained.migrations.planning import asserted_migration
-
-    context = read_context(connection, dialect)
-    return asserted_migration(migration, dialect, compiler, context)
+    return state

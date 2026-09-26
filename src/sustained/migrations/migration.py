@@ -17,6 +17,7 @@ from typing import (
     TYPE_CHECKING,
     Awaitable,
     Callable,
+    Dict,
     List,
     NamedTuple,
     Optional,
@@ -405,14 +406,22 @@ def _stored_steps(
     no such home: the diff produced it, applied it, and the process ended.
     A callable step cannot be stored, and the diff never produces one.
     The row stores rendered SQL, so ddl steps render for the given
-    compiler's dialect, the one the run executed.
+    compiler's dialect, the one the run executed. A migration that runs
+    outside a transaction stores `"transactional": false`, so that its
+    down step runs outside one too; the key is left out otherwise.
     """
     if not generated or callable(migration.up):
         return None
     down = (
         None if migration.down is None else migration_sql(migration, "down", compiler)
     )
-    return json.dumps({"up": migration_sql(migration, "up", compiler), "down": down})
+    stored: Dict[str, object] = {
+        "up": migration_sql(migration, "up", compiler),
+        "down": down,
+    }
+    if not migration.transactional:
+        stored["transactional"] = False
+    return json.dumps(stored)
 
 
 def _restore_migration(migration_id: str, steps: Optional[str]) -> Optional[Migration]:
@@ -427,7 +436,12 @@ def _restore_migration(migration_id: str, steps: Optional[str]) -> Optional[Migr
         stored = json.loads(steps)
     except ValueError:
         return None
-    return Migration(migration_id, up=stored["up"], down=stored["down"])
+    return Migration(
+        migration_id,
+        up=stored["up"],
+        down=stored["down"],
+        transactional=stored.get("transactional", True),
+    )
 
 
 def _tag_applied(error: BaseException, applied: List[str]) -> None:

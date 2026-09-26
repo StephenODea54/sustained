@@ -159,6 +159,7 @@ INTENT_KINDS = frozenset(
         "add_check",
         "add_unique",
         "drop_constraint",
+        "validate_constraint",
         "create_index",
         "drop_index",
         "create_enum_type",

@@ -215,6 +215,39 @@ The NOT NULL flow the diff generates is one such case: it adds the column, backf
 
 A migration with `transactional=False` releases each lock when its statement ends, so each statement is a window of its own and the report prints no `window` line. MySQL and MariaDB commit each DDL statement on its own, so there every statement is a window of its own too. On SQLite a write locks the whole database, so a migration inside a transaction is one window, named `(database)`, whatever tables it writes; see [SQLite](#sqlite). SQL Server DDL is transactional, so there every lock is held until the migration commits, as on PostgreSQL. DuckDB DDL is transactional, so there a conflict lasts until the migration commits, as a lock does on PostgreSQL. `MigrationImpact.held_to_commit`, and the `held_to_commit` key in the JSON output, say whether a migration's locks last until its commit.
 
+## Online migrations
+
+On PostgreSQL, the diff can generate the remedies in place of the direct statements. `sustained.autogenerate.autogenerate_migrations(..., online=True)` splits the migration the models generate into two:
+
+- The migration named with the generated id runs in one transaction and changes only the catalog. A new column goes in nullable and without its `UNIQUE` or `REFERENCES` clause. A new foreign key or check goes in `NOT VALID`, and so does the foreign key a new column's `REFERENCES` declares.
+- The migration named `<id>_online` has `transactional=False`, so each of its statements commits on its own and releases its locks when it ends. It runs, in this order: the backfills, as one `UPDATE ... WHERE c IS NULL` each; `CREATE INDEX CONCURRENTLY` for each new or changed index, and for a new column's `UNIQUE` a unique index built concurrently and attached with `ADD CONSTRAINT ... UNIQUE USING INDEX`; a foreign key `NOT VALID` that points at a key built in the same migration, which cannot go in before the key exists; `VALIDATE CONSTRAINT` for each constraint added `NOT VALID`; `SET NOT NULL` through a check, as `ADD CONSTRAINT <table>_<column>_not_null CHECK (c IS NOT NULL) NOT VALID`, `VALIDATE CONSTRAINT`, `SET NOT NULL`, and `DROP CONSTRAINT`; and the drops `allow_drops` generates, with `DROP INDEX CONCURRENTLY` for an index.
+
+A migration with no statement is left out, so a run that only adds an index generates `<id>_online` alone. A constraint that a new column declares takes the name PostgreSQL gives it, such as `orders_code_key` or `orders_customer_id_fkey`, so the schema reads the same as after the direct form. The down step of `<id>_online` undoes its statements in the reverse order, with `DROP INDEX CONCURRENTLY` for an index, and leaves the schema the first migration made. It holds no statement when `<id>_online` only validates or backfills, and it is missing when `<id>_online` drops a column or a table. The tracking row of a generated migration without a transaction stores `"transactional": false` beside its statements, so a later `down()` runs its down step outside a transaction too.
+
+The NOT NULL example from [Transaction windows](#transaction-windows) becomes:
+
+```console
+20260926_orders_region  transaction
+  ALTER TABLE "orders" ADD COLUMN "region" TEXT
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.add_column]
+
+20260926_orders_region_online  no transaction
+  UPDATE "orders" SET "region" = 'us' WHERE "region" IS NULL
+    orders  ROW EXCLUSIVE  blocks writes  rows  statement  [pg.write_rows]
+  ALTER TABLE "orders" ADD CONSTRAINT "orders_region_not_null" CHECK ("region" IS NOT NULL) NOT VALID
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.add_check.not_valid]
+  ALTER TABLE "orders" VALIDATE CONSTRAINT "orders_region_not_null"
+    orders  SHARE UPDATE EXCLUSIVE  blocks ddl  scan  statement  [pg.validate_constraint]
+  ALTER TABLE "orders" ALTER COLUMN "region" SET NOT NULL
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.set_not_null.proven]
+  ALTER TABLE "orders" DROP CONSTRAINT "orders_region_not_null"
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.drop_constraint]
+```
+
+The backfill stays one `UPDATE`, which holds its row locks until it ends. On a large table its `pg.write_rows` finding stays `danger`, and a batched backfill is still a migration you write. A statement of `<id>_online` that fails leaves the statements before it committed, and the migration's failed row stops the next `up()` until `repair()`. A failed `CREATE INDEX CONCURRENTLY` also leaves an invalid index behind, which has to be dropped before a retry.
+
+On MySQL and MariaDB, `online=True` does what `assert_algorithm=True` does; see [Asserting the algorithm](#asserting-the-algorithm). Other dialects ignore it.
+
 ## What the analysis carries through a run
 
 The analysis reads the run in order, and each statement changes what it knows about the next:
@@ -223,6 +256,7 @@ The analysis reads the run in order, and each statement changes what it knows ab
 - **A renamed table keeps its identity.** A later statement that names the new name reads the size of the original table.
 - **An index the run created is known.** A `DROP INDEX` names the table the run created the index on. For an index that already exists, the schema read names its table.
 - **A lock timeout stays in scope** for as long as PostgreSQL keeps it: `SET LOCAL` until the migration commits, and `SET` for the rest of the session. A timeout the connection already has is in scope from the first statement. `no_lock_without_timeout()` reads the same scope from the statements alone. On MySQL and MariaDB, `SET`, `SET SESSION`, and `SET LOCAL` all set the session's value for the rest of the run. On SQL Server, `SET LOCK_TIMEOUT` sets it for the rest of the session, inside a transaction or not.
+- **A check can prove a column holds no NULL.** After a check whose expression is `c IS NOT NULL` is added without `NOT VALID`, or validated with `VALIDATE CONSTRAINT`, a PostgreSQL `SET NOT NULL` on the column reads as catalog work, until the run drops the check or the column.
 - **Session settings change later statements.** After `SET foreign_key_checks = 0`, a MySQL or MariaDB `ADD FOREIGN KEY` is read as the in-place form that checks no rows. `SET GLOBAL` and `SET PERSIST` leave the session's own value unchanged, so they change nothing the analysis reads.
 
 ## Generated statements

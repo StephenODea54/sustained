@@ -105,6 +105,7 @@ _INTENT_FORMS: Mapping[str, FrozenSet[Tuple[str, Optional[str]]]] = {
         {("alter_table", "add_constraint"), ("create_index", None)}
     ),
     "drop_constraint": frozenset({("alter_table", "drop_constraint")}),
+    "validate_constraint": frozenset({("alter_table", "validate_constraint")}),
     "create_index": frozenset({("create_index", None), ("alter_table", "add_index")}),
     "drop_index": frozenset({("drop_index", None), ("alter_table", "drop_index")}),
     "create_enum_type": frozenset({("create_type", None)}),

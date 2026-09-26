@@ -5,8 +5,18 @@ lifts around ALTER COLUMN, changed, added, and commented columns.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, List, Type
+
 from sustained.analysis import MigrationStatement, with_intent
 from sustained.autogenerate.diff import _column_type_changed
+from sustained.autogenerate.online import (
+    concurrently,
+    constraint_name,
+    not_null_route,
+    not_valid,
+    unique_using_index,
+    validate,
+)
 from sustained.autogenerate.statements import (
     _add_enum_check,
     _add_foreign_key,
@@ -26,6 +36,10 @@ from sustained.exceptions import DialectError
 from sustained.rebuild import add_column_needs_rebuild
 from sustained.schema import ColumnState, bare_table_name, render_column_sql
 from sustained.type_changes import type_change_loses_data
+
+if TYPE_CHECKING:
+    from sustained.model import Model
+    from sustained.schema import ColumnDef
 
 
 def _enum_checks_off(state: _Generation) -> None:
@@ -212,7 +226,7 @@ def _changed_column_steps(state: _Generation) -> None:
                             f"Tightening '{table}.{name}' to NOT NULL needs "
                             "a backfill or default value for existing NULLs."
                         )
-                    up_steps.extend(
+                    _backfill_list(state).extend(
                         _tagged(
                             compiler.compile_backfill(
                                 table_sql,
@@ -229,29 +243,34 @@ def _changed_column_steps(state: _Generation) -> None:
                     compiler, coldef, actual_col, expected_type, coldef.nullable
                 )
                 restated_states[(table.lower(), name.lower())] = changed_state
+                tighten = compiler.compile_alter_column_nullability(
+                    table_sql, name, changed_state
+                )
+                restore = compiler.compile_alter_column_nullability(
+                    table_sql,
+                    name,
+                    _preserving_state(
+                        compiler,
+                        coldef,
+                        actual_col,
+                        expected_type,
+                        actual_col.nullable,
+                    ),
+                )
+                if state.online and not coldef.nullable:
+                    _set_not_null_online(
+                        state, model, table_sql, name, tighten, restore
+                    )
+                    continue
                 up_steps.extend(
                     _tagged(
-                        compiler.compile_alter_column_nullability(
-                            table_sql, name, changed_state
-                        ),
+                        tighten,
                         "drop_not_null" if coldef.nullable else "set_not_null",
                         intent_table,
                         name,
                     )
                 )
-                for statement in reversed(
-                    compiler.compile_alter_column_nullability(
-                        table_sql,
-                        name,
-                        _preserving_state(
-                            compiler,
-                            coldef,
-                            actual_col,
-                            expected_type,
-                            actual_col.nullable,
-                        ),
-                    )
-                ):
+                for statement in reversed(restore):
                     down_steps.insert(0, statement)
 
 
@@ -336,8 +355,9 @@ def _new_column_steps(state: _Generation) -> None:
             relaxed = render_column_sql(
                 compiler,
                 name,
-                _relaxed_copy(coldef),
+                _keyless_copy(coldef, True) if state.online else _relaxed_copy(coldef),
                 inline_pk=False,
+                include_references=not state.online,
             )
             up_steps.append(
                 with_intent(
@@ -349,7 +369,7 @@ def _new_column_steps(state: _Generation) -> None:
                     has_default=False,
                 )
             )
-            up_steps.extend(
+            _backfill_list(state).extend(
                 _tagged(
                     compiler.compile_backfill(
                         table_sql,
@@ -362,19 +382,22 @@ def _new_column_steps(state: _Generation) -> None:
                     name,
                 )
             )
-            up_steps.extend(
-                _tagged(
-                    compiler.compile_alter_column_nullability(
-                        table_sql,
-                        name,
-                        ColumnState.from_column(compiler, coldef, nullable=False),
-                    ),
-                    "set_not_null",
-                    intent_table,
-                    name,
-                )
+            tighten = compiler.compile_alter_column_nullability(
+                table_sql,
+                name,
+                ColumnState.from_column(compiler, coldef, nullable=False),
             )
             down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
+            if state.online:
+                loosen = compiler.compile_alter_column_nullability(
+                    table_sql,
+                    name,
+                    ColumnState.from_column(compiler, coldef, nullable=True),
+                )
+                _set_not_null_online(state, model, table_sql, name, tighten, loosen)
+                _column_keys_online(state, model, table_sql, name, coldef)
+                continue
+            up_steps.extend(_tagged(tighten, "set_not_null", intent_table, name))
             _add_enum_check(
                 compiler, up_steps, down_steps, table_sql, model, name, coldef
             )
@@ -382,7 +405,13 @@ def _new_column_steps(state: _Generation) -> None:
                 compiler, up_steps, down_steps, table_sql, model, name, coldef
             )
             continue
-        column_sql = render_column_sql(compiler, name, coldef, inline_pk=False)
+        column_sql = render_column_sql(
+            compiler,
+            name,
+            _keyless_copy(coldef, coldef.nullable) if state.online else coldef,
+            inline_pk=False,
+            include_references=not state.online,
+        )
         up_steps.append(
             with_intent(
                 compiler.compile_add_column(table_sql, column_sql),
@@ -394,6 +423,9 @@ def _new_column_steps(state: _Generation) -> None:
             )
         )
         down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
+        if state.online:
+            _column_keys_online(state, model, table_sql, name, coldef)
+            continue
         _add_enum_check(compiler, up_steps, down_steps, table_sql, model, name, coldef)
         _add_foreign_key(compiler, up_steps, down_steps, table_sql, model, name, coldef)
 
@@ -454,3 +486,123 @@ def _comment_steps(state: _Generation) -> None:
         )
         for statement in reversed(set_old):
             down_steps.insert(0, statement)
+
+
+def _backfill_list(state: _Generation) -> List[str]:
+    """The list a backfill goes in: with online, the online migration's."""
+    return state.online_up["backfill"] if state.online else state.up_steps
+
+
+def _set_not_null_online(
+    state: _Generation,
+    model: Type["Model"],
+    table_sql: str,
+    name: str,
+    tighten: List[str],
+    loosen: List[str],
+) -> None:
+    """
+    With online, SET NOT NULL through a check in the online migration,
+    and its DROP NOT NULL, `loosen`, in that migration's down step.
+    """
+    state.online_up["not_null"].extend(
+        not_null_route(
+            state.compiler,
+            table_sql,
+            _intent_table(model),
+            model.tableName or "",
+            name,
+            tighten,
+        )
+    )
+    for statement in reversed(loosen):
+        state.online_down["not_null"].insert(0, statement)
+
+
+def _column_keys_online(
+    state: _Generation,
+    model: Type["Model"],
+    table_sql: str,
+    name: str,
+    coldef: "ColumnDef",
+) -> None:
+    """
+    With online, the UNIQUE and REFERENCES clauses of a new column, which
+    the ADD COLUMN left off. The unique index builds concurrently in the
+    online migration, which then attaches it as the constraint. The
+    foreign key goes in NOT VALID, and the online migration validates
+    it. Both take the names PostgreSQL gives the clauses.
+    """
+    compiler = state.compiler
+    table = _intent_table(model)
+    bare = model.tableName or ""
+    if coldef.unique and not coldef.primary_key:
+        key = constraint_name(bare, name, "key")
+        state.online_up["index"].append(
+            concurrently(
+                with_intent(
+                    compiler.compile_create_index(key, table_sql, [name], True),
+                    "create_index",
+                    table,
+                    name=key,
+                    columns=(name,),
+                    unique=True,
+                )
+            )
+        )
+        state.online_up["index"].append(
+            unique_using_index(compiler, table_sql, table, key)
+        )
+        state.online_down["index"].insert(
+            0, compiler.compile_drop_constraint(table_sql, key)
+        )
+        state.online_keys.add((bare_table_name(bare).lower(), (name.lower(),)))
+    if coldef.references is None:
+        return
+    ref_table, ref_column = coldef.references.rsplit(".", 1)
+    fkey = constraint_name(bare, name, "fkey")
+    late = (bare_table_name(ref_table).lower(), (ref_column.lower(),))
+    up, down = (
+        (state.online_up["constraint"], state.online_down["constraint"])
+        if late in state.online_keys
+        else (state.up_steps, state.down_steps)
+    )
+    up.append(
+        not_valid(
+            with_intent(
+                compiler.compile_add_foreign_key(
+                    table_sql,
+                    fkey,
+                    name,
+                    compiler.quote_fully_qualified_ddl_identifier(ref_table),
+                    ref_column,
+                ),
+                "add_foreign_key",
+                table,
+                name=fkey,
+                references=ref_table,
+            )
+        )
+    )
+    down.insert(0, compiler.compile_drop_foreign_key(table_sql, fkey))
+    state.online_up["validate"].append(validate(compiler, table_sql, table, fkey))
+
+
+def _keyless_copy(coldef: "ColumnDef", nullable: bool) -> "ColumnDef":
+    """
+    A copy of a ColumnDef without UNIQUE, for an ADD COLUMN whose key
+    the online migration builds, with the nullability given.
+    """
+    from sustained.schema import ColumnDef
+
+    return ColumnDef(
+        coldef.type_name,
+        length=coldef.length,
+        precision=coldef.precision,
+        scale=coldef.scale,
+        nullable=nullable,
+        default=coldef.default,
+        references=coldef.references,
+        enum_name=coldef.enum_name,
+        enum_values=coldef.enum_values,
+    )

@@ -355,7 +355,7 @@ The tracking table is named `sustained_migrations` by default and has these colu
 | `execution_ms` | `INTEGER` | How long it took. Null for a baselined row |
 | `success` | `BOOLEAN` not null | Whether it finished |
 | `generated` | `BOOLEAN` | Whether a model diff wrote it. Such a row is never reported as an unregistered migration |
-| `steps` | `TEXT` | The up and down statements of a generated migration, as JSON. Null for every registered one, whose statements live in your code or your migrations directory |
+| `steps` | `TEXT` | The up and down statements of a generated migration, as JSON, with `"transactional": false` for one that runs outside a transaction. Null for every registered one, whose statements live in your code or your migrations directory |
 
 On Athena the same columns are all plain and nullable, because Athena enforces no constraints. A tracking table written by an earlier version, with only `id` and `applied_at`, upgrades in place on first use. A generated row written before the `steps` column existed contains no statements, so `down()` cannot revert that row.
 
@@ -647,6 +647,15 @@ autogenerate(connection, models, id, dialect=..., allow_drops=False, ignore_chan
 Builds the migration a diff asks for. Pass `snapshot` to build it from a schema you already read with `introspect_schema()`. The rename hints apply to a copy, so the same snapshot can feed several calls. Refuses to generate the lossy differences, and refuses to run at all while the database contains objects the models do not declare, unless you pass `allow_drops=True` or `ignore_undeclared=True`. The migrator passes `ignore_undeclared=True`. A CHECK constraint that no model declares never causes a refusal. It comes back as a note on the diff instead, because engines rewrite check expressions and the comparison cannot justify a refusal.
 
 `assert_algorithm=True` reads the server facts from the connection with `sustained.impact.read_context()` and writes the clauses the `assert_algorithm` option of `plan()` writes.
+
+```python
+autogenerate_migrations(connection, models, id, dialect=..., allow_drops=False, ignore_changed_columns=False, exclude_tables=..., renames=None, table_renames=None, type_casts=None, ignore_undeclared=False, snapshot=None, assert_algorithm=False, online=False) -> list[Migration]
+```
+{: .sig #autogenerate_migrations}
+
+Builds the migrations a diff asks for, as a list that is empty when the schema is up to date. The arguments are those of `autogenerate()`, and without `online` the list holds the one migration `autogenerate()` returns.
+
+On PostgreSQL, `online=True` splits the work into two migrations. The migration named `id` runs in one transaction and changes only the catalog. The migration named `<id>_online` has `transactional=False`, so each of its statements commits on its own, and it holds the statements that read or write rows. A migration with no statement is left out of the list. On MySQL and MariaDB, `online=True` does what `assert_algorithm=True` does. Other dialects ignore it. [Online migrations](/impact#online-migrations) lists the statements each migration holds.
 
 ```python
 introspect_schema(connection, dialect=Dialects.DEFAULT, schemas=()) -> dict[str, IntrospectedTable]
