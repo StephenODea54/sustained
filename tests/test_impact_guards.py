@@ -270,7 +270,7 @@ class PlanVerdictsTestCase(unittest.TestCase):
         from types import SimpleNamespace
 
         from sustained.analysis import PendingSummary
-        from sustained.cli import _plan_verdicts
+        from sustained.cli.plan import _plan_verdicts
 
         config = SimpleNamespace(guards=[max_blocking("writes", over_rows=100)])
         summary = PendingSummary("001_orders", "pending", False, [ADD], [])
