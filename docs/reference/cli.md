@@ -26,7 +26,7 @@ Guide: [Schema and Migrations](/schema#command-line).
 | `down` | `--steps N` (default 1) or `--to ID` | Reverts applied migrations, newest first. |
 | `validate` | `--json` | Checks the tracking table against the migrations. |
 | `repair` | | Fixes tracking rows after failures or intentional edits. |
-| `script` | `up` or `down` (default `up`) | Prints the SQL a run would execute, without running it. |
+| `script` | `up` or `down` (default `up`), `--annotate` | Prints the SQL a run would execute, without running it. `--annotate` prints each statement's impact above it as `-- impact:` comments. |
 | `baseline` | `TARGET` (required) | Records migrations as applied without running them. |
 
 `--steps` and `--to` are mutually exclusive.

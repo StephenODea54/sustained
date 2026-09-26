@@ -515,6 +515,7 @@ $ sustained down                    # --steps N (0 or more) or --to ID, --allow-
 $ sustained validate                # exits 1 when problems exist
 $ sustained repair
 $ sustained script down             # print the SQL without running it
+$ sustained script --annotate       # the same, with each statement's impact above it
 $ sustained baseline 001_create_users
 ```
 
@@ -874,6 +875,6 @@ Only `up()` calls them. `rehearse` does not, since nothing real happened. `Async
 
 ## Offline review and async
 
-`migrator.script('up')` renders every statement a run would execute, including tracking bookkeeping, without touching the database, for review or a DBA handoff. `script('down')` renders the rollback, and a migration generated from your models renders its down statements from its tracking row, the way `down()` reverts it. Neither writes anything, not even the tracking table: a database without one renders as a database with no migrations applied. `status()`, `statuses()`, `pending()`, and `validate()` read the same way, and `read_applied_records()` gives you those rows directly. A tracking table that has only the columns an earlier version wrote also reads as no history. Any other failed read, such as a closed connection or a refused `SELECT`, raises the driver's error, so a report does not show every migration pending on a database it could not read.
+`migrator.script('up')` renders every statement a run would execute, including tracking bookkeeping, without touching the database, for review or a DBA handoff. `script('up', annotate=True)` adds each statement's [impact](/impact#annotated-scripts) above it as `-- impact:` comments. `script('down')` renders the rollback, and a migration generated from your models renders its down statements from its tracking row, the way `down()` reverts it. Neither writes anything, not even the tracking table: a database without one renders as a database with no migrations applied. `status()`, `statuses()`, `pending()`, and `validate()` read the same way, and `read_applied_records()` gives you those rows directly. A tracking table that has only the columns an earlier version wrote also reads as no history. Any other failed read, such as a closed connection or a refused `SELECT`, raises the driver's error, so a report does not show every migration pending on a database it could not read.
 
 For async services, `AsyncMigrator` in `sustained.aio_migrations` runs the same `Migration` objects on an `AsyncAdapter` with the same `up`, `down`, `down_to`, `status`, `statuses`, `validate`, `repair`, `baseline`, and `script` methods. Callable steps receive the adapter and are awaited. `await migrator.script('up')` renders the same text, and `read_applied_records()` reads the rows the same way.

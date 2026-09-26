@@ -7,7 +7,18 @@ execute.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Dict, List, Mapping, Optional, Sequence, Tuple, Type
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Type,
+    Union,
+)
 
 from sustained.dialects import Dialects
 from sustained.migrations.checks import _is_current
@@ -21,7 +32,9 @@ from sustained.migrations.tracking import _next_seq, quoted_columns
 from sustained.types import Connection
 
 if TYPE_CHECKING:
+    from sustained.analysis import MigrationStatement
     from sustained.compilers.base import Compiler
+    from sustained.impact import ImpactReport
     from sustained.introspect import Snapshot
     from sustained.model import Model
 
@@ -98,6 +111,14 @@ def drift_lines(
     return diff.outstanding(ignore_changed_columns=ignore_changed_columns)
 
 
+class _Steps:
+    """One migration's statements, in a script before they are rendered."""
+
+    def __init__(self, migration: Migration, statements: List[str]) -> None:
+        self.migration = migration
+        self.statements = statements
+
+
 def render_script(
     compiler: "Compiler",
     table_sql: str,
@@ -105,6 +126,9 @@ def render_script(
     records: Sequence[AppliedRecord],
     direction: str = "up",
     generated: Optional[Mapping[str, Migration]] = None,
+    annotate: Optional[
+        Callable[[Sequence["MigrationStatement"]], "ImpactReport"]
+    ] = None,
 ) -> str:
     """
     The SQL a run would execute, rendered from the migrations and the
@@ -115,6 +139,84 @@ def render_script(
     to the migration its tracking row stores. A 'down' script reverts
     those from the stored statements, the same way down() does, and
     stops at an applied id found in neither place.
+
+    `annotate` analyzes the script's migration statements, bookkeeping
+    left out, as one run in script order. Each statement's impact then
+    prints above it as `-- impact:` comments, each migration's windows
+    and findings after its last statement, and the report's summary on
+    the first line.
+    """
+    lines = _script_lines(
+        compiler, table_sql, migrations, records, direction, generated
+    )
+    if annotate is None:
+        return "\n".join(
+            (
+                "\n".join(f"{s};" for s in line.statements)
+                if isinstance(line, _Steps)
+                else line
+            )
+            for line in lines
+            if not (isinstance(line, _Steps) and not line.statements)
+        )
+    return _annotated(lines, annotate)
+
+
+def _annotated(
+    lines: List[Union[str, _Steps]],
+    annotate: Callable[[Sequence["MigrationStatement"]], "ImpactReport"],
+) -> str:
+    """The script with each statement's impact above it as comments."""
+    from sustained.analysis import MigrationStatement
+    from sustained.impact.report import (
+        migration_annotation,
+        statement_annotation,
+        summary,
+    )
+
+    groups = [line for line in lines if isinstance(line, _Steps)]
+    statements = [
+        MigrationStatement(s, g.migration.id, g.migration.transactional)
+        for g in groups
+        for s in g.statements
+    ]
+    report = annotate(statements)
+    impacts = iter(report.migrations)
+    out: List[str] = []
+    if statements:
+        out.append(f"-- impact: {summary(report)}")
+    for line in lines:
+        if not isinstance(line, _Steps):
+            out.append(line)
+            continue
+        if not line.statements:
+            continue
+        migration = next(impacts)
+        for statement, impact in zip(line.statements, migration.statements):
+            out.extend(_comments(statement_annotation(impact)))
+            out.append(f"{statement};")
+        out.extend(_comments(migration_annotation(migration)))
+    return "\n".join(out)
+
+
+def _comments(lines: List[str]) -> List[str]:
+    """Each line as an `-- impact:` comment, a line break included."""
+    return [
+        f"-- impact: {part}" for line in lines for part in line.splitlines() or [""]
+    ]
+
+
+def _script_lines(
+    compiler: "Compiler",
+    table_sql: str,
+    migrations: Sequence[Migration],
+    records: Sequence[AppliedRecord],
+    direction: str,
+    generated: Optional[Mapping[str, Migration]],
+) -> List[Union[str, _Steps]]:
+    """
+    The script's lines, with each migration's statements held in a
+    `_Steps` entry until render_script() renders them.
     """
     timestamp = datetime.now(timezone.utc).isoformat()
     format_value = compiler.format_value
@@ -124,7 +226,7 @@ def render_script(
     )
     versioned = [m for m in migrations if not m.repeatable]
     repeatables = [m for m in migrations if m.repeatable]
-    lines: List[str] = []
+    lines: List[Union[str, _Steps]] = []
     if direction == "up":
         records_by_id = {r.id: r for r in records}
         applied = {r.id for r in records if r.success}
@@ -133,7 +235,7 @@ def render_script(
             if migration.id in applied:
                 continue
             lines.append(f"-- up: {migration.id}")
-            lines.extend(f"{s};" for s in migration_sql(migration, "up", compiler))
+            lines.append(_Steps(migration, migration_sql(migration, "up", compiler)))
             lines.append(
                 f"INSERT INTO {table_sql} "
                 f"({insert_columns}) "
@@ -149,7 +251,7 @@ def render_script(
             if _is_current(record, migration, True):
                 continue
             lines.append(f"-- repeat: {migration.id}")
-            lines.extend(f"{s};" for s in migration_sql(migration, "up", compiler))
+            lines.append(_Steps(migration, migration_sql(migration, "up", compiler)))
             if record is None:
                 lines.append(
                     f"INSERT INTO {table_sql} "
@@ -186,11 +288,13 @@ def render_script(
                 )
                 break
             lines.append(f"-- down: {migration_id}")
-            lines.extend(f"{s};" for s in migration_sql(registered, "down", compiler))
+            lines.append(
+                _Steps(registered, migration_sql(registered, "down", compiler))
+            )
             lines.append(
                 f"DELETE FROM {table_sql} WHERE {column('id')} = "
                 f"{format_value(migration_id)};"
             )
     else:
         raise ValueError("direction must be 'up' or 'down'.")
-    return "\n".join(lines)
+    return lines

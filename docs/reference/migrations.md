@@ -313,11 +313,13 @@ rehearsal_key(applied, run) -> str
 ### Rendering without running
 
 ```python
-script(direction='up') -> str
+script(direction='up', annotate=False) -> str
 ```
 {: .sig #script}
 
 `script()` returns every statement a run would execute as text, including the tracking bookkeeping. Any direction other than `up` or `down` raises `ValueError`.
+
+With `annotate=True`, the migration statements are analyzed as one run, as `impact()` analyzes them, with the server facts read from the connection. Each statement's tables and findings print above it as `-- impact:` lines, each migration's windows and findings after its last statement, and the report's summary on the first line. A statement that locks no table reads `-- impact: locks no table`. The bookkeeping statements are not analyzed. On a dialect the analysis does not cover, `annotate=True` raises `DialectError` before anything is read.
 
 ## Result types
 
@@ -592,7 +594,7 @@ Every method is a coroutine:
 
 Both migrators compute the key the same way, so a row written by one migrator opens the gate for the other on the same database.
 
-`await migrator.script('up')` renders the same text `Migrator.script('up')` renders, and writes nothing, not even the tracking table. `read_applied_records()` and `read_applied()` read the rows the same way.
+`await migrator.script('up')` renders the same text `Migrator.script('up')` renders, with `annotate=True` too, and writes nothing, not even the tracking table. `read_applied_records()` and `read_applied()` read the rows the same way.
 
 `await migrator.plan(models)` and `await migrator.drift(models)` diff the models against the database and return what `Migrator.plan()` and `Migrator.drift()` return. Both read the schema through the adapter and write nothing. The schema read is the only statement `plan()` runs, so it cannot ask whether a table contains rows. A table it cannot read counts as one that contains rows, so a new NOT NULL column with no `default` and no `backfill` is refused here even on an empty table, where `Migrator.plan()` adds it.
 

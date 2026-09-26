@@ -375,7 +375,7 @@ class AsyncMigrator(MigratorBase):
         """The applied migration ids, without creating the table."""
         return await self._drive(bookkeeping.read_applied(self))
 
-    async def script(self, direction: str = "up") -> str:
+    async def script(self, direction: str = "up", annotate: bool = False) -> str:
         """
         Renders the SQL a run would execute, without executing anything,
         for review or DBA handoff. 'up' renders every pending migration;
@@ -384,9 +384,9 @@ class AsyncMigrator(MigratorBase):
 
         Nothing is written, not even the tracking table: a database
         without one reads as a database with no migrations applied.
-        Migrator.script() renders the same text.
+        Migrator.script() renders the same text, with annotate=True too.
         """
-        return await self._drive(bookkeeping.script(self, direction))
+        return await self._drive(bookkeeping.script(self, direction, annotate))
 
     async def pending(self) -> List[Migration]:
         """

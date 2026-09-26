@@ -189,6 +189,26 @@ The analysis recognizes the DDL and DML statements its rules cover. Any other st
 
 A default the rules do not recognize as stable counts as volatile, so `ADD COLUMN ... DEFAULT some_function()` reads as a rewrite, with confidence `likely` and a finding that names the function.
 
+## Annotated scripts
+
+`sustained script --annotate` prints the SQL a run would execute, as `sustained script` does, with each statement's impact above it as SQL comments, for a DBA who reads the script before running it by hand:
+
+```console
+$ sustained script --annotate
+-- impact: 2 statements, 1 danger, 1 warn. Evidence: catalog (PostgreSQL 16.4)
+-- up: 20260926_orders
+-- impact: orders  SHARE  blocks writes  index_build  transaction  ~41.2M rows, 12.4 GB  [pg.create_index]
+-- impact: danger  writes to orders wait for the whole index build; build it CONCURRENTLY in a migration with transactional=False
+-- impact: fix     CREATE INDEX CONCURRENTLY ix_orders_customer ON orders (customer_id)
+CREATE INDEX ix_orders_customer ON orders (customer_id);
+-- impact: locks no table
+SET LOCAL lock_timeout = '5s';
+-- impact: window  orders: SHARE from statement 1, held to commit
+INSERT INTO "sustained_migrations" (...) VALUES (...);
+```
+
+The first line is the report's summary. Each statement's tables and findings come above it, and each migration's windows and findings follow its last statement. The tracking bookkeeping is not analyzed. `Migrator.script('up', annotate=True)` and `await AsyncMigrator.script('up', annotate=True)` return the same text. The analysis reads the server facts that `impact` reads, and raises `DialectError`, exit 1 from the shell, on a dialect it does not cover.
+
 ## Guards over impact
 
 Four rules in `sustained.guards` read each statement's impact instead of its text, and block a run the way the other [guards](/schema#guards) do:

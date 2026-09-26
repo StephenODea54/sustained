@@ -41,7 +41,8 @@ gates: blocking on impact is the guards' job. `plan` lists the
 statements whose impact merits a look in an `impact` section. When no
 guard reads impact, `migrate` prints each `danger` finding on stderr, as
 `Migrator.up()` does.
-`rehearse --trace` observes each statement on Postgres and prints the
+`script --annotate` prints each statement's impact above it as SQL
+comments. `rehearse --trace` observes each statement on Postgres and prints the
 impact report with what the server did in place of the prediction.
 
 `status`, `validate`, `plan`, `impact`, and `rehearse` take `--json`, which prints
@@ -855,7 +856,7 @@ def _cmd_repair(
 def _cmd_script(
     migrator: Migrator, args: argparse.Namespace, config: ModuleType
 ) -> int:
-    print(migrator.script(args.direction))
+    print(migrator.script(args.direction, annotate=args.annotate))
     return 0
 
 
@@ -977,6 +978,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     script = command("script", "Print the SQL a run would execute.")
     script.add_argument("direction", nargs="?", choices=("up", "down"), default="up")
+    script.add_argument(
+        "--annotate",
+        action="store_true",
+        help="Print each statement's impact above it as -- impact: comments.",
+    )
 
     baseline = command("baseline", "Record migrations as applied without running them.")
     baseline.add_argument("target", help="Record up to and including this id.")

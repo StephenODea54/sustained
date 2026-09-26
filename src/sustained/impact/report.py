@@ -164,7 +164,7 @@ def _finding_lines(finding: Finding, indent: str) -> List[str]:
     return lines
 
 
-def _window_lines(migration: MigrationImpact) -> List[str]:
+def _window_lines(migration: MigrationImpact, indent: str = "  ") -> List[str]:
     if not migration.transactional:
         return []
     lines = []
@@ -174,7 +174,31 @@ def _window_lines(migration: MigrationImpact) -> List[str]:
             for lock in migration.locks
             if lock.table.lower() == window.table.lower()
         ]
-        lines.append(f"  window  {window.table}: {', '.join(taken)}, held to commit")
+        lines.append(
+            f"{indent}window  {window.table}: {', '.join(taken)}, held to commit"
+        )
+    return lines
+
+
+def statement_annotation(impact: StatementImpact) -> List[str]:
+    """
+    One statement's impact as the lines `script(annotate=True)` prints
+    above it: its tables, then its findings.
+    """
+    lines = [table_line(table) for table in impact.tables]
+    for finding in impact.findings:
+        lines.extend(_finding_lines(finding, ""))
+    return lines or ["locks no table"]
+
+
+def migration_annotation(migration: MigrationImpact) -> List[str]:
+    """
+    One migration's windows and findings as the lines
+    `script(annotate=True)` prints after its last statement.
+    """
+    lines = _window_lines(migration, "")
+    for finding in migration.findings:
+        lines.extend(_finding_lines(finding, ""))
     return lines
 
 

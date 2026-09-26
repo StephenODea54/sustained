@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 from sustained.driver_errors import is_missing_table
 from sustained.migrations.checks import (
@@ -30,6 +30,7 @@ from sustained.migrations.core.requests import (
     Execute,
     ExecuteMany,
     Fetch,
+    ReadContext,
     RefuseOpenTransaction,
     T,
     TakeLock,
@@ -68,6 +69,10 @@ from sustained.migrations.tracking import (
     records_select,
 )
 from sustained.types import RowValue
+
+if TYPE_CHECKING:
+    from sustained.analysis import MigrationStatement
+    from sustained.impact import ImpactReport
 
 
 def lock_scope(m: MigratorBase, body: Core[T]) -> Core[T]:
@@ -467,7 +472,18 @@ def generated_migration(
     return _restore_migration(migration_id, str(rows[0][0]))
 
 
-def script(m: MigratorBase, direction: str = "up") -> Core[str]:
+def script(m: MigratorBase, direction: str = "up", annotate: bool = False) -> Core[str]:
+    """
+    With `annotate`, the dialect is checked before anything is read, so
+    a dialect without impact rules costs no round trip, and the server
+    facts are read once for the whole script.
+    """
+    from sustained.impact import EngineContext, analyze, supported
+
+    if annotate and not supported(m._dialect):
+        from sustained.exceptions import DialectError
+
+        raise DialectError(f"Impact analysis does not cover {m._dialect.name} yet.")
     records = yield from read_applied_records(m)
     generated: Dict[str, Migration] = {}
     if direction == "down":
@@ -477,6 +493,14 @@ def script(m: MigratorBase, direction: str = "up") -> Core[str]:
                 restored = yield from generated_migration(m, record.id)
                 if restored is not None:
                     generated[record.id] = restored
+    analyzer = None
+    if annotate:
+        context: EngineContext = yield ReadContext()
+        dialect = m._dialect
+
+        def analyzer(statements: Sequence["MigrationStatement"]) -> "ImpactReport":
+            return analyze(statements, dialect, context)
+
     return render_script(
         m._compiler,
         m._table_sql(),
@@ -484,6 +508,7 @@ def script(m: MigratorBase, direction: str = "up") -> Core[str]:
         records,
         direction,
         generated,
+        analyzer,
     )
 
 

@@ -774,7 +774,7 @@ class Migrator(MigratorBase):
             type_casts=type_casts,
         )
 
-    def script(self, direction: str = "up") -> str:
+    def script(self, direction: str = "up", annotate: bool = False) -> str:
         """
         Renders the SQL a run would execute, without executing anything,
         for review or DBA handoff. 'up' renders every pending migration;
@@ -785,8 +785,16 @@ class Migrator(MigratorBase):
         without one reads as a database with no migrations applied. A
         migration generated from the models renders its down step from
         the statements its tracking row stores, as down() reverts it.
+
+        With annotate=True, each migration statement is analyzed as
+        impact() analyzes it, with the server facts read from the
+        connection, and its impact prints above it as `-- impact:`
+        comments: the tables it locks, then its findings and their safer
+        forms. Each migration's windows follow its last statement, and
+        the report's summary is the first line. Raises DialectError on
+        a dialect the analysis does not cover yet.
         """
-        return self._drive(bookkeeping.script(self, direction))
+        return self._drive(bookkeeping.script(self, direction, annotate))
 
     def down_to(self, target: str, allow_changed: bool = False) -> List[str]:
         """
