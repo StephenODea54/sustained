@@ -31,7 +31,7 @@ supported(dialect) -> bool
 ```
 {: .sig #supported}
 
-Whether the analysis has rules for the dialect. `Dialects.POSTGRES`, `Dialects.MYSQL`, and `Dialects.DEFAULT` have rules.
+Whether the analysis has rules for the dialect. `Dialects.POSTGRES`, `Dialects.MYSQL`, `Dialects.DEFAULT`, and `Dialects.DUCKDB` have rules.
 
 ```python
 profile_for(dialect, name=None) -> Profile | None
@@ -39,7 +39,7 @@ profiles_for(dialect) -> tuple[Profile, ...]
 ```
 {: .sig #profile_for}
 
-These live in `sustained.impact.rules`. `profile_for()` returns the dialect's rule profile named `name`, or its first profile when `name` is `None` or names none of them, and `None` for a dialect without rules. `profiles_for()` returns every profile of the dialect, the one assumed without a server first: `postgres` on `Dialects.POSTGRES`, `mysql` then `mariadb` on `Dialects.MYSQL`, and `sqlite` on `Dialects.DEFAULT`, which SQLite connections use.
+These live in `sustained.impact.rules`. `profile_for()` returns the dialect's rule profile named `name`, or its first profile when `name` is `None` or names none of them, and `None` for a dialect without rules. `profiles_for()` returns every profile of the dialect, the one assumed without a server first: `postgres` on `Dialects.POSTGRES`, `mysql` then `mariadb` on `Dialects.MYSQL`, `sqlite` on `Dialects.DEFAULT`, which SQLite connections use, and `duckdb` on `Dialects.DUCKDB`.
 
 ## `read_context()`
 
@@ -49,7 +49,7 @@ await async_read_context(adapter, dialect, exact_counts=False) -> EngineContext
 ```
 {: .sig #read_context}
 
-The server facts the dialect's rules read, from a blocking connection or an async adapter. On PostgreSQL that is the version from `server_version_num`, the `TimeZone` and `lock_timeout` settings, each table's estimated rows and total bytes, and the schema of the connection's own schema. On MySQL and MariaDB it is `VERSION()`, which also sets the context's profile to `mysql` or `mariadb`, the `foreign_key_checks` and `lock_wait_timeout` settings, each table's estimated rows, bytes, and row format, which tables have a FULLTEXT index, on MySQL 8.0.29 and later each table's instant row versions, and the schema of the current database. On SQLite it is `sqlite_version()`, the `journal_mode` setting, each table's estimated rows from `sqlite_stat1` and bytes from the `dbstat` virtual table, the database file's bytes under the name `(database)`, and the schema. With `exact_counts=True`, the SQLite read also runs `SELECT COUNT(*)` on each table `sqlite_stat1` has no row count for, leaving out virtual tables, and adds `counts` to `read`; the other profiles ignore it. Nothing is written.
+The server facts the dialect's rules read, from a blocking connection or an async adapter. On PostgreSQL that is the version from `server_version_num`, the `TimeZone` and `lock_timeout` settings, each table's estimated rows and total bytes, and the schema of the connection's own schema. On MySQL and MariaDB it is `VERSION()`, which also sets the context's profile to `mysql` or `mariadb`, the `foreign_key_checks` and `lock_wait_timeout` settings, each table's estimated rows, bytes, and row format, which tables have a FULLTEXT index, on MySQL 8.0.29 and later each table's instant row versions, and the schema of the current database. On SQLite it is `sqlite_version()`, the `journal_mode` setting, each table's estimated rows from `sqlite_stat1` and bytes from the `dbstat` virtual table, the database file's bytes under the name `(database)`, and the schema. On DuckDB it is `version()`, each table's estimated rows from `duckdb_tables()`, with no bytes, and the schema. With `exact_counts=True`, the SQLite read also runs `SELECT COUNT(*)` on each table `sqlite_stat1` has no row count for, leaving out virtual tables, and adds `counts` to `read`; the other profiles ignore it. Nothing is written.
 
 Each statement runs inside a savepoint. A statement that fails leaves its facts out of `read`, and the read goes on. Both raise `ValueError` for a dialect without impact rules.
 
@@ -128,7 +128,7 @@ ImpactReport(profile, version, evidence, migrations, read=frozenset())
 ```
 {: .sig}
 
-`profile` is the rule profile: `'postgres'`, `'mysql'`, `'mariadb'`, or `'sqlite'`. `version` is the server version the rules assumed, as a tuple of ints. `evidence` is what the report rests on. `migrations` is a tuple of `MigrationImpact`, in run order. `read` is the context's `read`: the facts that came from the server.
+`profile` is the rule profile: `'postgres'`, `'mysql'`, `'mariadb'`, `'sqlite'`, or `'duckdb'`. `version` is the server version the rules assumed, as a tuple of ints. `evidence` is what the report rests on. `migrations` is a tuple of `MigrationImpact`, in run order. `read` is the context's `read`: the facts that came from the server.
 
 | Member | Returns |
 | --- | --- |
@@ -163,7 +163,7 @@ TableImpact(table, lock, blocks, work, hold, rows=None, bytes=None, rule=None)
 ```
 {: .sig}
 
-What the statement does to one table: the engine's lock name, or `None` for no lock, what it blocks, the work, how long it is held, the row and byte estimates when known, and the id of the rule that gave the answer.
+What the statement does to one table: the engine's lock name, or `None` for no lock, what it blocks, the work, how long it is held, the row and byte estimates when known, and the id of the rule that gave the answer. DuckDB takes no locks, so there the lock name is the conflict the statement opens on the table: `altered table`, `changed rows`, or `catalog entry`; see [DuckDB](/impact#duckdb).
 
 ```python
 Finding(rule, severity, message, remedy=(), source=None)

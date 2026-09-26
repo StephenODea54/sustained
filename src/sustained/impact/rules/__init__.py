@@ -223,12 +223,13 @@ class Profile(NamedTuple):
 
 def _profiles() -> Mapping[str, Tuple[Profile, ...]]:
     """Each dialect's profiles, the one assumed without a server first."""
-    from sustained.impact.rules import mysql, postgres, sqlite
+    from sustained.impact.rules import duckdb, mysql, postgres, sqlite
 
     return {
         "POSTGRES": (postgres.PROFILE,),
         "MYSQL": (mysql.MYSQL, mysql.MARIADB),
         "DEFAULT": (sqlite.PROFILE,),
+        "DUCKDB": (duckdb.PROFILE,),
     }
 
 

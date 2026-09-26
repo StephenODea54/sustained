@@ -141,7 +141,7 @@
       "module": "duckdb",
       "dsn_env": "SUSTAINED_TEST_DUCKDB_DSN",
       "dsn": ":memory:",
-      "covers": ["queries", "writes", "transactions", "migrations"],
+      "covers": ["queries", "writes", "transactions", "migrations", "impact"],
       "floor": "1.0",
       "note": "In-process, so no container and no advisory lock. Releases before 1.0 are not claimed."
     },

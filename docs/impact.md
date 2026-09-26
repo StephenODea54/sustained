@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Statement impact
-description: "Read what each migration statement does to a live PostgreSQL, MySQL, MariaDB, or SQLite database while it runs: the locks it takes, what they block, whether it rewrites the table, and the safer form."
+description: "Read what each migration statement does to a live PostgreSQL, MySQL, MariaDB, SQLite, or DuckDB database while it runs: the locks it takes, what they block, whether it rewrites the table, and the safer form."
 ---
 
 A migration can be valid, reversible, and free of drops, and still take the application down while it runs. A `CREATE INDEX` on a large table stops every write to it until the build finishes. An `ALTER TABLE` that needs `ACCESS EXCLUSIVE` waits behind the longest open transaction, and every query on the table waits behind the `ALTER TABLE`.
@@ -13,7 +13,7 @@ The impact analysis reads the statements a run would apply and reports, for each
 - how long it holds each lock: a moment, the whole statement, or until the migration commits
 - a safer form of the statement, when the engine has one
 
-The analysis covers PostgreSQL 12 and later, InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later, and SQLite 3.35 and later. It reads the statement text, the intent Sustained attaches to the statements it generates, and, when it has a connection, the server's version, settings, and table sizes.
+The analysis covers PostgreSQL 12 and later, InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later, SQLite 3.35 and later, and DuckDB 1.0 and later. It reads the statement text, the intent Sustained attaches to the statements it generates, and, when it has a connection, the server's version, settings, and table sizes.
 
 ## Running it
 
@@ -37,7 +37,7 @@ $ sustained impact
 2 statements, 1 danger, 2 warn. Evidence: catalog (PostgreSQL 16.4)
 ```
 
-On MySQL and MariaDB the same report names the algorithm and lock level the server runs each ALTER TABLE with; see [MySQL and MariaDB](#mysql-and-mariadb). On SQLite it names the lock every write takes on the whole database; see [SQLite](#sqlite).
+On MySQL and MariaDB the same report names the algorithm and lock level the server runs each ALTER TABLE with; see [MySQL and MariaDB](#mysql-and-mariadb). On SQLite it names the lock every write takes on the whole database; see [SQLite](#sqlite). On DuckDB, which takes no locks, it names the conflict each statement opens with other transactions; see [DuckDB](#duckdb).
 
 `sustained impact` exits 0 when it prints the report and 1 on a failure, including a dialect the analysis does not cover. It never blocks a run. `--json` prints the report as one object; see [JSON output](/reference/cli#json-output).
 
@@ -89,7 +89,7 @@ The last line counts the statements and findings and says what the answer rests 
 | `writes` | INSERT, UPDATE, and DELETE wait. Reads proceed. |
 | `reads_and_writes` | Every query on the table waits. |
 
-**Lock** is the engine's own name for the lock. On PostgreSQL it is the mode `pg_locks.mode` reports, without the `Lock` suffix, such as `ACCESS EXCLUSIVE`, `SHARE`, or `SHARE UPDATE EXCLUSIVE`. On MySQL and MariaDB it is the `ALGORITHM` and `LOCK` clause the server accepts for the statement, such as `INSTANT` or `INPLACE, LOCK=NONE`, or `MDL EXCLUSIVE` and `IX` for statements that take no such clause. On SQLite it is `database write lock`, which every write takes on the whole database file.
+**Lock** is the engine's own name for the lock. On PostgreSQL it is the mode `pg_locks.mode` reports, without the `Lock` suffix, such as `ACCESS EXCLUSIVE`, `SHARE`, or `SHARE UPDATE EXCLUSIVE`. On MySQL and MariaDB it is the `ALGORITHM` and `LOCK` clause the server accepts for the statement, such as `INSTANT` or `INPLACE, LOCK=NONE`, or `MDL EXCLUSIVE` and `IX` for statements that take no such clause. On SQLite it is `database write lock`, which every write takes on the whole database file. DuckDB takes no locks, so there it is the conflict a statement opens on the table, `altered table`, `changed rows`, or `catalog entry`, and another transaction that conflicts with it aborts instead of waiting.
 
 **Work**, ordered from lightest to heaviest:
 
@@ -120,7 +120,7 @@ Work that blocks writes, or reads and writes, is rated against the table's size:
 
 A static report reads no sizes, so blocking work is `warn`. `analyze()` takes a `Thresholds(rows, bytes)` to move the limits.
 
-On PostgreSQL, a lock that blocks writes or more, with no lock timeout in scope, draws a `pg.lock_timeout` finding whatever the table's size. The statement waits for its lock behind the longest open transaction on the table, and every query that conflicts with the lock waits behind the statement. The remedy is `SET LOCAL lock_timeout` inside a transaction, or `SET lock_timeout` outside one. A `LOCK TABLE ... NOWAIT` never waits, so it draws no timeout finding. A `lock_timeout` the connection already has, from the role, the database, or the connection string, covers the whole run. MySQL and MariaDB draw the same finding, as `mysql.lock_timeout` or `mariadb.lock_timeout`, for every statement that takes the exclusive metadata lock; see [Lock timeouts on MySQL and MariaDB](#lock-timeouts-on-mysql-and-mariadb). SQLite draws none, because a write waiting for the lock does not make other connections queue behind it.
+On PostgreSQL, a lock that blocks writes or more, with no lock timeout in scope, draws a `pg.lock_timeout` finding whatever the table's size. The statement waits for its lock behind the longest open transaction on the table, and every query that conflicts with the lock waits behind the statement. The remedy is `SET LOCAL lock_timeout` inside a transaction, or `SET lock_timeout` outside one. A `LOCK TABLE ... NOWAIT` never waits, so it draws no timeout finding. A `lock_timeout` the connection already has, from the role, the database, or the connection string, covers the whole run. MySQL and MariaDB draw the same finding, as `mysql.lock_timeout` or `mariadb.lock_timeout`, for every statement that takes the exclusive metadata lock; see [Lock timeouts on MySQL and MariaDB](#lock-timeouts-on-mysql-and-mariadb). SQLite draws none, because a write waiting for the lock does not make other connections queue behind it. DuckDB draws none either, because a conflicting transaction aborts instead of waiting.
 
 ## Server facts
 
@@ -157,7 +157,15 @@ On SQLite the read is this:
 | Database size | `PRAGMA page_count` and `page_size` | The severity of `VACUUM` and of a `REINDEX` of every index |
 | Schema | the schema read `plan()` uses | The table an index to drop or reindex is on |
 
-The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. On MySQL and MariaDB it is InnoDB's estimate, which `ANALYZE TABLE` refreshes, and which InnoDB also refreshes on its own after a tenth of the rows change. On SQLite it is the count `ANALYZE` recorded, which nothing refreshes until `ANALYZE` runs again. `ANALYZE` records no count for a table that was empty when it ran, or created after it, and the read counts no rows itself unless `exact_counts=True` asks it to count those tables. Each count reads every page of the table. `read_context()`, `async_read_context()`, `impact()`, `up()`, and `script()` on either migrator take `exact_counts`; on the command line, `plan`, `impact`, `migrate`, and `script` take `--exact-counts`, or the config module sets `exact_counts = True`. The other engines read the estimates the server keeps either way. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
+On DuckDB the read is this:
+
+| Fact | Read from | Used for |
+| --- | --- | --- |
+| Version | `version()` | The version the report names |
+| Table rows | `duckdb_tables().estimated_size` | The severity of blocking work |
+| Schema | the schema read `plan()` uses | The table an index to drop is on |
+
+The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. On MySQL and MariaDB it is InnoDB's estimate, which `ANALYZE TABLE` refreshes, and which InnoDB also refreshes on its own after a tenth of the rows change. On SQLite it is the count `ANALYZE` recorded, which nothing refreshes until `ANALYZE` runs again. `ANALYZE` records no count for a table that was empty when it ran, or created after it, and the read counts no rows itself unless `exact_counts=True` asks it to count those tables. Each count reads every page of the table. `read_context()`, `async_read_context()`, `impact()`, `up()`, and `script()` on either migrator take `exact_counts`; on the command line, `plan`, `impact`, `migrate`, and `script` take `--exact-counts`, or the config module sets `exact_counts = True`. On DuckDB it is the row count DuckDB keeps for each table, and DuckDB reports no size in bytes for a single table. The other engines read the estimates the server keeps either way. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
 
 A statement that fails, for example for lack of a privilege, leaves its facts out, and the rules fall back to the support floor or the worst case for them. Each statement runs inside a savepoint, so a failure does not abort the connection's open transaction. The report's `read` lists the facts that came from the server, and the last line of the text report says `assumed` before the version when the version was not read.
 
@@ -193,7 +201,7 @@ The NOT NULL flow the diff generates is one such case: it adds the column, backf
   warn    orders stays blocked for reads_and_writes from statement 1 until the migration commits, across the rows work of statement 2; move that work to a migration of its own
 ```
 
-A migration with `transactional=False` releases each lock when its statement ends, so each statement is a window of its own and the report prints no `window` line. MySQL and MariaDB commit each DDL statement on its own, so there every statement is a window of its own too. On SQLite a write locks the whole database, so a migration inside a transaction is one window, named `(database)`, whatever tables it writes; see [SQLite](#sqlite). `MigrationImpact.held_to_commit`, and the `held_to_commit` key in the JSON output, say whether a migration's locks last until its commit.
+A migration with `transactional=False` releases each lock when its statement ends, so each statement is a window of its own and the report prints no `window` line. MySQL and MariaDB commit each DDL statement on its own, so there every statement is a window of its own too. On SQLite a write locks the whole database, so a migration inside a transaction is one window, named `(database)`, whatever tables it writes; see [SQLite](#sqlite). DuckDB DDL is transactional, so there a conflict lasts until the migration commits, as a lock does on PostgreSQL. `MigrationImpact.held_to_commit`, and the `held_to_commit` key in the JSON output, say whether a migration's locks last until its commit.
 
 ## What the analysis carries through a run
 
@@ -587,3 +595,62 @@ The diff changes a column's type or constraints on SQLite by rebuilding the tabl
 A statement the rules do not read, such as an `ALTER TABLE` action other than a column add, drop, or rename, is unknown.
 
 The integration suite checks each rule's fixtures on a WAL database file. Each fixture runs inside a transaction while a second connection tries to take the write lock and to read the database: the write must wait when the rules predict the write lock, and the read must go on. Each fixture then runs again with automatic checkpoints off, and the frames it leaves in the WAL count the pages it wrote. A statement the rules say rewrites a table or builds an index must write at least half as many pages as the table holds, and one they say changes only the schema at most two.
+
+## DuckDB
+
+The rules follow the DuckDB documentation for 1.0 and later, and the integration suite checks them against the DuckDB release installed in the test environment. Rule ids start with `duckdb.`.
+
+### Conflicts instead of locks
+
+DuckDB takes no locks. Its [concurrency control](https://duckdb.org/docs/current/connect/concurrency.html#optimistic-concurrency-control) is optimistic: each transaction works on its own versions of the rows and the catalog, and a transaction whose change conflicts with another's uncommitted change aborts with a conflict error at once. It does not wait, so nothing queues behind a migration, and DuckDB draws no lock-timeout finding. Reads never conflict: another transaction reads the table as it was before the migration began, until the migration commits.
+
+Each table line names the conflict the statement opens on the table, after the error the other transaction gets. DuckDB DDL is transactional, so a conflict lasts until the migration commits:
+
+| Conflict | Opened by | Blocks |
+| --- | --- | --- |
+| `altered table` | `ADD COLUMN`, `DROP COLUMN`, `SET DATA TYPE`, `SET NOT NULL` | `writes`. `INSERT`, `UPDATE`, `DELETE`, and schema changes on the table in other transactions abort, and a transaction that wrote to the table before the statement fails to commit. |
+| `changed rows` | `UPDATE`, `DELETE`, `TRUNCATE` | `writes`. Another transaction that updates the same columns of the same rows, or deletes the same rows, aborts. Other rows, and inserts, go on. |
+| `catalog entry` | a rename, `SET DEFAULT`, `DROP DEFAULT`, `DROP NOT NULL`, `COMMENT ON`, `DROP INDEX`, `DROP TABLE`, and a new table whose foreign key points at the table | `ddl`. Schema changes on the table in other transactions abort. Reads and writes go on. |
+| none | `CREATE INDEX`, `INSERT`, `ANALYZE`, and creating or dropping a view, a type, a sequence, or a schema | `nothing` |
+
+The finding for a statement that blocks writes says which transactions abort:
+
+```console
+20260926_items  transaction
+  ALTER TABLE items ADD COLUMN note varchar
+    items  altered table  blocks writes  catalog  transaction  ~2.0M rows  [duckdb.add_column]
+    info    until the migration commits, INSERT, UPDATE, DELETE, and schema changes on items in other transactions abort with a conflict error instead of waiting, and a transaction that wrote to items before it fails to commit; reads go on
+  ALTER TABLE items ALTER COLUMN price SET DATA TYPE decimal(12, 2)
+    items  altered table  blocks writes  rewrite  statement  ~2.0M rows  [duckdb.alter_column_type]
+    danger  SET DATA TYPE writes every value of price again; until the migration commits, INSERT, UPDATE, DELETE, and schema changes on items in other transactions abort with a conflict error instead of waiting, and a transaction that wrote to items before it fails to commit; reads go on
+  window  items: altered table from statement 1, altered table from statement 2, held to commit
+  warn    items stays blocked for writes from statement 1 until the migration commits, across the rewrite work of statement 2; move that work to a migration of its own
+```
+
+A conflict works both ways. When another transaction changes the schema of a table first, the migration's own statement on that table aborts, and when another transaction alters a table the migration has written rows of, the migration fails to commit. DuckDB's documentation gives running the transaction again as the remedy.
+
+### Rules
+
+| Statement | Work | Rule |
+| --- | --- | --- |
+| `ADD COLUMN` with no default, a constant default, or a default such as `now()` that gives every row the same value | catalog | `duckdb.add_column` |
+| `ADD COLUMN` with a volatile default, such as `random()` or `gen_random_uuid()`, which DuckDB writes for every row | rewrite | `duckdb.add_column.volatile` |
+| `DROP COLUMN` | catalog | `duckdb.drop_column` |
+| `SET DATA TYPE`, or `TYPE`, with or without `USING`, which writes every value of the column again | rewrite | `duckdb.alter_column_type` |
+| `SET NOT NULL`, which reads every row to check for NULLs | scan | `duckdb.set_not_null` |
+| `DROP NOT NULL`, `SET DEFAULT`, `DROP DEFAULT` | catalog | `duckdb.alter_column` |
+| `RENAME COLUMN`, `RENAME TO`, with a note that running code naming the old name fails | catalog | `duckdb.rename` |
+| `CREATE INDEX` | index build | `duckdb.create_index` |
+| `DROP INDEX` | catalog | `duckdb.drop_index` |
+| `COMMENT ON` | catalog | `duckdb.comment` |
+| `CREATE TABLE`, reported with each table its foreign keys reference | catalog | `duckdb.create_table` |
+| Creating or dropping a view, a type, a sequence, or a schema | catalog | `duckdb.schema_change` |
+| `DROP TABLE` | catalog | `duckdb.drop_table` |
+| `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` | rows | `duckdb.write_rows` |
+| `ANALYZE` | scan | `duckdb.analyze` |
+
+A rewrite on DuckDB writes one column again. The other columns keep their storage, and DuckDB has no table copy for the analysis to report. The diff fills a column's NULLs before `SET NOT NULL` through `SET DATA TYPE ... USING coalesce(...)`, which DuckDB runs where an `UPDATE` followed by `SET NOT NULL` fails, so that step reads as a rewrite of the column.
+
+DuckDB refuses to alter a table that an index depends on, with a dependency error. The rules leave that to the rehearsal, which runs the statement. DuckDB also refuses a constraint on `ADD COLUMN`, a generated column on `ADD COLUMN`, and `ADD CONSTRAINT` and `DROP CONSTRAINT`; the analysis reads those, and any other statement the rules do not read, as unknown.
+
+The integration suite checks each rule's fixtures on a database file. Each fixture runs inside a transaction while a second connection to the same database reads the table, then inserts, updates, and deletes a row of it, and adds a column to it, each in a transaction of its own. The read must go on, and which of the others abort with a conflict must match what the rules say the statement blocks. Each fixture then runs again on its own between two checkpoints. The column segments `pragma_storage_info()` shows in blocks the table did not use before count the rows the statement wrote: a statement the rules say rewrites a column must write every row of a column again, and one they say changes only the catalog, or scans, must write none and leave `pragma_database_size()` with no more used blocks. An index build must write no column and take more blocks.

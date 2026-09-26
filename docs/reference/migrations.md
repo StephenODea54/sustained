@@ -121,7 +121,7 @@ impact(models=None, assert_algorithm=False, exact_counts=False) -> ImpactReport
 ```
 {: .sig #impact}
 
-The impact of the run `up()` would make on a live database: the locks each statement takes, what they block, the work each does, and findings with safer forms. With `models`, the migration they generate is analyzed after the pending ones. The analysis is static and writes nothing. `exact_counts=True` counts the rows of each SQLite table `sqlite_stat1` has no row count for. Raises `DialectError` on a dialect the analysis does not cover, which is every dialect but PostgreSQL, MySQL, MariaDB, and SQLite. See [Impact reference](/reference/impact#migrator-impact).
+The impact of the run `up()` would make on a live database: the locks each statement takes, what they block, the work each does, and findings with safer forms. With `models`, the migration they generate is analyzed after the pending ones. The analysis writes nothing. `exact_counts=True` counts the rows of each SQLite table `sqlite_stat1` has no row count for. Raises `DialectError` on a dialect the analysis does not cover, which is Presto, Athena, and SQL Server. See [Impact reference](/reference/impact#migrator-impact).
 
 `pending()`, `status()`, `statuses()`, and `validate()` read the tracking table without creating or upgrading it, on `Migrator` and `AsyncMigrator` alike, so they run on a read-only replica. A database with no tracking table reads as one with nothing applied.
 
