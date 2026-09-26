@@ -44,7 +44,10 @@ from sustained.migrations.checks import (
     _report_warnings,
     _validation_problems,
     check_guards,
+    check_statements,
+    report_danger,
     run_statements,
+    with_impact,
 )
 from sustained.migrations.migration import (
     _DERIVE,
@@ -203,6 +206,9 @@ __all__ = [
     "run_statements",
     "_report_warnings",
     "check_guards",
+    "check_statements",
+    "report_danger",
+    "with_impact",
     "_failed_attempt_problem",
     "_checksum_repair",
     "_is_current",

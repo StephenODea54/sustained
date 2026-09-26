@@ -21,8 +21,10 @@ from sustained.migrations.checks import (
     _failed_attempt_problem,
     _is_current,
     _validation_problems,
-    check_guards,
+    check_statements,
+    report_danger,
     run_statements,
+    with_impact,
 )
 from sustained.migrations.core import bookkeeping
 from sustained.migrations.core.base import MigratorBase
@@ -228,7 +230,8 @@ def run_up(
         # produces the same key.
         registered_run = versioned_now + repeatables_now
         warned: Set["Verdict"] = set()
-        check_guards(m._guards, registered_run, m._dialect, warned)
+        dangers: Set[Tuple[str, str]] = set()
+        yield from guard_run(m, registered_run, warned, dangers)
         yield from bookkeeping.require_rehearsal_row(
             m, records, registered_run, unrehearsed, target
         )
@@ -259,7 +262,7 @@ def run_up(
                     # migrations are already applied and committed by
                     # then, so a block here reports what it stopped after.
                     final_run = registered_run + [generated]
-                    check_guards(m._guards, final_run, m._dialect, warned)
+                    yield from guard_run(m, final_run, warned, dangers)
                     yield from bookkeeping.require_rehearsal_row(
                         m, records, final_run, unrehearsed, target
                     )
@@ -291,6 +294,34 @@ def run_up(
             raise
 
     return (yield from bookkeeping.lock_scope(m, locked()))
+
+
+def guard_run(
+    m: MigratorBase,
+    run: List[Migration],
+    warned: Set["Verdict"],
+    dangers: Set[Tuple[str, str]],
+) -> Core[None]:
+    """
+    Runs the guards over the statements a run would apply. On a dialect
+    the impact analysis covers, the server facts are read first and each
+    statement's impact is attached, so an impact rule reads it. When no
+    guard reads impact, each `danger` finding prints on stderr after the
+    guards pass. `warned` and `dangers` hold what was already printed,
+    for a run checked twice.
+    """
+    from sustained.guards import reads_impact
+    from sustained.impact import analyze, supported
+
+    statements = run_statements(run, m._compiler)
+    if statements and supported(m._dialect):
+        context = yield ReadContext()
+        statements = with_impact(statements, analyze(statements, m._dialect, context))
+        check_statements(m._guards, statements, m._dialect, warned)
+        if not any(reads_impact(guard) for guard in m._guards):
+            report_danger(statements, dangers)
+        return
+    check_statements(m._guards, statements, m._dialect, warned)
 
 
 def apply(

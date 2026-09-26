@@ -189,6 +189,47 @@ The analysis recognizes the DDL and DML statements its rules cover. Any other st
 
 A default the rules do not recognize as stable counts as volatile, so `ADD COLUMN ... DEFAULT some_function()` reads as a rewrite, with confidence `likely` and a finding that names the function.
 
+## Guards over impact
+
+Four rules in `sustained.guards` read each statement's impact instead of its text, and block a run the way the other [guards](/schema#guards) do:
+
+```python
+from sustained.guards import (
+    lock_timeout_required,
+    max_blocking,
+    no_rewrite,
+    no_unknown_impact,
+)
+
+guards = [
+    max_blocking("writes", over_rows=100_000),  # nothing worse than a write lock on a big table
+    no_rewrite(over_bytes=1 << 30),             # no rewrite of a table past 1 GiB
+    lock_timeout_required(),                    # no queueing lock without a lock_timeout
+    no_unknown_impact(),                        # no statement the analysis cannot read
+]
+```
+
+| Rule | Blocks |
+| --- | --- |
+| `max_blocking(limit, over_rows=None, over_bytes=None, assume_small=False)` | A statement that blocks more than `limit` on a table past the thresholds. `limit` is `nothing`, `ddl`, `writes`, or `reads_and_writes`. |
+| `no_rewrite(over_rows=None, over_bytes=None, assume_small=False)` | A statement whose work on a table past the thresholds is `rewrite`, or `unknown`, which ranks above it |
+| `lock_timeout_required()` | A statement with a `pg.lock_timeout` finding: a lock that would queue reads or writes, with no timeout in scope |
+| `no_unknown_impact()` | A statement with confidence `unknown` |
+
+With neither `over_rows` nor `over_bytes`, every table counts. With either, a table counts when its estimated rows or bytes pass one of them. A table whose size the threshold needs is not known counts as past it, the worst case, unless the rule is given `assume_small=True`. A table the run created earlier blocks nothing and is never rewritten, so it never counts. Only `no_unknown_impact()` blocks a statement the analysis cannot read; the other three pass it, since the analysis names no table for it.
+
+Before the guards run, `up()` reads the server facts that `Migrator.impact()` reads, analyzes the run, and puts each statement's `StatementImpact` on the statement's `impact` attribute. A guard of your own can read it there. `plan` does the same before it runs the guards. A statement that reaches a rule with no `impact`, such as a plain string passed to `run_guards()`, is analyzed on the spot with no server facts, so its sizes are unknown.
+
+When no configured guard reads impact, `up()` prints each `danger` finding on stderr and the run goes on, as it prints `warn` verdicts:
+
+```console
+danger: pg.create_index  CREATE INDEX ix_orders_customer ON orders (customer_id): writes to orders wait for the whole index build; build it CONCURRENTLY in a migration with transactional=False
+```
+
+`sustained migrate`, `Migrator.up()`, and `AsyncMigrator.up()` print the same lines. A guard counts as reading impact when it has a true `reads_impact` attribute, which the four rules set. On a dialect the analysis does not cover, `up()` reads no server facts, the four rules are silent, and nothing prints.
+
+`no_table_rewrite()` and `index_must_be_concurrent()` read the statement text, and keep their verdicts in 2.x. `no_rewrite()` and `max_blocking("ddl")` answer the same questions from the analysis, with the server version and the table sizes.
+
 ## Observed impact
 
 `sustained rehearse --trace` runs the rehearsal and records what the server did for each statement, and prints the impact report with those facts in place of the prediction. `Migrator.rehearse(trace=True)` puts the report on the result's `impact` attribute, and `await AsyncMigrator.rehearse(trace=True)` does the same.

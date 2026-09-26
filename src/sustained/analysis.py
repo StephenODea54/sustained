@@ -27,7 +27,7 @@ from typing import (
     Union,
 )
 
-from sustained.impact.model import INTENT_KINDS, Intent
+from sustained.impact.model import INTENT_KINDS, Intent, StatementImpact
 from sustained.impact.tokens import BACKSLASH_TOKEN_RE, TOKEN_RE
 from sustained.migrations import Migration, migration_sql
 
@@ -100,7 +100,12 @@ class MigrationStatement(str):
     generated it knows it: the diff and `DdlStep` rendering set it, and
     hand-written SQL has none. The impact analysis reads it before the
     text. Like `destructive`, a statement wrapped again keeps the intent
-    of the statement it wraps when none is given. Neither attribute
+    of the statement it wraps when none is given.
+
+    `impact` is the statement's `StatementImpact`, which the migrator
+    attaches before the guards run on a dialect the impact analysis
+    covers. It is None everywhere else. A statement wrapped again keeps
+    it when none is given. None of `destructive`, `intent`, and `impact`
     takes part in equality or in a migration's checksum, which reads the
     statement text alone.
     """
@@ -109,6 +114,7 @@ class MigrationStatement(str):
     transactional: bool
     destructive: bool
     intent: Optional[Intent]
+    impact: Optional[StatementImpact]
 
     def __new__(
         cls,
@@ -117,6 +123,7 @@ class MigrationStatement(str):
         transactional: bool = True,
         destructive: Optional[bool] = None,
         intent: Optional[Intent] = None,
+        impact: Optional[StatementImpact] = None,
     ) -> "MigrationStatement":
         instance = super().__new__(cls, statement)
         instance.migration_id = migration_id
@@ -129,6 +136,9 @@ class MigrationStatement(str):
         if intent is None and isinstance(statement, MigrationStatement):
             intent = statement.intent
         instance.intent = intent
+        if impact is None and isinstance(statement, MigrationStatement):
+            impact = statement.impact
+        instance.impact = impact
         return instance
 
 

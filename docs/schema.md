@@ -791,12 +791,20 @@ Both commands exit 3. There is no `--force` flag, so to run the statement you fi
 | `no_table_rewrite()` | warn | A column type change, or a NOT NULL with nothing to fill existing rows |
 | `no_lock_without_timeout()` | block | A statement that alters or drops a table with no `SET lock_timeout` still in force before it, on Postgres only |
 | `max_statements(n)` | block | Every statement past the limit |
+| `max_blocking(limit, over_rows=None, over_bytes=None)` | block | A statement that blocks more than `limit` on a table past the size thresholds |
+| `no_rewrite(over_rows=None, over_bytes=None)` | block | A statement that rewrites a table past the size thresholds |
+| `lock_timeout_required()` | block | A lock that would queue reads or writes with no lock timeout in scope |
+| `no_unknown_impact()` | block | A statement the impact analysis cannot read |
 
 Every one is a factory, so they all read the same at the call site. `no_table_rewrite()` warns where the others block, because whether a change rewrites the table depends on the engine, its version, and whether the two types coerce. Read it against your own engine rather than trusting it.
 
 `no_drops()` passes a column type change, even one that narrows the type, because the change drops no object. The `destructive` label and the rehearsal gate still catch a narrowing change the diff generated.
 
 `index_must_be_concurrent()` and `no_lock_without_timeout()` are silent on every dialect but Postgres, the only one with the keyword and the setting they are about.
+
+The last four rules read each statement's [impact](/impact) instead of its text, with the server version and the table sizes `up()` reads before the guards run. They are silent on a dialect the analysis does not cover. See [Guards over impact](/impact#guards-over-impact) for the thresholds and for the `danger` findings `migrate` prints when no rule reads impact.
+
+`no_table_rewrite()` and `index_must_be_concurrent()` keep their textual verdicts. For an answer that knows the engine version, whether the two types coerce, and how large the table is, use `no_rewrite()` in place of `no_table_rewrite()`, and `max_blocking("ddl")` in place of `index_must_be_concurrent()`.
 
 `CONCURRENTLY` needs a migration of its own with `transactional=False`, because Postgres refuses that form inside a transaction block. See [Migrations without a transaction](#migrations-without-a-transaction).
 
@@ -808,9 +816,9 @@ Guards do not check down runs, because a down undoes work the rules already pass
 
 A rule reads the run in order, and each statement it reads names the migration it came from. Both facts affect `no_lock_without_timeout()`. A plain `SET lock_timeout`, with or without `SESSION`, sets the timeout for the session, so it covers every statement after it in the run. A `SET LOCAL lock_timeout` ends at the commit that ends its migration, so it covers only the statements after it in that same migration, and the next migration starts uncovered. In a migration with `transactional=False` there is no transaction block for a `LOCAL` setting to live in, so Postgres ignores it and so does the rule; write the plain `SET lock_timeout` there.
 
-The statements a guard receives are strings, so a rule written as a function over strings needs no change to read them. Each one is a `MigrationStatement` with three attributes: `migration_id`, `transactional`, and `destructive`, which is true for a statement the diff marked as one that can lose data, such as a narrowing type change.
+The statements a guard receives are strings, so a rule written as a function over strings needs no change to read them. Each one is a `MigrationStatement` with these attributes: `migration_id`, `transactional`, `destructive`, which is true for a statement the diff marked as one that can lose data, such as a narrowing type change, and `impact`, the statement's `StatementImpact` on a dialect the impact analysis covers, or `None`.
 
-`migrate` checks twice. The registered migrations are checked before anything runs. The migrator cannot generate the diff against the models until those have run, so it checks the diff's statements the moment they exist. It checks them together with the registered statements from the same run, so a rule about the whole run counts the whole run. A warning already printed is not printed again.
+`migrate` checks twice. The registered migrations are checked before anything runs. The migrator cannot generate the diff against the models until those have run, so it checks the diff's statements the moment they exist. It checks them together with the registered statements from the same run, so a rule about the whole run counts the whole run. On a dialect the impact analysis covers, each check reads the server facts again, so the second check sees the tables the registered migrations created. A warning or `danger` finding already printed is not printed again.
 
 `rehearse` does not enforce guards. It runs against a database it is about to roll back, and stopping it there would stop you from testing the statement you are trying to fix.
 

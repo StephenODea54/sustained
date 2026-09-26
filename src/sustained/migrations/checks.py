@@ -1,7 +1,8 @@
 """
 The checks around a run: the guards over the statements it would apply,
-and the comparison of the registered migrations against the tracking
-table rows.
+the `danger` findings printed when no guard reads impact, and the
+comparison of the registered migrations against the tracking table
+rows.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from sustained.analysis import MigrationStatement
     from sustained.compilers.base import Compiler
     from sustained.guards import Guard, Verdict
+    from sustained.impact import ImpactReport
 
 
 def run_statements(
@@ -72,14 +74,72 @@ def check_guards(
     `reported` collects the warnings already printed. A run whose
     statements are known in two parts checks the whole set twice, and the
     set keeps the operator from reading the same warning twice.
+
+    The statements carry no impact here, so an impact rule analyzes them
+    with no server facts. `up()` reads the facts and attaches the impact
+    first, through `check_statements()`.
     """
+    compiler = Dialects.get_compiler(dialect)
+    check_statements(guards, run_statements(run, compiler), dialect, reported)
+
+
+def with_impact(
+    statements: Sequence["MigrationStatement"], report: "ImpactReport"
+) -> List["MigrationStatement"]:
+    """
+    The statements with each one's `StatementImpact` attached. The
+    report must be the analysis of these statements, which lists one
+    entry per statement in the same order.
+    """
+    from sustained.analysis import MigrationStatement
+
+    return [
+        MigrationStatement(statement, impact=impact)
+        for statement, impact in zip(statements, report.statements)
+    ]
+
+
+def report_danger(
+    statements: Sequence["MigrationStatement"],
+    reported: Optional[Set[Tuple[str, str]]] = None,
+) -> None:
+    """
+    Prints each `danger` finding of the attached impacts on stderr, one
+    per line: the rule, the statement, and the finding's message.
+    `reported` collects the (rule, statement) pairs already printed, as
+    `check_guards()` collects warnings.
+    """
+    from sustained.analysis import normalize_statement
+    from sustained.impact import Severity
+
+    for statement in statements:
+        if statement.impact is None:
+            continue
+        text = normalize_statement(statement)
+        for finding in statement.impact.findings:
+            if finding.severity is not Severity.DANGER:
+                continue
+            key = (finding.rule, text)
+            if reported is not None:
+                if key in reported:
+                    continue
+                reported.add(key)
+            print(f"danger: {finding.rule}  {text}: {finding.message}", file=sys.stderr)
+
+
+def check_statements(
+    guards: Sequence["Guard"],
+    statements: Sequence["MigrationStatement"],
+    dialect: Dialects,
+    reported: Optional[Set["Verdict"]] = None,
+) -> None:
+    """What check_guards() does, over statements already collected."""
     from sustained.exceptions import GuardBlocked
     from sustained.guards import blocking, run_guards, warnings_only
 
     if not guards:
         return
-    compiler = Dialects.get_compiler(dialect)
-    verdicts = run_guards(guards, run_statements(run, compiler), dialect)
+    verdicts = run_guards(guards, statements, dialect)
     blockers = blocking(verdicts)
     if blockers:
         raise GuardBlocked(blockers)

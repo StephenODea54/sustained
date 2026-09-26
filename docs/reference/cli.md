@@ -101,7 +101,7 @@ dialect = 'postgres'
 
 `plan` runs the guards over every statement it lists, the pending migrations and the drift together, and prints a `guards` section beside the other sections. With `--json`, each verdict appears on the statement object it flags, as `{"rule", "verdict"}`.
 
-`migrate` refuses a blocked run before any statement executes and exits 3, with the rule and the statement on stderr. A warning verdict prints on stderr and the run continues. `rehearse` does not enforce guards.
+`migrate` refuses a blocked run before any statement executes and exits 3, with the rule and the statement on stderr. A warning verdict prints on stderr and the run continues. When no guard reads impact, `migrate` also prints each `danger` finding of the [impact analysis](/impact#guards-over-impact) on stderr, and the run continues. `rehearse` does not enforce guards.
 
 No flag skips a guard for one run. Fix the statement, or take the rule out of the config module.
 

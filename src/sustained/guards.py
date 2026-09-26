@@ -27,17 +27,34 @@ migration runs inside a transaction. A rule reads it as a plain string,
 so a guard written against `Sequence[str]` keeps working, and a rule
 about a per-transaction setting can tell one migration from the next.
 
-The scan is textual, like the destructive labels: a rule matches on the
+The textual rules (`no_drops()`, `index_must_be_concurrent()`,
+`no_table_rewrite()`, `no_lock_without_timeout()`, `max_statements()`)
+scan like the destructive labels: a rule matches on the
 words in the statement and never parses SQL. Comments and the text
 inside quotes are kept out of the scan, so a rule reads neither a
 commented-out drop nor a drop named in a string literal. The verdict
 prints the statement with its literals intact.
+
+The impact rules (`max_blocking()`, `no_rewrite()`,
+`lock_timeout_required()`, `no_unknown_impact()`) read each statement's
+`StatementImpact` instead of its text; see sustained.impact. The
+migrator attaches it to each statement before the guards run, analyzed
+with the server facts it read from the connection. A statement without
+one, such as a plain `str`, is analyzed on the spot with no context,
+so a table's size is unknown there. A size threshold whose size is
+unknown counts as exceeded, unless the rule is given
+`assume_small=True`. The impact rules are silent on a dialect the
+analysis does not cover.
+
+A guard with a true `reads_impact` attribute counts as an impact rule.
+When no configured guard is one, `up()` prints each `danger` finding
+on stderr, since no rule reads them.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Callable, List, NamedTuple, Sequence
+from typing import Callable, List, NamedTuple, Optional, Sequence, Union
 
 from sustained.analysis import (
     _ALTER_DROP_RE,
@@ -48,6 +65,13 @@ from sustained.analysis import (
     statement_scope,
 )
 from sustained.dialects import Dialects
+from sustained.impact.model import (
+    Blocks,
+    Confidence,
+    StatementImpact,
+    TableImpact,
+    Work,
+)
 
 # The two verdicts a rule can return. There is no third severity: a rule
 # either stops the run or tells the operator about it.
@@ -166,6 +190,9 @@ def index_must_be_concurrent() -> Guard:
     carries the '-- sustained: no transaction' marker. Such a migration
     that fails part way leaves an invalid index behind, which you drop by
     hand before you run it again.
+
+    `max_blocking("ddl")` reads the impact analysis instead, which also
+    passes an index on a table the same run created.
     """
 
     def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
@@ -199,6 +226,9 @@ def no_table_rewrite() -> Guard:
     rewrites depends on the engine, its version, and whether the two
     types coerce, so a block here would stop safe statements. Read the
     warning against your own engine.
+
+    `no_rewrite()` reads the impact analysis instead, which knows the
+    engine version, which type changes coerce, and the table's size.
     """
 
     def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
@@ -296,3 +326,204 @@ def max_statements(limit: int) -> Guard:
         ]
 
     return guard
+
+
+def reads_impact(guard: Guard) -> bool:
+    """Whether a guard is an impact rule, which reads `statement.impact`."""
+    return bool(getattr(guard, "reads_impact", False))
+
+
+def _impact_rule(guard: Guard) -> Guard:
+    """Marks a guard as one that reads `statement.impact`."""
+    setattr(guard, "reads_impact", True)
+    return guard
+
+
+def statement_impacts(
+    statements: Sequence[str], dialect: Dialects
+) -> List[Optional[StatementImpact]]:
+    """
+    Each statement's impact, in order: the `impact` a MigrationStatement
+    carries, or else what `analyze()` gives with no context, reading the
+    statements as one run. Every entry is None on a dialect the analysis
+    does not cover.
+    """
+    from sustained.impact import analyze, supported
+
+    if not supported(dialect):
+        return [None] * len(statements)
+    attached: List[Optional[StatementImpact]] = [
+        getattr(s, "impact", None) for s in statements
+    ]
+    if all(impact is not None for impact in attached):
+        return attached
+    analyzed = analyze(statements, dialect).statements
+    return [a if a is not None else b for a, b in zip(attached, analyzed)]
+
+
+def _over(
+    table: TableImpact,
+    over_rows: Optional[int],
+    over_bytes: Optional[int],
+    assume_small: bool,
+) -> bool:
+    """
+    Whether the table passes a size threshold. With neither threshold
+    every table passes. A known size past either threshold passes; a
+    size a threshold needs and the analysis does not know passes unless
+    `assume_small` is set.
+    """
+    if over_rows is None and over_bytes is None:
+        return True
+    unknown = False
+    for size, limit in ((table.rows, over_rows), (table.bytes, over_bytes)):
+        if limit is None:
+            continue
+        if size is None:
+            unknown = True
+        elif size > limit:
+            return True
+    return unknown and not assume_small
+
+
+def _threshold_rule(
+    name: str, over_rows: Optional[int], over_bytes: Optional[int]
+) -> str:
+    """The rule name a verdict reports, with the thresholds given."""
+    parts = [name] if name else []
+    if over_rows is not None:
+        parts.append(f"over_rows={over_rows}")
+    if over_bytes is not None:
+        parts.append(f"over_bytes={over_bytes}")
+    return ", ".join(parts)
+
+
+def max_blocking(
+    limit: Union[Blocks, str],
+    over_rows: Optional[int] = None,
+    over_bytes: Optional[int] = None,
+    assume_small: bool = False,
+) -> Guard:
+    """
+    Blocks a statement that blocks more than `limit` on a table past the
+    size thresholds. `limit` is a `Blocks` member or its name:
+    `nothing`, `ddl`, `writes`, or `reads_and_writes`. So
+    `max_blocking("writes")` passes a lock that stops writes and blocks
+    one that stops reads as well.
+
+    With neither `over_rows` nor `over_bytes`, every table counts. With
+    either, a table counts when its estimated size passes one of them,
+    and when the size the threshold reads is unknown, unless
+    `assume_small=True`. A table the run created earlier blocks nothing
+    in the analysis, so it never counts.
+    """
+    ceiling = Blocks(limit)
+    if (
+        over_rows is not None
+        and over_rows < 0
+        or over_bytes is not None
+        and over_bytes < 0
+    ):
+        raise ValueError("max_blocking needs thresholds of 0 or more.")
+    rule = f"max_blocking({_threshold_rule(str(ceiling), over_rows, over_bytes)})"
+
+    def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
+        found = []
+        for statement, impact in zip(
+            statements, statement_impacts(statements, dialect)
+        ):
+            if impact is not None and any(
+                table.blocks > ceiling
+                and _over(table, over_rows, over_bytes, assume_small)
+                for table in impact.tables
+            ):
+                found.append(Verdict(rule, BLOCK, normalize_statement(statement)))
+        return found
+
+    return _impact_rule(guard)
+
+
+def no_rewrite(
+    over_rows: Optional[int] = None,
+    over_bytes: Optional[int] = None,
+    assume_small: bool = False,
+) -> Guard:
+    """
+    Blocks a statement that rewrites a table past the size thresholds:
+    work `rewrite`, or `unknown`, which the analysis ranks above it. The
+    thresholds read as they do for `max_blocking()`. A table the run
+    created earlier is never rewritten in the analysis.
+    """
+    if (
+        over_rows is not None
+        and over_rows < 0
+        or over_bytes is not None
+        and over_bytes < 0
+    ):
+        raise ValueError("no_rewrite needs thresholds of 0 or more.")
+    rule = f"no_rewrite({_threshold_rule('', over_rows, over_bytes)})"
+
+    def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
+        found = []
+        for statement, impact in zip(
+            statements, statement_impacts(statements, dialect)
+        ):
+            if impact is not None and any(
+                table.work >= Work.REWRITE
+                and _over(table, over_rows, over_bytes, assume_small)
+                for table in impact.tables
+            ):
+                found.append(Verdict(rule, BLOCK, normalize_statement(statement)))
+        return found
+
+    return _impact_rule(guard)
+
+
+def lock_timeout_required() -> Guard:
+    """
+    Blocks a statement whose lock would queue reads or writes with no
+    lock timeout in scope: the statements the analysis gives a
+    `<profile>.lock_timeout` finding, such as `pg.lock_timeout`. It
+    reads timeout scopes as `no_lock_without_timeout()` does, and covers
+    every such lock where that rule reads only ALTER TABLE and DROP
+    TABLE. A timeout the connection already has covers the whole run
+    when the migrator read it.
+    """
+
+    def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
+        found = []
+        for statement, impact in zip(
+            statements, statement_impacts(statements, dialect)
+        ):
+            if impact is not None and any(
+                f.rule.endswith(".lock_timeout") for f in impact.findings
+            ):
+                found.append(
+                    Verdict(
+                        "lock_timeout_required", BLOCK, normalize_statement(statement)
+                    )
+                )
+        return found
+
+    return _impact_rule(guard)
+
+
+def no_unknown_impact() -> Guard:
+    """
+    Blocks a statement the impact analysis cannot read, the strict mode
+    for hand-written SQL. The other impact rules pass such a statement,
+    since the analysis names no table for it.
+    """
+
+    def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
+        found = []
+        for statement, impact in zip(
+            statements, statement_impacts(statements, dialect)
+        ):
+            if impact is not None and impact.confidence is Confidence.UNKNOWN:
+                found.append(
+                    Verdict("no_unknown_impact", BLOCK, normalize_statement(statement))
+                )
+        return found
+
+    return _impact_rule(guard)

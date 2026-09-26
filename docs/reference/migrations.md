@@ -409,7 +409,28 @@ check_guards(guards, run, dialect, reported=None)
 ```
 {: .sig #check_guards}
 
-Runs the guards over a run. Raises `GuardBlocked` on a blocking verdict, prints warnings on stderr.
+Runs the guards over a run. Raises `GuardBlocked` on a blocking verdict, prints warnings on stderr. The statements carry no `impact`, so an impact rule analyzes them with no server facts; `up()` attaches the impact first.
+
+```python
+check_statements(guards, statements, dialect, reported=None)
+```
+{: .sig #check_statements}
+
+What `check_guards()` does, over statements already collected, such as statements `with_impact()` returned.
+
+```python
+with_impact(statements, report) -> list[MigrationStatement]
+```
+{: .sig #with_impact}
+
+The statements with each one's `StatementImpact` from `report` on its `impact` attribute. `report` must be the analysis of the same statements, in the same order.
+
+```python
+report_danger(statements, reported=None)
+```
+{: .sig #report_danger}
+
+Prints each `danger` finding of the statements' attached impacts on stderr, one line each: `danger: <rule>  <statement>: <message>`. `reported` is a set of `(rule, statement)` pairs already printed, which it skips and adds to.
 
 ### `Callbacks`
 
@@ -424,7 +445,7 @@ Callbacks(before_migrate=None, after_migrate=None, on_error=None)
 
 Guards live in `sustained.guards`. A guard is a `Callable[[Sequence[MigrationStatement], Dialects], list[Verdict]]`. It reads the statements an up run would apply and returns one `Verdict(rule, verdict, statement)` per objection, where the `verdict` field is `BLOCK` (`'block'`) or `WARN` (`'warn'`). A `MigrationStatement` (in `sustained.analysis`) is a `str` that also records `migration_id`, the migration the statement came from, and `transactional`, that migration's transaction flag. A guard typed against `Sequence[str]` still fits the type and still runs, because the statements are strings. `statement_scope(statement)` returns the pair for one statement, and gives `(None, True)` for a plain string.
 
-`up()` raises `GuardBlocked` on a blocking verdict, before any statement runs, and prints warnings on stderr. A callable step renders no SQL, so guards cannot read it. `down()` runs no guards, because a down step undoes work the rules already passed, and `no_drops()` would block every rollback of a create.
+`up()` raises `GuardBlocked` on a blocking verdict, before any statement runs, and prints warnings on stderr. On a dialect the impact analysis covers, `up()` first reads the server facts, analyzes the run, and sets each statement's `impact`. When no guard has a true `reads_impact` attribute, it then prints each `danger` finding on stderr after the guards pass. A callable step renders no SQL, so guards cannot read it. `down()` runs no guards, because a down step undoes work the rules already passed, and `no_drops()` would block every rollback of a create.
 
 ```python
 no_drops() -> Guard
@@ -464,6 +485,50 @@ max_statements(limit) -> Guard
 {: .sig #max_statements}
 
 Blocks every statement past `limit`. A limit below 1 raises `ValueError`.
+
+```python
+max_blocking(limit, over_rows=None, over_bytes=None, assume_small=False) -> Guard
+```
+{: .sig #max_blocking}
+
+Blocks a statement that blocks more than `limit` on a table past the thresholds. `limit` is a `Blocks` member or its name. With neither threshold every table counts. With either, a table counts when its estimated size passes one of them, and when the size the threshold reads is unknown, unless `assume_small=True`. A negative threshold or an unknown `limit` raises `ValueError`. The verdict's rule reads `max_blocking(writes, over_rows=100000)`.
+
+```python
+no_rewrite(over_rows=None, over_bytes=None, assume_small=False) -> Guard
+```
+{: .sig #no_rewrite}
+
+Blocks a statement whose work on a table past the thresholds is `rewrite` or `unknown`. The thresholds read as they do for `max_blocking()`.
+
+```python
+lock_timeout_required() -> Guard
+```
+{: .sig #lock_timeout_required}
+
+Blocks a statement with a `<profile>.lock_timeout` finding, such as `pg.lock_timeout`: a lock that would queue reads or writes with no lock timeout in scope. Timeout scopes read as they do for `no_lock_without_timeout()`, and a timeout the connection already has covers the run when `up()` read it.
+
+```python
+no_unknown_impact() -> Guard
+```
+{: .sig #no_unknown_impact}
+
+Blocks a statement whose impact has confidence `unknown`.
+
+The four rules above are silent on a dialect the impact analysis does not cover.
+
+```python
+reads_impact(guard) -> bool
+```
+{: .sig #reads_impact}
+
+Whether a guard has a true `reads_impact` attribute. The four impact rules set it. Set it on a guard of your own that reads `statement.impact`, and `up()` stops printing `danger` findings.
+
+```python
+statement_impacts(statements, dialect) -> list[StatementImpact | None]
+```
+{: .sig #statement_impacts}
+
+Each statement's impact, in order: its `impact` attribute, or else what `analyze()` gives with no server facts, reading the statements as one run. Every entry is `None` on a dialect the analysis does not cover.
 
 ```python
 run_guards(guards, statements, dialect) -> list[Verdict]
@@ -664,11 +729,11 @@ One migration reduced to its id, state, repeatable flag, statement count, and de
 `PendingSummary(id, state, repeatable, sql, destructive)` contains that summary. `sql` is `None` for a callable step, which has no SQL to count. Each statement in it is a `MigrationStatement`.
 
 ```python
-MigrationStatement(statement, migration_id=None, transactional=True)
+MigrationStatement(statement, migration_id=None, transactional=True, destructive=None, intent=None, impact=None)
 ```
 {: .sig #migration-statement}
 
-One statement with the migration it came from. It subclasses `str`, so anything that reads statements as strings reads these too. `migration_id` is the migration's id, or `None` when nothing named one. `transactional` is that migration's transaction flag.
+One statement with the migration it came from. It subclasses `str`, so anything that reads statements as strings reads these too. `migration_id` is the migration's id, or `None` when nothing named one. `transactional` is that migration's transaction flag. `destructive` marks a statement the diff knows removes data. `intent` is what a generated statement is meant to do. `impact` is the statement's `StatementImpact`, which `up()` sets before the guards run. A statement wrapped again keeps the `destructive`, `intent`, and `impact` of the statement it wraps when none is given. None of the three takes part in equality or in a checksum.
 
 ```python
 statement_scope(statement) -> tuple[str | None, bool]

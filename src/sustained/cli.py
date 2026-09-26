@@ -38,7 +38,9 @@ anyway and records the override on the database.
 `impact` prints the locks each statement of the run would take, what
 they block, and the work each does; see sustained.impact. It never
 gates: blocking on impact is the guards' job. `plan` lists the
-statements whose impact merits a look in an `impact` section.
+statements whose impact merits a look in an `impact` section. When no
+guard reads impact, `migrate` prints each `danger` finding on stderr, as
+`Migrator.up()` does.
 `rehearse --trace` observes each statement on Postgres and prints the
 impact report with what the server did in place of the prediction.
 
@@ -78,7 +80,13 @@ from sustained.analysis import (
 from sustained.dialects import Dialects
 from sustained.exceptions import GuardBlocked, MigrationError, RehearsalRequired
 from sustained.guards import Verdict, blocking, run_guards
-from sustained.impact import StatementImpact, analyze, read_context, supported
+from sustained.impact import (
+    EngineContext,
+    StatementImpact,
+    analyze,
+    read_context,
+    supported,
+)
 from sustained.impact.report import (
     flagged,
     flagged_line,
@@ -97,6 +105,7 @@ from sustained.migrations import (
     RehearsalResult,
     migration_sql,
     rehearsal_failed,
+    with_impact,
 )
 from sustained.types import Connection
 
@@ -366,6 +375,7 @@ def _plan_verdicts(
     summaries: List[PendingSummary],
     drift: Optional[List[str]],
     dialect: Dialects,
+    context: Optional[EngineContext] = None,
 ) -> Dict[str, List[Verdict]]:
     """
     The guards' verdicts on the statements migrate would apply, keyed by
@@ -380,10 +390,16 @@ def _plan_verdicts(
     same ones migrate would. The drift the plan prints is the wider set: it
     includes the drops migrate does not generate, and no verdict is
     reported on those, because no run would read them.
+
+    With a context, each statement's impact is analyzed with it and
+    attached before the guards run, as migrate attaches it.
     """
     guards = list(getattr(config, "guards", None) or [])
-    statements = [s for summary in summaries for s in summary.sql or []]
+    statements: List[str] = [s for summary in summaries for s in summary.sql or []]
     statements.extend(drift or [])
+    if guards and context is not None:
+        tagged = [MigrationStatement(s) for s in statements]
+        statements = list(with_impact(tagged, analyze(tagged, dialect, context)))
     by_statement: Dict[str, List[Verdict]] = {}
     for verdict in run_guards(guards, statements, dialect):
         by_statement.setdefault(normalize_statement(verdict.statement), []).append(
@@ -407,19 +423,19 @@ def _plan_impact(
     migrator: Migrator,
     summaries: List[PendingSummary],
     drift: Optional[List[str]],
+    context: Optional[EngineContext],
 ) -> Optional[_PlanImpact]:
     """
     The impact of the pending statements and the drift preview, analyzed
     as one run in that order with the server facts the connection gives,
-    or None on a dialect the analysis does not cover. The analysis
-    returns one entry per statement in run order, so the entries map
-    back to the statements by position.
+    or None on a dialect the analysis does not cover, which reads no
+    context. The analysis returns one entry per statement in run order,
+    so the entries map back to the statements by position.
     """
-    if not supported(migrator.dialect):
+    if context is None:
         return None
     statements = [s for summary in summaries for s in summary.sql or []]
     statements.extend(drift or [])
-    context = read_context(migrator.connection, migrator.dialect)
     impacts = iter(analyze(statements, migrator.dialect, context).statements)
 
     def take(group: Optional[List[str]]) -> Optional[List[StatementImpact]]:
@@ -528,15 +544,21 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
     problems = migrator.validate(raise_on_problems=False)
     plans = _model_plans(migrator, config)
     drift = _drift_statements(migrator, plans)
+    context = (
+        read_context(migrator.connection, migrator.dialect)
+        if supported(migrator.dialect)
+        else None
+    )
     by_statement = _plan_verdicts(
         config,
         summaries,
         _migrate_drift_statements(migrator, plans),
         migrator.dialect,
+        context,
     )
     verdicts = [v for group in by_statement.values() for v in group]
     blockers = blocking(verdicts)
-    impact = _plan_impact(migrator, summaries, drift)
+    impact = _plan_impact(migrator, summaries, drift, context)
 
     # Problems mean the plan itself cannot be trusted, so they outrank a
     # blocked statement, which outranks work merely waiting.

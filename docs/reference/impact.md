@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Impact reference
-description: "Reference for sustained.impact: analyze(), read_context(), rehearse(trace=True), the ImpactReport model, EngineContext, thresholds, and the report's text and JSON forms."
+description: "Reference for sustained.impact: analyze(), read_context(), the impact attached for guards, rehearse(trace=True), the ImpactReport model, EngineContext, thresholds, and the report's text and JSON forms."
 ---
 
 These names live in `sustained.impact`, except where a section names another module.
@@ -49,6 +49,10 @@ await AsyncMigrator.impact(models=None) -> ImpactReport
 The impact of the run `up()` would make: every pending migration, then the migration the models generate when `models` is given. The generated migration is diffed against the schema as it is now, before the pending migrations run, as `plan()` diffs it. A callable step renders no SQL and is left out. Nothing is written.
 
 The context comes from `read_context()` on the migrator's connection, or `async_read_context()` on its adapter. Both raise `DialectError` on a dialect the analysis does not cover, before any statement runs.
+
+## Guards over impact
+
+`up()` reads the context the way `Migrator.impact()` does, analyzes the run before the guards run, and sets each `MigrationStatement`'s `impact` attribute to its `StatementImpact`. The impact rules `max_blocking()`, `no_rewrite()`, `lock_timeout_required()`, and `no_unknown_impact()` live in `sustained.guards`; see [Guards](/reference/migrations#guards).
 
 ## `Migrator.rehearse(trace=True)`
 
