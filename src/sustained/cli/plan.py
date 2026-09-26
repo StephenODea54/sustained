@@ -22,7 +22,7 @@ from sustained.analysis import (
     normalize_statement,
     summarize,
 )
-from sustained.cli.config import _assert_algorithm
+from sustained.cli.config import _assert_algorithm, _exact_counts
 from sustained.cli.output import (
     JsonValue,
     _count,
@@ -334,7 +334,7 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
     plans = _model_plans(migrator, config)
     drift = _drift_statements(migrator, plans)
     context = (
-        read_context(migrator.connection, migrator.dialect)
+        read_context(migrator.connection, migrator.dialect, _exact_counts(config, args))
         if supported(migrator.dialect)
         else None
     )

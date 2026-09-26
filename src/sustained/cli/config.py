@@ -5,6 +5,7 @@ it names.
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import os
 import sys
@@ -63,6 +64,16 @@ def _load_config(module_name: str) -> ModuleType:
 def _assert_algorithm(config: ModuleType) -> bool:
     """Whether the config module asks for asserted ALGORITHM and LOCK clauses."""
     return bool(getattr(config, "assert_algorithm", False))
+
+
+def _exact_counts(config: ModuleType, args: argparse.Namespace) -> bool:
+    """
+    Whether the SQLite context read counts rows: the command's
+    --exact-counts flag, or the config module's exact_counts attribute.
+    """
+    return bool(
+        getattr(args, "exact_counts", False) or getattr(config, "exact_counts", False)
+    )
 
 
 def _close_quietly(connection: object) -> None:

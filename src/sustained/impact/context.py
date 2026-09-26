@@ -218,16 +218,22 @@ def attempt(statement: str) -> Generator[str, Rows, Optional[Rows]]:
     return rows
 
 
-def read_context(connection: Connection, dialect: "Dialects") -> EngineContext:
+def read_context(
+    connection: Connection, dialect: "Dialects", exact_counts: bool = False
+) -> EngineContext:
     """
     The server facts the dialect's rules read, from a blocking
     connection: the version, the settings, the table sizes, and the
     schema of the connection's own schema. Raises ValueError for a
     dialect that has no impact rules yet.
+
+    With `exact_counts`, the SQLite read counts the rows of each table
+    `sqlite_stat1` has no row count for. The other profiles read the
+    estimates the server keeps either way.
     """
     from sustained.introspect.runner import introspect_schema, run_plan
 
-    context = run_plan(connection, dialect, _plan(dialect))
+    context = run_plan(connection, dialect, _plan(dialect, exact_counts))
     try:
         schema = introspect_schema(connection, dialect)
     except Exception:
@@ -236,12 +242,12 @@ def read_context(connection: Connection, dialect: "Dialects") -> EngineContext:
 
 
 async def async_read_context(
-    adapter: "AsyncAdapter", dialect: "Dialects"
+    adapter: "AsyncAdapter", dialect: "Dialects", exact_counts: bool = False
 ) -> EngineContext:
     """What read_context() reads, through an async adapter."""
     from sustained.introspect.runner import async_introspect_schema, async_run_plan
 
-    context = await async_run_plan(adapter, dialect, _plan(dialect))
+    context = await async_run_plan(adapter, dialect, _plan(dialect, exact_counts))
     try:
         schema = await async_introspect_schema(adapter, dialect)
     except Exception:
@@ -249,13 +255,13 @@ async def async_read_context(
     return _with_schema(context, schema)
 
 
-def _plan(dialect: "Dialects") -> ContextPlan:
+def _plan(dialect: "Dialects", exact_counts: bool) -> ContextPlan:
     from sustained.impact.rules import profile_for
 
     profile = profile_for(dialect)
     if profile is None:
         raise ValueError(f"Impact analysis does not cover {dialect.name} yet.")
-    return profile.context_plan()
+    return profile.context_plan(exact_counts)
 
 
 def _with_schema(context: EngineContext, schema: "Snapshot") -> EngineContext:

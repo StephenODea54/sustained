@@ -3,12 +3,17 @@ Tests for the SQLite rules, the database-wide window, and the context
 read.
 """
 
+import asyncio
+import contextlib
+import io
 import json
 import sqlite3
 import unittest
 from pathlib import Path
 from types import MappingProxyType
 
+from sustained.aio import DbApiAsyncAdapter
+from sustained.aio_migrations import AsyncMigrator
 from sustained.analysis import MigrationStatement
 from sustained.dialects import Dialects
 from sustained.impact import (
@@ -286,6 +291,41 @@ class ContextTestCase(unittest.TestCase):
         self.assertIsNone(ctx.stats("t").rows)
         self.assertIn("sizes", ctx.read)
 
+    def test_exact_counts_counts_the_tables_sqlite_stat1_leaves_out(self):
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        connection.executescript(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, n TEXT);"
+            "CREATE INDEX ix ON t (n);"
+            "CREATE TABLE u (id INTEGER);"
+            'CREATE TABLE "odd ""name" (id INTEGER);'
+        )
+        connection.executemany("INSERT INTO t (n) VALUES (?)", [("x",)] * 300)
+        connection.execute("ANALYZE")
+        connection.executemany("INSERT INTO t (n) VALUES (?)", [("y",)] * 5)
+        connection.executemany("INSERT INTO u VALUES (?)", [(1,), (2,)])
+        connection.commit()
+        ctx = read_context(connection, SQLITE, exact_counts=True)
+        # t keeps the estimate ANALYZE wrote; the others are counted.
+        self.assertEqual(ctx.stats("t").rows, 300)
+        self.assertEqual(ctx.stats("u").rows, 2)
+        self.assertEqual(ctx.stats('odd "name').rows, 0)
+        self.assertIn("counts", ctx.read)
+        self.assertNotIn("counts", read_context(connection, SQLITE).read)
+
+    def test_exact_counts_skips_what_it_cannot_read(self):
+        failure = RuntimeError("no such table")
+        answers = [[("3.45.1",)], [("wal",)], [("t", 5)], [("t",), ("v",)]]
+        answers += [failure, failure, failure, failure]
+        asked, ctx = drive(context_plan(exact_counts=True), answers)
+        self.assertEqual(asked[4], 'SELECT COUNT(*) FROM "v"')
+        self.assertEqual(len(asked), 8)
+        self.assertEqual(ctx.stats("t").rows, 5)
+        self.assertIsNone(ctx.stats("v").rows)
+        self.assertIn("counts", ctx.read)
+        _, ctx = drive(context_plan(exact_counts=True), [failure] * 7)
+        self.assertNotIn("counts", ctx.read)
+
     def test_failed_reads_leave_their_facts_out(self):
         failure = RuntimeError("no such table")
         asked, ctx = drive(context_plan(), [failure] * 6)
@@ -365,6 +405,56 @@ class MigratorTestCase(unittest.TestCase):
         self.assertIn("version", report.read)
         (statement,) = report.statements
         self.assertEqual(statement.tables[0].work, Work.REWRITE)
+        self.assertIsNone(statement.tables[0].rows)
+
+    def test_exact_counts_reaches_the_read(self):
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        connection.execute("CREATE TABLE t (id INTEGER, c TEXT)")
+        connection.execute("INSERT INTO t VALUES (1, 'a')")
+        connection.commit()
+        up = "ALTER TABLE t DROP COLUMN c"
+        migrator = Migrator(connection, [Migration("001_drop", up=up)], dialect=SQLITE)
+        (statement,) = migrator.impact(exact_counts=True).statements
+        self.assertEqual(statement.tables[0].rows, 1)
+        script = migrator.script(annotate=True, exact_counts=True)
+        self.assertIn("~1 rows", script)
+
+    def test_up_counts_rows_before_the_guards_run(self):
+        seen = []
+
+        def guard(statements, dialect):
+            seen.extend(s.impact for s in statements)
+            return []
+
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        connection.execute("CREATE TABLE t (id INTEGER, c TEXT)")
+        connection.execute("INSERT INTO t VALUES (1, 'a')")
+        connection.commit()
+        up = "ALTER TABLE t DROP COLUMN c"
+        migrator = Migrator(
+            connection, [Migration("001_drop", up=up)], dialect=SQLITE, guards=[guard]
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            migrator.up(exact_counts=True, unrehearsed=True)
+        self.assertEqual(seen[0].tables[0].rows, 1)
+
+    def test_the_async_migrator_passes_exact_counts_to_the_read(self):
+        connection = sqlite3.connect(":memory:", check_same_thread=False)
+        self.addCleanup(connection.close)
+        connection.execute("CREATE TABLE t (id INTEGER, c TEXT)")
+        connection.execute("INSERT INTO t VALUES (1, 'a')")
+        connection.commit()
+        up = "ALTER TABLE t DROP COLUMN c"
+        migrator = AsyncMigrator(
+            DbApiAsyncAdapter(connection),
+            [Migration("001_drop", up=up)],
+            dialect=SQLITE,
+        )
+        report = asyncio.run(migrator.impact(exact_counts=True))
+        self.assertEqual(report.statements[0].tables[0].rows, 1)
+        self.assertIn("counts", report.read)
 
 
 if __name__ == "__main__":

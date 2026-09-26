@@ -246,7 +246,7 @@ class Migrator(MigratorBase):
             return run_plan(self._connection, self._dialect, request.plan)
         from sustained.impact import read_context
 
-        return read_context(self._connection, self._dialect)
+        return read_context(self._connection, self._dialect, request.exact_counts)
 
     def _execute(
         self, cursor: "Cursor", sql: str, params: Tuple[SqlValue, ...]
@@ -463,6 +463,7 @@ class Migrator(MigratorBase):
         type_casts: Optional[dict[str, str]] = None,
         unrehearsed: bool = False,
         assert_algorithm: bool = False,
+        exact_counts: bool = False,
     ) -> List[str]:
         """
         Applies pending migrations in order, stopping after the target id
@@ -512,6 +513,10 @@ class Migrator(MigratorBase):
         registered migrations applied. Any error raised after a migration
         applied lists the ids that applied on the exception's `applied`
         attribute. The migrator's callbacks fire around the run.
+
+        On a dialect the impact analysis covers, the server facts are
+        read before the guards run, as impact() reads them, and
+        exact_counts passes on to that read.
         """
         return self._drive(
             runs.up(
@@ -528,6 +533,7 @@ class Migrator(MigratorBase):
                 type_casts=type_casts,
                 unrehearsed=unrehearsed,
                 assert_algorithm=assert_algorithm,
+                exact_counts=exact_counts,
             )
         )
 
@@ -736,6 +742,7 @@ class Migrator(MigratorBase):
         self,
         models: Optional[List[Type["Model"]]] = None,
         assert_algorithm: bool = False,
+        exact_counts: bool = False,
     ) -> "ImpactReport":
         """
         The impact of the run up() would make: every pending migration,
@@ -753,10 +760,16 @@ class Migrator(MigratorBase):
         pending migrations run, as plan() is, and assert_algorithm
         writes the clauses plan() describes on it. Nothing is written.
 
+        On SQLite, exact_counts=True counts the rows of each table that
+        sqlite_stat1 has no row count for, since a table ANALYZE has not
+        read, or read while it was empty, has no estimate. Each count
+        reads the whole table. Other dialects read the estimates the
+        server keeps either way.
+
         Raises DialectError on a dialect the analysis does not cover
         yet.
         """
-        return self._drive(runs.impact(self, models, assert_algorithm))
+        return self._drive(runs.impact(self, models, assert_algorithm, exact_counts))
 
     def read_schema(self, models: List[Type["Model"]]) -> "Snapshot":
         """
@@ -800,7 +813,9 @@ class Migrator(MigratorBase):
             type_casts=type_casts,
         )
 
-    def script(self, direction: str = "up", annotate: bool = False) -> str:
+    def script(
+        self, direction: str = "up", annotate: bool = False, exact_counts: bool = False
+    ) -> str:
         """
         Renders the SQL a run would execute, without executing anything,
         for review or DBA handoff. 'up' renders every pending migration;
@@ -817,10 +832,11 @@ class Migrator(MigratorBase):
         connection, and its impact prints above it as `-- impact:`
         comments: the tables it locks, then its findings and their safer
         forms. Each migration's windows follow its last statement, and
-        the report's summary is the first line. Raises DialectError on
+        the report's summary is the first line. exact_counts counts
+        rows for that read, as impact() describes. Raises DialectError on
         a dialect the analysis does not cover yet.
         """
-        return self._drive(bookkeeping.script(self, direction, annotate))
+        return self._drive(bookkeeping.script(self, direction, annotate, exact_counts))
 
     def down_to(self, target: str, allow_changed: bool = False) -> List[str]:
         """

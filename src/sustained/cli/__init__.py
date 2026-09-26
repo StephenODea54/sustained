@@ -24,6 +24,10 @@ The config module names the pieces the migrator needs:
   clause on the statements generated from the models on MySQL and
   MariaDB, as `Migrator.plan(assert_algorithm=True)` does, in `plan`,
   `impact`, `migrate`, and `rehearse` (optional)
+- `exact_counts`: True to count the rows of each SQLite table that
+  `sqlite_stat1` has no row count for when the impact analysis reads
+  the database, in `plan`, `impact`, `migrate`, and `script --annotate`,
+  as the `--exact-counts` flag of those commands does (optional)
 - `before_migrate(connection)`, `after_migrate(connection, applied)`, and
   `on_error(connection, migration_id, error)`: callbacks around the
   `migrate` command; `on_error` also runs when `down` fails (optional)
@@ -118,15 +122,28 @@ def _build_parser() -> argparse.ArgumentParser:
         "Show every migration's state: applied, pending, or changed.",
         machine_readable=True,
     )
-    command(
-        "plan",
-        "Show the pending migrations, the problems, and the model drift.",
-        machine_readable=True,
+
+    def counts_rows(sub: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        sub.add_argument(
+            "--exact-counts",
+            action="store_true",
+            help="Count the rows of SQLite tables sqlite_stat1 has no count for.",
+        )
+        return sub
+
+    counts_rows(
+        command(
+            "plan",
+            "Show the pending migrations, the problems, and the model drift.",
+            machine_readable=True,
+        )
     )
-    command(
-        "impact",
-        "Show the locks, blocking, and work of each statement in the run.",
-        machine_readable=True,
+    counts_rows(
+        command(
+            "impact",
+            "Show the locks, blocking, and work of each statement in the run.",
+            machine_readable=True,
+        )
     )
 
     # Ordered as they are used: plan reads, rehearse proves, migrate applies.
@@ -141,7 +158,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Observe the locks and rewrites of each statement (Postgres, MySQL, MariaDB).",
     )
 
-    migrate = command("migrate", "Apply pending migrations in order.")
+    migrate = counts_rows(command("migrate", "Apply pending migrations in order."))
     migrate.add_argument("--target", help="Stop after this migration id.")
     migrate.add_argument(
         "--no-validate", action="store_true", help="Skip validation before the run."
@@ -179,7 +196,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     command("repair", "Fix tracking rows after failures or intentional edits.")
 
-    script = command("script", "Print the SQL a run would execute.")
+    script = counts_rows(command("script", "Print the SQL a run would execute."))
     script.add_argument("direction", nargs="?", choices=("up", "down"), default="up")
     script.add_argument(
         "--annotate",

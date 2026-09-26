@@ -227,7 +227,9 @@ class AsyncMigrator(MigratorBase):
             return await async_run_plan(self._adapter, self._dialect, request.plan)
         from sustained.impact import async_read_context
 
-        return await async_read_context(self._adapter, self._dialect)
+        return await async_read_context(
+            self._adapter, self._dialect, request.exact_counts
+        )
 
     async def _run_step(self, step: MigrationStep) -> None:
         elements = _step_elements(step)
@@ -375,7 +377,9 @@ class AsyncMigrator(MigratorBase):
         """The applied migration ids, without creating the table."""
         return await self._drive(bookkeeping.read_applied(self))
 
-    async def script(self, direction: str = "up", annotate: bool = False) -> str:
+    async def script(
+        self, direction: str = "up", annotate: bool = False, exact_counts: bool = False
+    ) -> str:
         """
         Renders the SQL a run would execute, without executing anything,
         for review or DBA handoff. 'up' renders every pending migration;
@@ -386,7 +390,9 @@ class AsyncMigrator(MigratorBase):
         without one reads as a database with no migrations applied.
         Migrator.script() renders the same text, with annotate=True too.
         """
-        return await self._drive(bookkeeping.script(self, direction, annotate))
+        return await self._drive(
+            bookkeeping.script(self, direction, annotate, exact_counts)
+        )
 
     async def pending(self) -> List[Migration]:
         """
@@ -470,6 +476,7 @@ class AsyncMigrator(MigratorBase):
         type_casts: Optional[Dict[str, str]] = None,
         unrehearsed: bool = False,
         assert_algorithm: bool = False,
+        exact_counts: bool = False,
     ) -> List[str]:
         """
         Applies pending migrations in order, stopping after the target id
@@ -534,6 +541,7 @@ class AsyncMigrator(MigratorBase):
                 type_casts=type_casts,
                 unrehearsed=unrehearsed,
                 assert_algorithm=assert_algorithm,
+                exact_counts=exact_counts,
             )
         )
 
@@ -651,6 +659,7 @@ class AsyncMigrator(MigratorBase):
         self,
         models: Optional[List[Type["Model"]]] = None,
         assert_algorithm: bool = False,
+        exact_counts: bool = False,
     ) -> "ImpactReport":
         """
         The impact of the run up() would make, with the server facts read
@@ -658,7 +667,9 @@ class AsyncMigrator(MigratorBase):
         migration is diffed as plan() diffs it here, from a replay of one
         schema read.
         """
-        return await self._drive(runs.impact(self, models, assert_algorithm))
+        return await self._drive(
+            runs.impact(self, models, assert_algorithm, exact_counts)
+        )
 
     async def drift(
         self,

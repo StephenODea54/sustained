@@ -18,15 +18,15 @@ Guide: [Schema and Migrations](/schema#command-line).
 
 | Command | Options | Does |
 | --- | --- | --- |
-| `plan` | `--json` | Shows the pending migrations, the problems, and the model drift. |
-| `impact` | `--json` | Shows the locks, blocking, and work of each statement in the run. |
+| `plan` | `--json`, `--exact-counts` | Shows the pending migrations, the problems, and the model drift. |
+| `impact` | `--json`, `--exact-counts` | Shows the locks, blocking, and work of each statement in the run. |
 | `status` | `--json` | Shows every migration's state: applied, pending, or changed. |
 | `rehearse` | `--json`, `--trace` | Runs the pending migrations up and back down, then rolls it all back. |
-| `migrate` | `--target ID`, `--no-validate`, `--allow-out-of-order`, `--unrehearsed` | Applies pending migrations in order. |
+| `migrate` | `--target ID`, `--no-validate`, `--allow-out-of-order`, `--unrehearsed`, `--exact-counts` | Applies pending migrations in order. |
 | `down` | `--steps N` (default 1) or `--to ID` | Reverts applied migrations, newest first. |
 | `validate` | `--json` | Checks the tracking table against the migrations. |
 | `repair` | | Fixes tracking rows after failures or intentional edits. |
-| `script` | `up` or `down` (default `up`), `--annotate` | Prints the SQL a run would execute, without running it. `--annotate` prints each statement's impact above it as `-- impact:` comments. |
+| `script` | `up` or `down` (default `up`), `--annotate`, `--exact-counts` | Prints the SQL a run would execute, without running it. `--annotate` prints each statement's impact above it as `-- impact:` comments. |
 | `baseline` | `TARGET` (required) | Records migrations as applied without running them. |
 
 `--steps` and `--to` are mutually exclusive.
@@ -74,6 +74,7 @@ A `migrate` that fails part way leaves the migrations it already applied in plac
 | `guards` | no | `list[Guard]` from `sustained.guards` | `[]` |
 | `get_rehearsal_connection` | no | `() -> Connection`, a scratch database | `None` |
 | `assert_algorithm` | no | `bool`; `plan`, `impact`, `migrate`, and `rehearse` pass it to the diff of `models` | `False` |
+| `exact_counts` | no | `bool`; `plan`, `impact`, `migrate`, and `script --annotate` count the rows of each SQLite table `sqlite_stat1` has no row count for, as `--exact-counts` does | `False` |
 | `before_migrate` | no | `(connection) -> None` | not called |
 | `after_migrate` | no | `(connection, applied) -> None` | not called |
 | `on_error` | no | `(connection, migration_id, error) -> None` | not called |

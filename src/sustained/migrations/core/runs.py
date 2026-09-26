@@ -142,6 +142,7 @@ def up(
     type_casts: Optional[Dict[str, str]],
     unrehearsed: bool,
     assert_algorithm: bool = False,
+    exact_counts: bool = False,
 ) -> Core[List[str]]:
     yield RefuseOpenTransaction("up")
     callbacks = m._callbacks
@@ -162,6 +163,7 @@ def up(
             type_casts=type_casts,
             unrehearsed=unrehearsed,
             assert_algorithm=assert_algorithm,
+            exact_counts=exact_counts,
         )
     except Exception as error:
         yield from fire_on_error(m, error)
@@ -185,6 +187,7 @@ def run_up(
     type_casts: Optional[Dict[str, str]],
     unrehearsed: bool,
     assert_algorithm: bool = False,
+    exact_counts: bool = False,
 ) -> Core[List[str]]:
     """The run itself, without the callbacks up() wraps it in."""
     from sustained.exceptions import MigrationError
@@ -238,7 +241,7 @@ def run_up(
         registered_run = versioned_now + repeatables_now
         warned: Set["Verdict"] = set()
         dangers: Set[Tuple[str, str]] = set()
-        yield from guard_run(m, registered_run, warned, dangers)
+        yield from guard_run(m, registered_run, warned, dangers, exact_counts)
         yield from bookkeeping.require_rehearsal_row(
             m, records, registered_run, unrehearsed, target
         )
@@ -270,7 +273,7 @@ def run_up(
                     # migrations are already applied and committed by
                     # then, so a block here reports what it stopped after.
                     final_run = registered_run + [generated]
-                    yield from guard_run(m, final_run, warned, dangers)
+                    yield from guard_run(m, final_run, warned, dangers, exact_counts)
                     yield from bookkeeping.require_rehearsal_row(
                         m, records, final_run, unrehearsed, target
                     )
@@ -309,6 +312,7 @@ def guard_run(
     run: List[Migration],
     warned: Set["Verdict"],
     dangers: Set[Tuple[str, str]],
+    exact_counts: bool = False,
 ) -> Core[None]:
     """
     Runs the guards over the statements a run would apply. On a dialect
@@ -316,14 +320,14 @@ def guard_run(
     statement's impact is attached, so an impact rule reads it. When no
     guard reads impact, each `danger` finding prints on stderr after the
     guards pass. `warned` and `dangers` hold what was already printed,
-    for a run checked twice.
+    for a run checked twice. `exact_counts` passes on to the read.
     """
     from sustained.guards import reads_impact
     from sustained.impact import attach_impact, supported
 
     statements = run_statements(run, m._compiler)
     if statements and supported(m._dialect):
-        context = yield ReadContext()
+        context = yield ReadContext(exact_counts)
         statements = attach_impact(statements, m._dialect, context)
         check_statements(m._guards, statements, m._dialect, warned)
         if not any(reads_impact(guard) for guard in m._guards):
@@ -554,6 +558,7 @@ def impact(
     m: MigratorBase,
     models: Optional[List[Type["Model"]]] = None,
     assert_algorithm: bool = False,
+    exact_counts: bool = False,
 ) -> Core["ImpactReport"]:
     """
     The pending run, plus the migration the models generate, analyzed
@@ -571,7 +576,7 @@ def impact(
         generated = yield from plan(m, list(models), assert_algorithm=assert_algorithm)
         if generated is not None:
             run = run + [generated]
-    context = yield ReadContext()
+    context = yield ReadContext(exact_counts)
     return analyze(run_statements(run, m._compiler), m._dialect, context)
 
 

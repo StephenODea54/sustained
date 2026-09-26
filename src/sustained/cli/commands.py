@@ -14,6 +14,7 @@ from typing import (
 from sustained.cli.config import (
     _assert_algorithm,
     _close_quietly,
+    _exact_counts,
     _migrator_on,
 )
 from sustained.cli.output import (
@@ -53,7 +54,11 @@ def _cmd_impact(
     migrator: Migrator, args: argparse.Namespace, config: ModuleType
 ) -> int:
     models = list(getattr(config, "models", None) or []) or None
-    report = migrator.impact(models, assert_algorithm=_assert_algorithm(config))
+    report = migrator.impact(
+        models,
+        assert_algorithm=_assert_algorithm(config),
+        exact_counts=_exact_counts(config, args),
+    )
     if args.json:
         _print_json(report_data(report))
     else:
@@ -214,6 +219,7 @@ def _cmd_migrate(
         models=models,
         unrehearsed=args.unrehearsed,
         assert_algorithm=_assert_algorithm(config),
+        exact_counts=_exact_counts(config, args),
     )
     if not applied:
         print("Nothing to apply.")
@@ -271,7 +277,13 @@ def _cmd_repair(
 def _cmd_script(
     migrator: Migrator, args: argparse.Namespace, config: ModuleType
 ) -> int:
-    print(migrator.script(args.direction, annotate=args.annotate))
+    print(
+        migrator.script(
+            args.direction,
+            annotate=args.annotate,
+            exact_counts=_exact_counts(config, args),
+        )
+    )
     return 0
 
 

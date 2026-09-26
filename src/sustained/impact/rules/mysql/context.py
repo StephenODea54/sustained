@@ -69,11 +69,13 @@ def server_version(text: str) -> Tuple[str, Tuple[int, ...]]:
     return profile, version
 
 
-def context_plan() -> ContextPlan:
+def context_plan(exact_counts: bool = False) -> ContextPlan:
     """
     Reads the version, the settings, the table sizes, and the storage
     facts. A statement that fails leaves its facts out of `read`, and
-    the rules assume the floor or the worst case for them.
+    the rules assume the floor or the worst case for them. The sizes are
+    the estimates the server keeps, so `exact_counts` changes nothing
+    here.
     """
     profile, version = "mysql", FLOORS["mysql"]
     settings: Dict[str, str] = {}

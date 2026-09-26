@@ -58,11 +58,12 @@ def server_version(number: str) -> Tuple[int, ...]:
     return (value // 10000, value % 10000)
 
 
-def context_plan() -> ContextPlan:
+def context_plan(exact_counts: bool = False) -> ContextPlan:
     """
     Reads the version, the settings, and the table sizes. A statement
     that fails leaves its facts out of `read`, and the rules assume the
-    floor or the worst case for them.
+    floor or the worst case for them. The sizes are the estimates the
+    server keeps, so `exact_counts` changes nothing here.
     """
     version = FLOORS["postgres"]
     settings: Dict[str, str] = {}

@@ -162,7 +162,10 @@ class ReadContext(NamedTuple):
     """
     The server facts the impact rules read, answered with the
     EngineContext that read_context() or async_read_context() returns.
+    `exact_counts` passes on to that read.
     """
+
+    exact_counts: bool = False
 
 
 class ReadCatalog(NamedTuple):

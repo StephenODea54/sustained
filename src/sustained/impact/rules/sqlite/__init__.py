@@ -42,7 +42,9 @@ Each statement's work:
 table's estimated rows from `sqlite_stat1`, which exists once ANALYZE
 has run, its bytes with its indexes from the `dbstat` virtual table,
 when SQLite was built with it, and the database file's size from
-`PRAGMA page_count` and `page_size`. It never counts rows.
+`PRAGMA page_count` and `page_size`. It counts rows only with
+`exact_counts`, and then only in the tables `sqlite_stat1` has no row
+count for.
 """
 
 from __future__ import annotations

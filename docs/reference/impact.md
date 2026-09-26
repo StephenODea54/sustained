@@ -44,30 +44,30 @@ These live in `sustained.impact.rules`. `profile_for()` returns the dialect's ru
 ## `read_context()`
 
 ```python
-read_context(connection, dialect) -> EngineContext
-await async_read_context(adapter, dialect) -> EngineContext
+read_context(connection, dialect, exact_counts=False) -> EngineContext
+await async_read_context(adapter, dialect, exact_counts=False) -> EngineContext
 ```
 {: .sig #read_context}
 
-The server facts the dialect's rules read, from a blocking connection or an async adapter. On PostgreSQL that is the version from `server_version_num`, the `TimeZone` and `lock_timeout` settings, each table's estimated rows and total bytes, and the schema of the connection's own schema. On MySQL and MariaDB it is `VERSION()`, which also sets the context's profile to `mysql` or `mariadb`, the `foreign_key_checks` and `lock_wait_timeout` settings, each table's estimated rows, bytes, and row format, which tables have a FULLTEXT index, on MySQL 8.0.29 and later each table's instant row versions, and the schema of the current database. On SQLite it is `sqlite_version()`, the `journal_mode` setting, each table's estimated rows from `sqlite_stat1` and bytes from the `dbstat` virtual table, the database file's bytes under the name `(database)`, and the schema. Nothing is written.
+The server facts the dialect's rules read, from a blocking connection or an async adapter. On PostgreSQL that is the version from `server_version_num`, the `TimeZone` and `lock_timeout` settings, each table's estimated rows and total bytes, and the schema of the connection's own schema. On MySQL and MariaDB it is `VERSION()`, which also sets the context's profile to `mysql` or `mariadb`, the `foreign_key_checks` and `lock_wait_timeout` settings, each table's estimated rows, bytes, and row format, which tables have a FULLTEXT index, on MySQL 8.0.29 and later each table's instant row versions, and the schema of the current database. On SQLite it is `sqlite_version()`, the `journal_mode` setting, each table's estimated rows from `sqlite_stat1` and bytes from the `dbstat` virtual table, the database file's bytes under the name `(database)`, and the schema. With `exact_counts=True`, the SQLite read also runs `SELECT COUNT(*)` on each table `sqlite_stat1` has no row count for, leaving out virtual tables, and adds `counts` to `read`; the other profiles ignore it. Nothing is written.
 
 Each statement runs inside a savepoint. A statement that fails leaves its facts out of `read`, and the read goes on. Both raise `ValueError` for a dialect without impact rules.
 
 ## `Migrator.impact()`
 
 ```python
-Migrator.impact(models=None, assert_algorithm=False) -> ImpactReport
-await AsyncMigrator.impact(models=None, assert_algorithm=False) -> ImpactReport
+Migrator.impact(models=None, assert_algorithm=False, exact_counts=False) -> ImpactReport
+await AsyncMigrator.impact(models=None, assert_algorithm=False, exact_counts=False) -> ImpactReport
 ```
 {: .sig #migrator-impact}
 
 The impact of the run `up()` would make: every pending migration, then the migration the models generate when `models` is given. The generated migration is diffed against the schema as it is now, before the pending migrations run, as `plan()` diffs it, and `assert_algorithm` writes the clauses `plan()` writes on it. A callable step renders no SQL and is left out. Nothing is written.
 
-The context comes from `read_context()` on the migrator's connection, or `async_read_context()` on its adapter. Both raise `DialectError` on a dialect the analysis does not cover, before any statement runs.
+The context comes from `read_context()` on the migrator's connection, or `async_read_context()` on its adapter, with `exact_counts` passed on. Both raise `DialectError` on a dialect the analysis does not cover, before any statement runs.
 
 ## Guards over impact
 
-`up()` reads the context the way `Migrator.impact()` does, analyzes the run before the guards run, and sets each `MigrationStatement`'s `impact` attribute to its `StatementImpact`. The impact rules `max_blocking()`, `no_rewrite()`, `lock_timeout_required()`, and `no_unknown_impact()` live in `sustained.guards`; see [Guards](/reference/migrations#guards).
+`up()` reads the context the way `Migrator.impact()` does, with its own `exact_counts`, analyzes the run before the guards run, and sets each `MigrationStatement`'s `impact` attribute to its `StatementImpact`. The impact rules `max_blocking()`, `no_rewrite()`, `lock_timeout_required()`, and `no_unknown_impact()` live in `sustained.guards`; see [Guards](/reference/migrations#guards).
 
 ## `Migrator.rehearse(trace=True)`
 
@@ -215,7 +215,7 @@ EngineContext(profile, version, edition=None, settings={}, tables={}, schema=Non
 ```
 {: .sig}
 
-The server facts the rules read: the profile, the version as a tuple of ints, the edition, settings such as `TimeZone` and `lock_timeout`, a mapping of lower case table name to `TableStats`, the schema `Snapshot`, and `read`, the names of the facts that came from a server: `version`, `settings`, `sizes`, and `schema`, and on MySQL and MariaDB also `fulltext` and `row_versions`. With `read` empty, the report's evidence is `static`, and `catalog` otherwise. `read_context()` builds one from a connection.
+The server facts the rules read: the profile, the version as a tuple of ints, the edition, settings such as `TimeZone` and `lock_timeout`, a mapping of lower case table name to `TableStats`, the schema `Snapshot`, and `read`, the names of the facts that came from a server: `version`, `settings`, `sizes`, and `schema`, on MySQL and MariaDB also `fulltext` and `row_versions`, and on SQLite `counts` when `exact_counts` read the table list. With `read` empty, the report's evidence is `static`, and `catalog` otherwise. `read_context()` builds one from a connection.
 
 `read_context()` keys each table as `schema.table`, and also by its bare name when the search path finds it under that name, or on MySQL and MariaDB when it is in the current database. `stats(table)` returns a table's `TableStats`, or unknown stats for a table the read did not see.
 

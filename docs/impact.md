@@ -152,16 +152,16 @@ On SQLite the read is this:
 | --- | --- | --- |
 | Version | `sqlite_version()` | The version the report names |
 | Journal mode | `PRAGMA journal_mode` | Whether reads wait for the write lock |
-| Table rows | `sqlite_stat1`, which exists once `ANALYZE` has run | The severity of blocking work |
+| Table rows | `sqlite_stat1`, which exists once `ANALYZE` has run, and with `exact_counts=True` a `SELECT COUNT(*)` of each table it has no row count for | The severity of blocking work |
 | Table sizes | the `dbstat` virtual table, when SQLite was built with it | The severity of blocking work |
 | Database size | `PRAGMA page_count` and `page_size` | The severity of `VACUUM` and of a `REINDEX` of every index |
 | Schema | the schema read `plan()` uses | The table an index to drop or reindex is on |
 
-The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. On MySQL and MariaDB it is InnoDB's estimate, which `ANALYZE TABLE` refreshes, and which InnoDB also refreshes on its own after a tenth of the rows change. On SQLite it is the count `ANALYZE` recorded, which nothing refreshes until `ANALYZE` runs again, and the read never counts rows itself. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
+The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. On MySQL and MariaDB it is InnoDB's estimate, which `ANALYZE TABLE` refreshes, and which InnoDB also refreshes on its own after a tenth of the rows change. On SQLite it is the count `ANALYZE` recorded, which nothing refreshes until `ANALYZE` runs again. `ANALYZE` records no count for a table that was empty when it ran, or created after it, and the read counts no rows itself unless `exact_counts=True` asks it to count those tables. Each count reads every page of the table. `read_context()`, `async_read_context()`, `impact()`, `up()`, and `script()` on either migrator take `exact_counts`; on the command line, `plan`, `impact`, `migrate`, and `script` take `--exact-counts`, or the config module sets `exact_counts = True`. The other engines read the estimates the server keeps either way. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
 
 A statement that fails, for example for lack of a privilege, leaves its facts out, and the rules fall back to the support floor or the worst case for them. Each statement runs inside a savepoint, so a failure does not abort the connection's open transaction. The report's `read` lists the facts that came from the server, and the last line of the text report says `assumed` before the version when the version was not read.
 
-`read_context(connection, dialect)` returns these facts as an `EngineContext`, and `await async_read_context(adapter, dialect)` reads them through an async adapter. Pass the context to `analyze()` to rate any list of statements against the live server:
+`read_context(connection, dialect, exact_counts=False)` returns these facts as an `EngineContext`, and `await async_read_context(adapter, dialect)` reads them through an async adapter. Pass the context to `analyze()` to rate any list of statements against the live server:
 
 ```python
 from sustained.impact import analyze, read_context

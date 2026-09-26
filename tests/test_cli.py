@@ -1293,6 +1293,48 @@ class AssertAlgorithmCliTestCase(CliBase):
             os.remove(os.path.join(self.dir.name, "cli.db"))
 
 
+class ExactCountsCliTestCase(CliBase):
+    """`--exact-counts` and the config module's `exact_counts` reach each read."""
+
+    _config = MigrateModelsCliTestCase._config
+    _run = MigrateModelsCliTestCase._run
+
+    def _calls(self, method, name, *argv):
+        original = getattr(Migrator, method)
+        with mock.patch.object(
+            Migrator, method, autospec=True, side_effect=original
+        ) as spy:
+            self._run(name, *argv)
+        return [call.kwargs.get("exact_counts") for call in spy.call_args_list]
+
+    def _plan_read(self, name, *argv):
+        from sustained.cli import plan
+
+        with mock.patch.object(
+            plan, "read_context", side_effect=plan.read_context
+        ) as spy:
+            self._run(name, "plan", *argv)
+        return [call.args[2] for call in spy.call_args_list]
+
+    def test_each_command_passes_the_flag_or_the_attribute(self):
+        cases = (("", (), False), ("", ("--exact-counts",), True))
+        cases += (("exact_counts = True\n", (), True),)
+        for extra, flag, expected in cases:
+            name = self._config(extra)
+            with self.subTest(extra=extra, flag=flag):
+                self.assertEqual(self._plan_read(name, *flag), [expected])
+                self.assertEqual(
+                    self._calls("impact", name, "impact", *flag), [expected]
+                )
+                self.assertEqual(
+                    self._calls("script", name, "script", "--annotate", *flag),
+                    [expected],
+                )
+                self.assertEqual(self._calls("up", name, "migrate", *flag), [expected])
+            sys.modules.pop(name, None)
+            os.remove(os.path.join(self.dir.name, "cli.db"))
+
+
 class CallbackCliTestCase(CliBase):
     """The config module's hooks around the migrate command."""
 

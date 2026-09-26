@@ -472,11 +472,17 @@ def generated_migration(
     return _restore_migration(migration_id, str(rows[0][0]))
 
 
-def script(m: MigratorBase, direction: str = "up", annotate: bool = False) -> Core[str]:
+def script(
+    m: MigratorBase,
+    direction: str = "up",
+    annotate: bool = False,
+    exact_counts: bool = False,
+) -> Core[str]:
     """
     With `annotate`, the dialect is checked before anything is read, so
     a dialect without impact rules costs no round trip, and the server
-    facts are read once for the whole script.
+    facts are read once for the whole script. `exact_counts` passes on
+    to that read.
     """
     from sustained.impact import EngineContext, analyze, supported
 
@@ -495,7 +501,7 @@ def script(m: MigratorBase, direction: str = "up", annotate: bool = False) -> Co
                     generated[record.id] = restored
     analyzer = None
     if annotate:
-        context: EngineContext = yield ReadContext()
+        context: EngineContext = yield ReadContext(exact_counts)
         dialect = m._dialect
 
         def analyzer(statements: Sequence["MigrationStatement"]) -> "ImpactReport":
