@@ -171,10 +171,24 @@ def blocks(lock: Optional[str]) -> Blocks:
 
 
 def lock_rank(lock: Optional[str]) -> int:
-    """A lock's strength: its place in `LOCKS`, or -1 for no lock."""
+    """
+    A lock's strength, -1 for no lock. The row locks rank lowest and the
+    exclusive metadata lock highest. Between them a label ranks by its
+    LOCK level, then by its algorithm, which orders `LOCKS` and places a
+    label outside it, such as `NOCOPY, LOCK=SHARED`, among the others.
+    A label the rules cannot read ranks above every other.
+    """
     if lock is None:
         return -1
-    return LOCKS.index(lock) if lock in LOCKS else len(LOCKS)
+    if lock == ROW_LOCKS:
+        return 0
+    if lock == MDL_EXCLUSIVE:
+        return 1 + len(ALGORITHMS) * len(LEVELS) + 1
+    online = parse_label(lock)
+    if online is None:
+        return 1 + len(ALGORITHMS) * len(LEVELS) + 2
+    level = LEVELS.index(online.level) if online.level is not None else 0
+    return 1 + level * len(ALGORITHMS) + ALGORITHMS.index(online.algorithm)
 
 
 def queues(lock: Optional[str]) -> bool:

@@ -134,7 +134,15 @@ class LabelTestCase(unittest.TestCase):
         self.assertEqual(mysql.lock_rank(None), -1)
         ranks = [mysql.lock_rank(lock) for lock in mysql.LOCKS]
         self.assertEqual(ranks, sorted(ranks))
-        self.assertEqual(mysql.lock_rank("SOMETHING ELSE"), len(mysql.LOCKS))
+        self.assertGreater(
+            mysql.lock_rank("SOMETHING ELSE"), mysql.lock_rank(mysql.MDL_EXCLUSIVE)
+        )
+
+    def test_a_label_outside_the_list_ranks_by_its_level(self):
+        shared = mysql.lock_rank("NOCOPY, LOCK=SHARED")
+        self.assertLess(mysql.lock_rank(mysql.COPY_NONE), shared)
+        self.assertLess(shared, mysql.lock_rank(mysql.INPLACE_SHARED))
+        self.assertLess(shared, mysql.lock_rank(mysql.MDL_EXCLUSIVE))
 
     def test_every_lock_but_row_locks_queues(self):
         self.assertFalse(mysql.queues(None))
