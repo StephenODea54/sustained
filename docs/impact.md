@@ -383,7 +383,7 @@ danger: pg.create_index  CREATE INDEX ix_orders_customer ON orders (customer_id)
 
 `sustained migrate`, `Migrator.up()`, and `AsyncMigrator.up()` print the same lines. A guard counts as reading impact when it has a true `reads_impact` attribute, which the four rules set. On a dialect the analysis does not cover, `up()` reads no server facts, the four rules are silent, and nothing prints.
 
-`no_table_rewrite()` and `index_must_be_concurrent()` read the statement text, and keep their verdicts in 2.x. `no_rewrite()` and `max_blocking("ddl")` answer the same questions from the analysis, with the server version and the table sizes.
+`no_table_rewrite()` and `index_must_be_concurrent()` read the statement text, and keep their verdicts in 2.x, except that `index_must_be_concurrent()` now passes `CREATE INDEX ... ON ONLY`, which it blocked before; see [The rules](/schema#the-rules). `no_rewrite()` and `max_blocking("ddl")` answer the same questions from the analysis, with the server version and the table sizes.
 
 ## Live preflight
 

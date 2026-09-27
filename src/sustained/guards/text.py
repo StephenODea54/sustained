@@ -29,6 +29,7 @@ _DROP_RE = re.compile(
 )
 _CREATE_INDEX_RE = re.compile(r"\bCREATE\s+(UNIQUE\s+)?INDEX\b", re.IGNORECASE)
 _CONCURRENTLY_RE = re.compile(r"\bCONCURRENTLY\b", re.IGNORECASE)
+_ON_ONLY_RE = re.compile(r"\bON\s+ONLY\b", re.IGNORECASE)
 _TYPE_CHANGE_RE = re.compile(
     r"\bALTER\s+COLUMN\s+\S+\s+(SET\s+DATA\s+)?TYPE\b|\bMODIFY\s+(COLUMN\s+)?\S+\s",
     re.IGNORECASE,
@@ -75,8 +76,14 @@ def no_drops() -> Guard:
 def index_must_be_concurrent() -> Guard:
     """
     Blocks `CREATE INDEX` without `CONCURRENTLY` on Postgres, where a
-    plain index build holds a write lock on the table for its whole
+    plain index build keeps a write lock on the table for its whole
     duration. Silent on every other dialect, which has no such keyword.
+
+    `CREATE INDEX ... ON ONLY` passes. It creates an invalid index on a
+    partitioned table alone and builds nothing, and Postgres refuses
+    `CONCURRENTLY` in it, so no form of it could pass otherwise. This is
+    the one statement without `CONCURRENTLY` the guard passes; the
+    online split generates it for a partitioned table.
 
     Postgres refuses CREATE INDEX CONCURRENTLY inside a transaction
     block, and the migrator wraps a migration in one. Put the index in a
@@ -95,7 +102,9 @@ def index_must_be_concurrent() -> Guard:
         found = []
         for statement in statements:
             if any(
-                _CREATE_INDEX_RE.search(form) and not _CONCURRENTLY_RE.search(form)
+                _CREATE_INDEX_RE.search(form)
+                and not _CONCURRENTLY_RE.search(form)
+                and not _ON_ONLY_RE.search(form)
                 for form in scannable_forms(statement, dialect)
             ):
                 found.append(

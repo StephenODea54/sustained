@@ -467,7 +467,7 @@ index_must_be_concurrent() -> Guard
 ```
 {: .sig #index_must_be_concurrent}
 
-Blocks `CREATE INDEX` without `CONCURRENTLY`. Postgres only; silent elsewhere.
+Blocks `CREATE INDEX` without `CONCURRENTLY`. Postgres only; silent elsewhere. `CREATE INDEX ... ON ONLY` passes, which 2.25.0 and earlier blocked: it builds no index, and Postgres refuses `CONCURRENTLY` in it. See [The rules](/schema#the-rules).
 
 Postgres refuses `CREATE INDEX CONCURRENTLY` inside a transaction block, so the index needs a migration with `transactional=False`, or a SQL file with the `-- sustained: no transaction` marker.
 

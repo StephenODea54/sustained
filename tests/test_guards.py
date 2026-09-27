@@ -151,6 +151,21 @@ class IndexMustBeConcurrentTest(unittest.TestCase):
         )
         self.assertEqual(verdicts, [])
 
+    def test_passes_an_index_on_only_a_partitioned_table(self):
+        # ON ONLY builds no index, and Postgres refuses CONCURRENTLY in it.
+        verdicts = self.guard(
+            [
+                "CREATE INDEX IF NOT EXISTS i ON ONLY orders (email)",
+                "CREATE UNIQUE INDEX i ON  only orders (email)",
+            ],
+            Dialects.POSTGRES,
+        )
+        self.assertEqual(verdicts, [])
+
+    def test_blocks_an_index_on_a_table_named_only(self):
+        verdicts = self.guard(["CREATE INDEX i ON only_orders (a)"], Dialects.POSTGRES)
+        self.assertEqual([v.verdict for v in verdicts], [BLOCK])
+
     def test_passes_unique_concurrent_index(self):
         verdicts = self.guard(
             ["CREATE UNIQUE INDEX CONCURRENTLY i ON users (email)"], Dialects.POSTGRES

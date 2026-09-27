@@ -804,7 +804,7 @@ Both commands exit 3. There is no `--force` flag, so to run the statement you fi
 | Rule | Verdict | Flags |
 | --- | --- | --- |
 | `no_drops()` | block | A statement that drops a table, column, view, materialized view, schema, database, enum type, or constraint |
-| `index_must_be_concurrent()` | block | `CREATE INDEX` without `CONCURRENTLY`, on Postgres only |
+| `index_must_be_concurrent()` | block | `CREATE INDEX` without `CONCURRENTLY`, other than `CREATE INDEX ... ON ONLY`, on Postgres only |
 | `no_table_rewrite()` | warn | A column type change, or a NOT NULL with nothing to fill existing rows |
 | `no_lock_without_timeout()` | block | A statement that alters or drops a table with no `SET lock_timeout` still in force before it, on Postgres only |
 | `max_statements(n)` | block | Every statement past the limit |
@@ -821,7 +821,7 @@ Every one is a factory, so they all read the same at the call site. `no_table_re
 
 The last four rules read each statement's [impact](/impact) instead of its text, with the server version and the table sizes `up()` reads before the guards run. They are silent on a dialect the analysis does not cover. See [Guards over impact](/impact#guards-over-impact) for the thresholds and for the `danger` findings `migrate` prints when no rule reads impact.
 
-`no_table_rewrite()` and `index_must_be_concurrent()` keep their textual verdicts. For an answer that knows the engine version, whether the two types coerce, and how large the table is, use `no_rewrite()` in place of `no_table_rewrite()`, and `max_blocking("ddl")` in place of `index_must_be_concurrent()`.
+`no_table_rewrite()` and `index_must_be_concurrent()` keep their textual verdicts, with one exception. `index_must_be_concurrent()` passes `CREATE INDEX ... ON ONLY`, which it blocked in 2.25.0 and earlier, and which has no `CONCURRENTLY`. That statement creates an invalid index on a partitioned table alone and builds nothing, and Postgres refuses `CONCURRENTLY` in it, so without the exception no statement that indexes a partitioned table without blocking writes could pass the guard, including the ones the [online split](/impact#online-migrations) generates. It is the only statement without `CONCURRENTLY` the guard passes. The index turns valid only once an index of every partition is attached, and the guard does not check that the migration builds and attaches them. For an answer that knows the engine version, whether the two types coerce, and how large the table is, use `no_rewrite()` in place of `no_table_rewrite()`, and `max_blocking("ddl")` in place of `index_must_be_concurrent()`.
 
 `CONCURRENTLY` needs a migration of its own with `transactional=False`, because Postgres refuses that form inside a transaction block. See [Migrations without a transaction](#migrations-without-a-transaction).
 

@@ -46,6 +46,7 @@ Version numbers follow semantic versioning. A major version marks a change that 
 
 ### Changed
 
+- `index_must_be_concurrent()` passes `CREATE INDEX ... ON ONLY`, which it blocked before, and which is the only statement without `CONCURRENTLY` it passes. This changes a verdict of a textual guard. The statement creates an invalid index on a partitioned table alone and builds nothing, and Postgres refuses `CONCURRENTLY` in it, so the guard blocked every way to index a partitioned table without blocking writes, including the steps `online=True` generates. The guard does not check that the partitions' indexes are built and attached after it.
 - `render()` and `flagged_line()` print each statement on one line. The `window.held` finding names each level a table is blocked for and the first statement to block it that far. In a migration whose locks last until the commit, every lock that blocks something has the `hold` `transaction`, including the last statement's. `sustained.impact.report` gains `__all__`.
 - Error messages name the engine, such as "The live preflight does not cover SQLite.", where they named the `Dialects` member.
 - The finding for a `DELETE` on PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, and DuckDB advises to delete in batches, where it advised to backfill in batches.
