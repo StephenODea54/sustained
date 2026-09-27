@@ -30,6 +30,15 @@ The rules read each statement against what came before it in the run:
   uses one of the table's row versions, a rebuild gives them back, and
   a FULLTEXT index or `ROW_FORMAT=COMPRESSED` stops instant column
   changes. The rules record these with `record_storage()`.
+- A `ROLLBACK`, or `ROLLBACK TO SAVEPOINT`, in a migration's
+  transaction undoes what the migration did to tables, indexes, checks,
+  columns, and storage, on an engine whose DDL runs in the
+  transaction, so the facts go back to what they were as the migration
+  began (`rollback()`). Outside a transaction there is nothing to undo,
+  and on MySQL and MariaDB each DDL statement commits, so a ROLLBACK
+  there leaves the facts as they are. A table an `INSERT ... SELECT`
+  filled on MySQL then stays filled after a ROLLBACK that empties it,
+  which reports more work than the run does.
 - A lock timeout set earlier covers the statements after it, as far as
   its scope reaches (`TimeoutScope`). `RESET` of the setting, `RESET
   ALL`, and `DISCARD ALL` end it, and so does a `ROLLBACK` that undoes
@@ -44,6 +53,7 @@ Names compare case-insensitively, as the recognizer's docstring asks.
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import (
     TYPE_CHECKING,
@@ -70,6 +80,21 @@ _UNSET = object()
 
 # The SET scopes that leave the session's own value unchanged.
 _NOT_THE_SESSION = frozenset({"global", "persist", "persist_only", "user"})
+
+# The RunState attributes that hold what the run did to tables, indexes,
+# checks, columns, and storage, which a ROLLBACK undoes.
+_FACTS = (
+    "born",
+    "created",
+    "filled",
+    "gone",
+    "renamed",
+    "indexes",
+    "not_null_checks",
+    "schema_checks",
+    "schema_columns",
+    "storage",
+)
 
 
 def sets_a_timeout(value: str) -> bool:
@@ -153,9 +178,14 @@ class RunState:
     `lock_timeout`, and `bounded` says whether a value of it bounds the
     wait. `local_scope` is False on an engine where `SET LOCAL` means
     the session, as on MySQL; where it is True, a `ROLLBACK` also undoes
-    a session `SET`. `context` is what the analysis read from the
-    server, which says whether the table a `CREATE TABLE IF NOT EXISTS`
-    names exists already.
+    a session `SET`. `transactional_ddl` says whether a `ROLLBACK` in a
+    migration's transaction undoes its DDL, as on PostgreSQL, and not on
+    MySQL, where each DDL statement commits. `context` is what the
+    analysis read from the server, which says whether the table a
+    `CREATE TABLE IF NOT EXISTS` names exists already.
+
+    Call `enter()` with each statement's migration before the rules
+    read the statement.
     """
 
     def __init__(
@@ -164,11 +194,13 @@ class RunState:
         bounded: Callable[[str], bool] = sets_a_timeout,
         local_scope: bool = True,
         context: Optional["EngineContext"] = None,
+        transactional_ddl: bool = False,
     ) -> None:
         self.timeout_setting = timeout_setting
         self.bounded = bounded
         self.local_scope = local_scope
         self.context = context
+        self.transactional_ddl = transactional_ddl
         # The tables the run created, and of those the ones still empty.
         self.born: Set[str] = set()
         self.created: Set[str] = set()
@@ -194,6 +226,32 @@ class RunState:
         # The storage facts the rules recorded, by live table name, such
         # as InnoDB's instant row versions.
         self.storage: Dict[str, Dict[str, object]] = {}
+        self._migration: object = _UNSET
+        # The facts as the current migration began, which a ROLLBACK in
+        # its transaction goes back to.
+        self._at_start = self._facts()
+
+    def enter(self, migration_id: Optional[str]) -> None:
+        """Moves to a statement of the given migration."""
+        if migration_id != self._migration:
+            self._migration = migration_id
+            self._at_start = self._facts()
+        self.timeouts.enter(migration_id)
+
+    def _facts(self) -> Dict[str, object]:
+        """A copy of what the run recorded about tables."""
+        return {name: copy.deepcopy(getattr(self, name)) for name in _FACTS}
+
+    def rollback(self) -> None:
+        """
+        Takes in a `ROLLBACK` in a migration's transaction. The
+        transaction began with the migration, so the facts go back to
+        what they were as the migration began, and the statements after
+        the ROLLBACK read the tables as the earlier migrations left
+        them, or as the context read them for the first migration.
+        """
+        for name, value in self._at_start.items():
+            setattr(self, name, copy.deepcopy(value))
 
     def is_new(self, table: str) -> bool:
         """Whether the run created the table earlier, and it is still empty."""
@@ -443,6 +501,8 @@ class RunState:
             if scope == "rollback":
                 if self.local_scope:
                     self.timeouts.rollback()
+                if transactional and self.transactional_ddl:
+                    self.rollback()
                 continue
             if scope == "local" and not self.local_scope:
                 scope = "session"

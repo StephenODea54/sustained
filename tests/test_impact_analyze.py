@@ -424,6 +424,85 @@ class FilledTableTestCase(unittest.TestCase):
         self.assertEqual(state.stats(context, "g"), TableStats())
 
 
+class RollbackTestCase(unittest.TestCase):
+    """A ROLLBACK in a migration's transaction undoes the run's table facts."""
+
+    def index(self, statements, dialect=PG):
+        """The table impact of a CREATE INDEX on big that ends the run."""
+        context = sized(big=TableStats(5_000_000, 10**9))
+        report = analyze(
+            statements
+            + [m("CREATE INDEX ix ON big (id)", statements[-1].migration_id)],
+            dialect,
+            context,
+        )
+        (found,) = report.statements[-1].tables
+        return found
+
+    def swap(self, rollback, migration_id="m1", transactional=True):
+        return [
+            m("ALTER TABLE big RENAME TO old"),
+            m("CREATE TABLE big (id int)"),
+            m(rollback, migration_id, transactional),
+        ]
+
+    def test_a_rollback_undoes_a_table_swap(self):
+        for rollback in ("ROLLBACK", "ROLLBACK TO SAVEPOINT s"):
+            with self.subTest(rollback):
+                found = self.index(self.swap(rollback))
+                self.assertEqual(
+                    (found.work, found.blocks, found.rows),
+                    (Work.INDEX_BUILD, Blocks.WRITES, 5_000_000),
+                )
+
+    def test_without_a_rollback_the_swapped_table_is_new(self):
+        found = self.index(self.swap("SET a = '1'"))
+        self.assertEqual((found.blocks, found.rows), (Blocks.NOTHING, 0))
+
+    def test_a_rollback_outside_a_transaction_undoes_nothing(self):
+        statements = [
+            m("ALTER TABLE big RENAME TO old", transactional=False),
+            m("CREATE TABLE big (id int)", transactional=False),
+            m("ROLLBACK", transactional=False),
+        ]
+        found = self.index(statements)
+        self.assertEqual((found.blocks, found.rows), (Blocks.NOTHING, 0))
+
+    def test_a_rollback_keeps_what_earlier_migrations_did(self):
+        found = self.index(
+            [m("ALTER TABLE big RENAME TO old"), m("CREATE TABLE big (id int)")]
+            + [m("ALTER TABLE old ADD COLUMN a int", "m2"), m("ROLLBACK", "m2")]
+        )
+        self.assertEqual((found.blocks, found.rows), (Blocks.NOTHING, 0))
+
+    def test_a_rollback_on_mysql_keeps_the_committed_ddl(self):
+        state = RunState("lock_wait_timeout", local_scope=False)
+        state.enter("m1")
+        for sql in ("RENAME TABLE big TO old", "CREATE TABLE big (id int)", "ROLLBACK"):
+            state.record(recognize(sql, Dialects.MYSQL), True)
+        self.assertTrue(state.is_new("big"))
+        self.assertEqual(state.original("old"), "big")
+
+    def test_a_rollback_clears_every_table_fact(self):
+        state = RunState("lock_timeout", transactional_ddl=True)
+        state.enter("m1")
+        for sql in (
+            "CREATE TABLE a (id int)",
+            "INSERT INTO a SELECT * FROM orders",
+            "CREATE INDEX ix ON a (id)",
+            "ALTER TABLE orders ADD CONSTRAINT c CHECK (id IS NOT NULL)",
+            "ALTER TABLE orders RENAME COLUMN x TO y",
+            "DROP TABLE b",
+            "ROLLBACK",
+        ):
+            state.record(recognize(sql, PG), True)
+        self.assertFalse(state.created_in_run("a"))
+        self.assertIsNone(state.index_table("ix"))
+        self.assertFalse(state.proves_not_null("orders", "id"))
+        self.assertEqual(state.schema_column("orders", "x"), "x")
+        self.assertEqual((state.filled, state.gone), ({}, set()))
+
+
 class CheckStateTestCase(unittest.TestCase):
     def state(self, *statements):
         state = RunState()

@@ -386,7 +386,11 @@ class _Run:
         self.thresholds = thresholds
         self.evidence = evidence
         self.state = RunState(
-            profile.timeout_setting, profile.bounded, profile.local_scope, context
+            profile.timeout_setting,
+            profile.bounded,
+            profile.local_scope,
+            context,
+            profile.transactional_ddl,
         )
         # A timeout the connection already has, from the role, the
         # database, or the connection string, covers the whole run.
@@ -424,7 +428,7 @@ class _Run:
     ) -> StatementImpact:
         intent: Optional[Intent] = getattr(text, "intent", None)
         parsed = recognize(text, self.dialect)
-        self.state.timeouts.enter(migration_id)
+        self.state.enter(migration_id)
         findings: List[Finding] = []
         if intent is not None and parsed.known and not intent_agrees(intent, parsed):
             findings.append(_mismatch(intent, parsed))
