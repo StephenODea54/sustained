@@ -1,6 +1,6 @@
 ---
 layout: default
-title: Schema types reference
+title: Schema column types reference
 description: "Reference for sustained.schema: column types, indexes, table options, and the renderers that turn them into DDL for each dialect."
 ---
 

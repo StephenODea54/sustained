@@ -1,6 +1,6 @@
 ---
 layout: default
-title: Dialect support reference
+title: SQL dialect support reference
 description: "What each Sustained SQL dialect supports and refuses: PostgreSQL, MySQL, MariaDB, SQL Server, Presto, Athena, DuckDB, and ANSI."
 ---
 

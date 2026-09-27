@@ -7,6 +7,22 @@
     <meta name="theme-color" content="#12161c" media="(prefers-color-scheme: dark)">
 
 {% seo %}
+    {% if page.url == "/" %}
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareSourceCode",
+      "name": "Sustained",
+      "description": {{ site.description | jsonify }},
+      "url": {{ "/" | absolute_url | jsonify }},
+      "codeRepository": "https://github.com/wetherc/sustained",
+      "programmingLanguage": "Python",
+      "runtimePlatform": "Python 3",
+      "license": "https://opensource.org/licenses/MIT",
+      "author": { "@type": "Person", "name": {{ site.author | jsonify }} }
+    }
+    </script>
+    {% endif %}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
@@ -16,10 +32,10 @@
     <a class="skip" href="#content">Skip to content</a>
 
     {% comment %}
-      Page URLs carry a .html suffix, nav entries do not. Normalise both to a
-      trailing slash so the current page matches either spelling.
+      Index pages end in a slash and other pages do not. Add a trailing slash
+      to both page and nav URLs so that the two compare equal.
     {% endcomment %}
-    {% assign here = page.url | remove: '.html' | append: '/' | replace: '//', '/' %}
+    {% assign here = page.url | append: '/' | replace: '//', '/' %}
 
     {% comment %}
       Find which nav group holds this page. The group title becomes the

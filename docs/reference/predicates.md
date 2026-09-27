@@ -1,6 +1,6 @@
 ---
 layout: default
-title: Predicates and expressions reference
+title: SQL predicates and expressions reference
 description: "Reference for sustained.expressions and sustained.functions: column predicates, literals, raw SQL, and the per-dialect function registry."
 ---
 

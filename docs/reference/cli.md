@@ -1,6 +1,6 @@
 ---
 layout: default
-title: Command line reference
+title: Command line reference for schema migrations
 description: "Reference for the sustained command line: plan, impact, status, rehearse, migrate, down, validate, repair, script, and baseline, with options and exit codes."
 ---
 

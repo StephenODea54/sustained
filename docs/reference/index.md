@@ -1,6 +1,6 @@
 ---
 layout: default
-title: API Reference
+title: Python ORM API reference
 description: "API reference for every public Sustained class and method: models, the query builder, predicates, schema types, execution, migrations, the CLI, and errors."
 ---
 

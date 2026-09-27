@@ -1,6 +1,6 @@
 ---
 layout: default
-title: QueryBuilder reference
+title: SQL QueryBuilder reference
 description: "Reference for sustained.QueryBuilder: every method that builds, renders, and runs SELECT, INSERT, UPDATE, DELETE, and upsert statements."
 ---
 

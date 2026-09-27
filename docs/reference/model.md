@@ -1,6 +1,6 @@
 ---
 layout: default
-title: Model reference
+title: ORM model reference
 description: "Reference for sustained.Model: table names, columns, relation mappings, dialects, connection binding, and query entry points."
 ---
 

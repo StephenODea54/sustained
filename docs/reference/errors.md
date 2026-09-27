@@ -1,6 +1,6 @@
 ---
 layout: default
-title: Errors reference
+title: Python exceptions reference
 description: "Every exception Sustained raises, including DialectError and MigrationError, and the condition behind each."
 ---
 

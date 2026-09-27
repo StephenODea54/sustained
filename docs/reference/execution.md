@@ -1,6 +1,6 @@
 ---
 layout: default
-title: Execution and pooling reference
+title: Query execution and connection pooling reference
 description: "Reference for sustained.execution, sustained.pool, sustained.aio, and sustained.rendering: running, pooling, and rendering queries, sync and async."
 ---
 

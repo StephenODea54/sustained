@@ -3,6 +3,9 @@ title: Sustained.py
 description: A Python ORM, SQL query builder, and schema migration tool, inspired by Objection.js and Knex
 url: https://sustained.tbmh.org
 lang: en-US
+# Page URLs omit the .html suffix. Jekyll still writes each page to a .html
+# file, so both spellings load.
+permalink: /:title
 plugins:
   - jekyll-seo-tag
   - jekyll-sitemap
