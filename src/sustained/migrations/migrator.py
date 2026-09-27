@@ -821,20 +821,22 @@ class Migrator(MigratorBase):
         """
         The migrations up(models=[...]) would generate, as a list that is
         empty when the schema is up to date. The arguments are plan()'s,
-        and without online the list holds the one migration plan()
-        returns.
+        and without online the list is the one migration plan() returns.
 
         On PostgreSQL, online=True splits the work in two, as
         sustained.autogenerate.autogenerate_migrations() does. `<id>`
         runs in one transaction and changes only the catalog: new
-        columns go in nullable and without UNIQUE or REFERENCES, and new
-        foreign keys and checks go in NOT VALID. `<id>_online` runs with
-        transactional=False and holds the backfills, CREATE INDEX
-        CONCURRENTLY, VALIDATE CONSTRAINT, SET NOT NULL through a
-        validated check, and the drops, in that order. Either is left
-        out when it would hold no statement. On MySQL and MariaDB,
-        online=True does what assert_algorithm=True does. Other dialects
-        ignore it.
+        columns go in nullable and without UNIQUE or REFERENCES, a new
+        NOT NULL column whose backfill is a value goes in with that
+        value as a default it drops again, and new foreign keys and
+        checks go in NOT VALID. `<id>_online` runs with
+        transactional=False and runs the backfills, CREATE INDEX
+        CONCURRENTLY IF NOT EXISTS, VALIDATE CONSTRAINT, SET NOT NULL
+        through a validated check, the drops, and the drops of those
+        checks, in that order, so a failed run runs again from its first
+        statement after repair(). Either is left out when it would have
+        no statement. On MySQL and MariaDB, online=True does what
+        assert_algorithm=True does. Other dialects ignore it.
         """
         return self._drive(
             runs.plan_migrations(

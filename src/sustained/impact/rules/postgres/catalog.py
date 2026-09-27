@@ -246,6 +246,11 @@ CREATE_INDEX_CONCURRENTLY = Rule(
 DROP_INDEX = Rule(
     "pg.drop_index", DOCS + "sql-dropindex.html", ("DROP INDEX ix", "DROP INDEX pi_c")
 )
+ATTACH_INDEX = Rule(
+    "pg.attach_index",
+    DOCS + "sql-alterindex.html",
+    ("ALTER INDEX qt_id_ix ATTACH PARTITION qt1_id_ix",),
+)
 DROP_INDEX_CONCURRENTLY = Rule(
     "pg.drop_index.concurrently",
     DOCS + "sql-dropindex.html",
@@ -368,6 +373,11 @@ FIXTURE_SCHEMA = (
     "CREATE INDEX d_atz ON d (atz)",
     "CREATE INDEX d_label ON d (label)",
     "CREATE DOMAIN positive AS integer CHECK (VALUE > 0)",
+    "CREATE TABLE qt (id integer) PARTITION BY LIST (id)",
+    "CREATE TABLE qt1 PARTITION OF qt FOR VALUES IN (1)",
+    "INSERT INTO qt VALUES (1)",
+    "CREATE INDEX qt_id_ix ON ONLY qt (id)",
+    "CREATE INDEX qt1_id_ix ON qt1 (id)",
     "CREATE TABLE p (id integer)",
     "INSERT INTO p VALUES (2)",
     "CREATE UNLOGGED TABLE ul (id integer)",

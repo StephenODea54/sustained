@@ -1,16 +1,17 @@
 """
 The Postgres read: information_schema for columns, and pg_catalog for
-indexes, foreign keys, checks, comments, and enum types.
+indexes, foreign keys, checks, comments, enum types, and partitions.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence, Tuple, cast
+from typing import Dict, Generator, List, Optional, Sequence, Set, Tuple, cast
 
 from sustained.introspect.model import (
     IntrospectedColumn,
     IntrospectedForeignKey,
     IntrospectedIndex,
+    IntrospectedPartition,
     IntrospectedTable,
     SchemaPlan,
     Snapshot,
@@ -117,7 +118,8 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         index_rows = yield (
             "SELECT t.relname, i.relname, ix.indisunique, ix.indisprimary, "
             "a.attname, EXISTS (SELECT 1 FROM pg_catalog.pg_constraint pc "
-            "WHERE pc.conindid = ix.indexrelid AND pc.contype = 'u') "
+            "WHERE pc.conindid = ix.indexrelid AND pc.contype = 'u'), "
+            "ix.indisvalid "
             "FROM pg_catalog.pg_index ix "
             "JOIN pg_catalog.pg_class t ON t.oid = ix.indrelid "
             "JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid "
@@ -129,9 +131,12 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             f"AND {namespace_filter} "
             "ORDER BY t.relname, i.relname, k.ord"
         )
-        index_columns: Dict[Tuple[str, str, bool, bool, bool], List[Optional[str]]] = {}
+        index_columns: Dict[
+            Tuple[str, str, bool, bool, bool, bool], List[Optional[str]]
+        ] = {}
         spelled_indexes: Dict[Tuple[str, str], str] = {}
-        for table, index, unique, primary, attname, backs in index_rows:
+        for row in index_rows:
+            table, index, unique, primary, attname, backs = row[:6]
             spelled_indexes[(str(table).lower(), str(index).lower())] = str(index)
             key = (
                 str(table).lower(),
@@ -139,11 +144,20 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 bool(unique),
                 bool(primary),
                 bool(backs),
+                # A row without the column reads as a valid index.
+                len(row) <= 6 or row[6] is None or bool(row[6]),
             )
             index_columns.setdefault(key, []).append(
                 None if attname is None else str(attname).lower()
             )
-        for (table, index, unique, primary, backs), names in index_columns.items():
+        for (
+            table,
+            index,
+            unique,
+            primary,
+            backs,
+            valid,
+        ), names in index_columns.items():
             if any(name is None for name in names):
                 # An expression index has no column name for that key part.
                 # It cannot be compared against a model's column list, so it
@@ -158,12 +172,16 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                     unique,
                     constraint=backs,
                     name=spelled_indexes[(table, index)],
+                    valid=valid,
                 )
     except Exception:
         # No pg_index to read; degrade to columns without keys or indexes.
         pass
 
     foreign_keys: Dict[str, Dict[str, IntrospectedForeignKey]] = {}
+    # The foreign keys and checks pg_constraint marks as not validated,
+    # by table.
+    not_valid: Dict[str, Set[str]] = {}
     constraints_read = False
     try:
         # pg_constraint is read instead of the referential_constraints
@@ -174,7 +192,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         fk_rows = yield (
             "SELECT src.relname, con.conname, sa.attname, tgt.relname, "
             "ta.attname, con.confdeltype, con.confupdtype, "
-            "NULLIF(tn.nspname, current_schema()) "
+            "NULLIF(tn.nspname, current_schema()), con.convalidated "
             "FROM pg_catalog.pg_constraint con "
             "JOIN pg_catalog.pg_class src ON src.oid = con.conrelid "
             "JOIN pg_catalog.pg_namespace n ON n.oid = src.relnamespace "
@@ -205,40 +223,16 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 name=str(first[1]),
                 target_schema=_row_text(first, 7),
             )
+            if len(first) > 8 and first[8] is False:
+                not_valid.setdefault(table, set()).add(cname)
         constraints_read = True
     except Exception:
         # No pg_constraint to read; degrade to no foreign keys.
         pass
 
-    checks: Dict[str, Dict[str, str]] = {}
-    check_names: Dict[str, Dict[str, str]] = {}
-    checks_read = False
-    try:
-        # The check_constraints view joins on the schema and the name,
-        # but a check name is unique per table only, so a table could
-        # read another table's expression. pg_constraint keys each check
-        # on conrelid. The substring drops the "CHECK " prefix that
-        # pg_get_constraintdef() writes, as the view does.
-        check_rows = yield (
-            "SELECT src.relname, con.conname, "
-            "substring(pg_get_constraintdef(con.oid) from 7) "
-            "FROM pg_catalog.pg_constraint con "
-            "JOIN pg_catalog.pg_class src ON src.oid = con.conrelid "
-            "JOIN pg_catalog.pg_namespace n ON n.oid = src.relnamespace "
-            "WHERE con.contype = 'c' "
-            f"AND {namespace_filter}"
-        )
-        for table, cname, clause in check_rows:
-            name = str(cname).lower()
-            expression = str(clause)
-            if _is_generated_not_null_check(name, expression):
-                continue
-            checks.setdefault(str(table).lower(), {})[name] = expression
-            check_names.setdefault(str(table).lower(), {})[name] = str(cname)
-        checks_read = True
-    except Exception:
-        # No pg_constraint to read; degrade to no checks.
-        pass
+    checks, check_names, checks_read = yield from _check_plan(
+        namespace_filter, not_valid
+    )
 
     comments: Dict[str, Dict[str, str]] = {}
     comments_read = False
@@ -282,6 +276,9 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         # No pg_enum to read; degrade to no enum types.
         pass
 
+    partitioned, children = yield from _partition_plan(namespace_filter)
+    parents = _parents(children)
+
     schema = Snapshot(
         enum_types=enum_types,
         enum_types_read=enum_types_read,
@@ -312,5 +309,151 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             name=spelled_tables.get(table),
             check_names=check_names.get(table, {}),
             schema=table_schemas.get(table),
+            not_valid=frozenset(not_valid.get(table, ())),
+            partitioned=table in partitioned,
+            partitions=_partitions_of(children, table),
+            partition_of=_spelled_parent(parents.get(table), spelled_tables),
         )
     return schema
+
+
+_NOT_VALID = " NOT VALID"
+
+# The partitions of each partitioned table, by the table's lowercased
+# name: each partition's name, its schema when that is not the
+# connection's, and whether it is partitioned in turn.
+_Children = Dict[str, List[Tuple[str, Optional[str], bool]]]
+
+
+def _check_clause(row: Sequence[RowValue]) -> Tuple[str, bool]:
+    """
+    The expression of a check row and whether the check is validated.
+    pg_get_constraintdef() writes NOT VALID after the expression of a
+    check that is not validated, and the expression is read without it.
+    A row without the convalidated column reads as validated.
+    """
+    expression = str(row[2])
+    validated = len(row) <= 3 or row[3] is not False
+    if not validated and expression.endswith(_NOT_VALID):
+        expression = expression[: -len(_NOT_VALID)]
+    return expression, validated
+
+
+def _check_plan(namespace_filter: str, not_valid: Dict[str, Set[str]]) -> Generator[
+    str,
+    List[Sequence[RowValue]],
+    Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, str]], bool],
+]:
+    """
+    Reads the check constraints of each table: the expressions and the
+    spelled names by lowercased check name, and whether pg_constraint
+    was read. The name of a check that is not validated is added to
+    `not_valid`, by table.
+    """
+    checks: Dict[str, Dict[str, str]] = {}
+    check_names: Dict[str, Dict[str, str]] = {}
+    checks_read = False
+    try:
+        # The check_constraints view joins on the schema and the name,
+        # but a check name is unique per table only, so a table could
+        # read another table's expression. pg_constraint keys each check
+        # on conrelid. The substring drops the "CHECK " prefix that
+        # pg_get_constraintdef() writes, as the view does.
+        check_rows = yield (
+            "SELECT src.relname, con.conname, "
+            "substring(pg_get_constraintdef(con.oid) from 7), con.convalidated "
+            "FROM pg_catalog.pg_constraint con "
+            "JOIN pg_catalog.pg_class src ON src.oid = con.conrelid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = src.relnamespace "
+            "WHERE con.contype = 'c' "
+            f"AND {namespace_filter}"
+        )
+        for row in check_rows:
+            table, cname = row[:2]
+            name = str(cname).lower()
+            expression, validated = _check_clause(row)
+            if _is_generated_not_null_check(name, expression):
+                continue
+            checks.setdefault(str(table).lower(), {})[name] = expression
+            check_names.setdefault(str(table).lower(), {})[name] = str(cname)
+            if not validated:
+                not_valid.setdefault(str(table).lower(), set()).add(name)
+        checks_read = True
+    except Exception:
+        # No pg_constraint to read; degrade to no checks.
+        pass
+    return checks, check_names, checks_read
+
+
+def _partition_plan(
+    namespace_filter: str,
+) -> Generator[str, List[Sequence[RowValue]], Tuple[Set[str], _Children]]:
+    """
+    Reads every partitioned table, with its partitions, so the online
+    split can build an index on each partition: Postgres refuses CREATE
+    INDEX CONCURRENTLY on a partitioned table. A partitioned table with
+    no partition reads one row whose partition is NULL.
+    """
+    partitioned: Set[str] = set()
+    children: _Children = {}
+    try:
+        partition_rows = yield (
+            "SELECT p.relname, c.relname, NULLIF(cn.nspname, current_schema()), "
+            "c.relkind "
+            "FROM pg_catalog.pg_class p "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = p.relnamespace "
+            "LEFT JOIN pg_catalog.pg_inherits i ON i.inhparent = p.oid "
+            "LEFT JOIN pg_catalog.pg_class c "
+            "ON c.oid = i.inhrelid AND c.relispartition "
+            "LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid = c.relnamespace "
+            "WHERE p.relkind = 'p' "
+            f"AND {namespace_filter} "
+            "ORDER BY p.relname, c.relname"
+        )
+        for parent, child, child_schema, relkind in partition_rows:
+            partitioned.add(str(parent).lower())
+            if child is not None:
+                children.setdefault(str(parent).lower(), []).append(
+                    (
+                        str(child),
+                        None if child_schema is None else str(child_schema),
+                        str(relkind) == "p",
+                    )
+                )
+    except Exception:
+        # No pg_inherits to read; degrade to no partitions.
+        pass
+    return partitioned, children
+
+
+def _parents(children: _Children) -> Dict[str, str]:
+    """The lowercased name of each partition, with its table's key."""
+    return {
+        child.lower(): parent
+        for parent, found in children.items()
+        for child, _, _ in found
+    }
+
+
+def _partitions_of(
+    children: _Children, table: str
+) -> Tuple[IntrospectedPartition, ...]:
+    """The partitions of a table, each with its own partitions."""
+    return tuple(
+        IntrospectedPartition(
+            name,
+            schema,
+            nested,
+            _partitions_of(children, name.lower()) if nested else (),
+        )
+        for name, schema, nested in children.get(table, [])
+    )
+
+
+def _spelled_parent(
+    parent: Optional[str], spelled_tables: Dict[str, str]
+) -> Optional[str]:
+    """The name of a partition's table as the catalog spells it."""
+    if parent is None:
+        return None
+    return spelled_tables.get(parent, parent)

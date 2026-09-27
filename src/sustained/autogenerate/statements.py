@@ -228,14 +228,15 @@ def _index_intent(statement: str, table: str, index: "Index") -> str:
 
 def _deferred_foreign_key_steps(
     compiler: "Compiler", model: Type["Model"]
-) -> List[Tuple[str, str]]:
+) -> List[Tuple[str, str, Tuple[str, Tuple[str, ...]]]]:
     """
-    The (add, drop) statement pairs for every foreign key a new table
-    needs, once CREATE TABLE has left them out.
+    The (add, drop, target) triples for every foreign key a new table
+    needs, once CREATE TABLE has left them out. The target is the bare
+    table name and the columns the key points at, lowercased.
     """
     table_sql = model._qualified_table_sql(compiler)
     table = _intent_table(model)
-    pairs: List[Tuple[str, str]] = []
+    pairs: List[Tuple[str, str, Tuple[str, Tuple[str, ...]]]] = []
     for name, coldef in (model.tableColumns or {}).items():
         if coldef.references is None:
             continue
@@ -257,6 +258,7 @@ def _deferred_foreign_key_steps(
                     references=ref_table,
                 ),
                 compiler.compile_drop_foreign_key(table_sql, constraint),
+                (bare_table_name(ref_table).lower(), (ref_column.lower(),)),
             )
         )
     for constraint_def in model.tableConstraints or []:
@@ -270,6 +272,10 @@ def _deferred_foreign_key_steps(
                     constraint_def,
                 ),
                 compiler.compile_drop_foreign_key(table_sql, constraint_def.name),
+                (
+                    bare_table_name(constraint_def.target_table).lower(),
+                    tuple(c.lower() for c in constraint_def.target_columns),
+                ),
             )
         )
     return pairs

@@ -132,6 +132,7 @@ from sustained.autogenerate.steps import (
     _enum_type_steps,
     _Generation,
     _index_steps,
+    _late_foreign_key_steps,
     _new_table_steps,
     _refuse_undeclared,
     _table_rebuild_steps,
@@ -290,6 +291,10 @@ def diff_schema(
             diff.constraint_notes.extend(cycle_notes)
 
     for table_key in actual:
+        # A partition is part of its partitioned table, so it is not a
+        # table the models leave out.
+        if actual[table_key].partition_of is not None:
+            continue
         if table_key not in declared and table_key not in excluded:
             diff.extra_tables.append(actual[table_key].name or table_key)
 
@@ -393,20 +398,23 @@ def autogenerate_migrations(
     Diffs the database against the models and builds the migrations for
     the differences, which is an empty list when the schema is up to
     date. The arguments are autogenerate()'s, and without online the list
-    holds the one migration autogenerate() returns.
+    is the one migration autogenerate() returns.
 
     On PostgreSQL, online=True splits the work in two, as
     sustained.autogenerate.online describes. The migration named `id`
     runs in one transaction and changes only the catalog: new columns go
-    in nullable and without their UNIQUE and REFERENCES clauses, and new
-    foreign keys and checks go in NOT VALID. The migration named
-    `<id>_online` runs with transactional=False, so each statement
-    commits on its own. It holds the backfills, CREATE INDEX
-    CONCURRENTLY, VALIDATE CONSTRAINT, SET NOT NULL through a validated
-    check, and the drops allow_drops generates, in that order. Either
-    one is left out when it would hold no statement. On MySQL and
-    MariaDB, online=True does what assert_algorithm=True does. Other
-    dialects ignore it.
+    in nullable and without their UNIQUE and REFERENCES clauses, a new
+    NOT NULL column whose backfill is a value goes in with that value as
+    a default it drops again, and new foreign keys and checks go in NOT
+    VALID. The migration named `<id>_online` runs with
+    transactional=False, so each statement commits on its own. It runs
+    the backfills, CREATE INDEX CONCURRENTLY IF NOT EXISTS, VALIDATE
+    CONSTRAINT, SET NOT NULL through a validated check, the drops
+    allow_drops generates, and the drops of those checks, in that
+    order, and each of its statements runs again over what a failed
+    attempt left. Either one is left out when it would have no
+    statement. On MySQL and MariaDB, online=True does what
+    assert_algorithm=True does. Other dialects ignore it.
     """
     split = online and dialect is Dialects.POSTGRES
     state = _generate(
@@ -538,6 +546,7 @@ def _generate(
     _constraint_rebuild_scan(state)
     _table_rebuild_steps(state)
     _index_steps(state)
+    _late_foreign_key_steps(state)
     _constraint_steps(state)
     _drop_steps(state)
     _created_enum_type_downs(state)

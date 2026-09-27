@@ -137,8 +137,9 @@ def rehearsed_form(migration: Migration, dialect: Dialects) -> Optional[Migratio
     rehearsal runs inside its transaction: on PostgreSQL, the same
     statements with CONCURRENTLY taken out of CREATE INDEX and DROP
     INDEX, which PostgreSQL refuses inside a transaction block, and with
-    the same id. None on another dialect, where such a migration is
-    reported as not rehearsable, and for a callable step.
+    the same id. IF NOT EXISTS and IF EXISTS after CONCURRENTLY stay, as
+    in CREATE INDEX IF NOT EXISTS. None on another dialect, where such a
+    migration is reported as not rehearsable, and for a callable step.
     """
     if dialect is not Dialects.POSTGRES or callable(migration.up):
         return None

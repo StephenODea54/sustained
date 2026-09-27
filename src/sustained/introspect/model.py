@@ -8,6 +8,7 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import (
     Dict,
+    FrozenSet,
     Generator,
     List,
     Mapping,
@@ -98,12 +99,20 @@ class IntrospectedIndex(NamedTuple):
 
     `name` is the index name as the catalog spells it, or None where a
     read does not keep it.
+
+    `valid` is False for an index the Postgres read finds marked invalid
+    in pg_index: one a failed CREATE INDEX CONCURRENTLY left behind, or
+    one built with CREATE INDEX ... ON ONLY on a partitioned table
+    before an index of each partition is attached to it. The server
+    does not use an invalid index for queries, and a unique one enforces
+    nothing on the rows it does not cover. It is True everywhere else.
     """
 
     columns: Tuple[str, ...]
     unique: bool
     constraint: bool = False
     name: Optional[str] = None
+    valid: bool = True
 
 
 class IntrospectedForeignKey(NamedTuple):
@@ -129,6 +138,20 @@ class IntrospectedForeignKey(NamedTuple):
     on_update: Optional[str] = None
     name: Optional[str] = None
     target_schema: Optional[str] = None
+
+
+class IntrospectedPartition(NamedTuple):
+    """
+    One partition of a partitioned Postgres table: its name as the
+    catalog spells it, its schema when that is not the schema the
+    connection is on, and its own partitions when it is partitioned in
+    turn.
+    """
+
+    name: str
+    schema: Optional[str] = None
+    partitioned: bool = False
+    partitions: Tuple["IntrospectedPartition", ...] = ()
 
 
 # Defaults for tables introspected without keys, indexes, or checks. A
@@ -159,6 +182,13 @@ class IntrospectedTable(NamedTuple):
     that has no schemas. A statement that names a table outside the
     connection's schema needs the schema in front of the name, or it
     names a table that is not there.
+
+    The Postgres read sets the rest. `not_valid` is the set of the lowercased
+    names of the foreign keys and checks that pg_constraint marks as not
+    validated, such as one added NOT VALID whose VALIDATE CONSTRAINT
+    failed. `partitioned` is True for a partitioned table, and
+    `partitions` lists its partitions. `partition_of` names the table a
+    partition belongs to, as the catalog spells it.
     """
 
     columns: Dict[str, IntrospectedColumn]
@@ -171,6 +201,10 @@ class IntrospectedTable(NamedTuple):
     name: Optional[str] = None
     check_names: Mapping[str, str] = _NO_CHECKS
     schema: Optional[str] = None
+    not_valid: FrozenSet[str] = frozenset()
+    partitioned: bool = False
+    partitions: Tuple[IntrospectedPartition, ...] = ()
+    partition_of: Optional[str] = None
 
     def spelled_column(self, key: str) -> str:
         """A lowercased column key as the catalog spells the column."""

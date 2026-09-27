@@ -10,6 +10,7 @@ import re
 from typing import (
     TYPE_CHECKING,
     Callable,
+    Dict,
     List,
     Mapping,
     Optional,
@@ -198,6 +199,7 @@ def _diff_declared_constraints(
                 diff.new_foreign_keys.append((model, fk))
         for fk, actual_fk in fk_pairs:
             if _fk_matches(fk, actual_fk, compiler):
+                _note_unvalidated(diff, model, actual_table, actual_fk.name or fk.name)
                 continue
             if fixed:
                 diff.constraint_notes.append(
@@ -209,6 +211,7 @@ def _diff_declared_constraints(
                 diff.changed_foreign_keys.append((model, fk, actual_fk))
         for name, actual_fk in extra_fks:
             if actual_fk.columns in implied_fk_columns:
+                _note_unvalidated(diff, model, actual_table, actual_fk.name or name)
                 continue
             if fixed:
                 diff.constraint_notes.append(
@@ -237,6 +240,12 @@ def _diff_declared_constraints(
             else:
                 diff.new_checks.append((model, check))
         for check, actual_expression in check_pairs:
+            _note_unvalidated(
+                diff,
+                model,
+                actual_table,
+                actual_table.check_names.get(check.name.lower(), check.name),
+            )
             if normalize_check(check.expression) == normalize_check(actual_expression):
                 continue
             if compiler.supports_alter_column():
@@ -249,8 +258,17 @@ def _diff_declared_constraints(
                 )
             else:
                 diff.changed_checks.append((model, check, actual_expression))
+        route_checks = _route_checks(compiler, model) if by_name else {}
         for name, expression in extra_checks:
             if name in implied_checks:
+                _note_unvalidated(
+                    diff, model, actual_table, actual_table.check_names.get(name, name)
+                )
+                continue
+            if normalize_check(expression) == route_checks.get(name):
+                diff.route_checks.append(
+                    (model, actual_table.check_names.get(name, name))
+                )
                 continue
             if fixed:
                 diff.constraint_notes.append(
@@ -269,6 +287,35 @@ def _diff_declared_constraints(
                 f"{table_name} has check '{name}' that no model declares: "
                 f"{expression!r}. Pass allow_drops=True to drop it."
             )
+
+
+def _note_unvalidated(
+    diff: SchemaDiff, model: Type["Model"], actual_table: IntrospectedTable, name: str
+) -> None:
+    """Records a declared constraint the catalog reads as not validated."""
+    if name.lower() in actual_table.not_valid:
+        diff.unvalidated.append((model, name))
+
+
+def _route_checks(compiler: "Compiler", model: Type["Model"]) -> Dict[str, str]:
+    """
+    The checks the online SET NOT NULL route adds to a Postgres table,
+    by lowercased name, each with its normalized expression, for the
+    columns the model declares NOT NULL.
+    """
+    from sustained.autogenerate.online import not_null_check_name
+    from sustained.dialects import Dialects
+
+    if compiler.dialect_name() != Dialects.POSTGRES.name:
+        return {}
+    table = bare_table_name(model.tableName or "")
+    return {
+        not_null_check_name(table, name).lower(): normalize_check(
+            f"{name.lower()} IS NOT NULL"
+        )
+        for name, coldef in (model.tableColumns or {}).items()
+        if not coldef.nullable
+    }
 
 
 def _enum_check_values(expression: str) -> Tuple[str, ...]:
@@ -350,8 +397,12 @@ def _diff_constraints(
             covered = any(
                 index.unique and index.columns == (name.lower(),)
                 for index in actual_table.indexes.values()
+                if index.valid
             )
-            if not covered:
+            rebuilt = any(
+                entry[0] is model and entry[1] == name for entry in diff.invalid_keys
+            )
+            if not covered and not rebuilt:
                 diff.constraint_notes.append(
                     f"{table_name}.{name} declares UNIQUE but the database "
                     "has no unique index on it"

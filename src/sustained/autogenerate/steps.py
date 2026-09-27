@@ -7,14 +7,19 @@ sustained.autogenerate.column_steps.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Sequence, Set, Tuple, Type
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Sequence, Set, Tuple, Type
 
 from sustained.analysis import with_intent
 from sustained.autogenerate.diff import SchemaDiff, _enum_value_additions
 from sustained.autogenerate.online import (
     ONLINE_GROUPS,
     concurrently,
+    if_exists,
     not_valid,
+    partitioned_index,
+    rebuilt,
+    transient_drop,
+    unique_using_index,
     validate,
 )
 from sustained.autogenerate.statements import (
@@ -34,7 +39,7 @@ from sustained.autogenerate.statements import (
     _tagged,
 )
 from sustained.compilers.base import table_qualifier
-from sustained.introspect import Snapshot
+from sustained.introspect import IntrospectedIndex, Snapshot
 from sustained.rebuild import (
     rebuild_renames_under_legacy,
     rebuild_steps,
@@ -46,6 +51,27 @@ from sustained.types import Connection
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
     from sustained.model import Model
+
+
+class _LateForeignKey(NamedTuple):
+    """
+    A foreign key that goes in after the phase that builds the key it
+    points at: its ADD CONSTRAINT and DROP CONSTRAINT statements, the
+    table it is on as SQL and as an intent names it, its name, and the
+    (table, columns) of the key it points at. With online, `validated`
+    says the key goes in NOT VALID and the online migration validates
+    it, and `partitioned` that its table is partitioned, where
+    PostgreSQL before 18 refuses NOT VALID on a foreign key.
+    """
+
+    add: str
+    drop: str
+    table_sql: str
+    table: str
+    name: str
+    target: Tuple[str, Tuple[str, ...]]
+    validated: bool = False
+    partitioned: bool = False
 
 
 class _Generation:
@@ -92,6 +118,23 @@ class _Generation:
         # The (table, columns) of each unique key the online migration
         # builds, which a foreign key added in the run may point at.
         self.online_keys: Set[Tuple[str, Tuple[str, ...]]] = set()
+        # The (table, columns) of each unique key _index_steps() builds,
+        # and of each new column declared UNIQUE, which a foreign key in
+        # the same diff may point at.
+        self.index_keys: Set[Tuple[str, Tuple[str, ...]]] = {
+            _key(model.tableName or "", index.columns)
+            for model, index in diff.new_indexes
+            + [(model, index) for model, index, _ in diff.changed_indexes]
+            if index.unique
+        }
+        self.column_keys: Set[Tuple[str, Tuple[str, ...]]] = {
+            _key(model.tableName or "", (name,))
+            for model, name, coldef in diff.new_columns
+            if coldef.unique and not coldef.primary_key
+        }
+        # The foreign keys _late_foreign_key_steps() adds once the keys
+        # they point at are built.
+        self.late_foreign_keys: List[_LateForeignKey] = []
         self.rebuild_tables: Dict[str, Type["Model"]] = {}
         # Enum types this migration creates, dropped last on the way down.
         self.created_enum_types: List[str] = []
@@ -247,12 +290,66 @@ def _new_table_steps(state: _Generation) -> None:
         table_downs.insert(
             0, f"DROP TABLE IF EXISTS {model._qualified_table_sql(compiler)}"
         )
+    # A key that points at a column or a unique index the same diff
+    # adds to a table that exists goes in after that column and index.
+    built = state.index_keys | state.column_keys
     if defer_foreign_keys:
         for model in diff.missing_tables:
-            for add_sql, drop_sql in _deferred_foreign_key_steps(compiler, model):
+            for add_sql, drop_sql, target in _deferred_foreign_key_steps(
+                compiler, model
+            ):
+                if target in built:
+                    state.late_foreign_keys.append(
+                        _LateForeignKey(
+                            add_sql,
+                            drop_sql,
+                            model._qualified_table_sql(compiler),
+                            _intent_table(model),
+                            _intent_name(add_sql),
+                            target,
+                        )
+                    )
+                    continue
                 up_steps.append(add_sql)
                 fk_downs.insert(0, drop_sql)
     down_steps[0:0] = fk_downs + table_downs
+
+
+def _intent_name(statement: str) -> str:
+    """The constraint name the intent of an ADD CONSTRAINT statement gives."""
+    intent = getattr(statement, "intent", None)
+    return "" if intent is None else str(intent.get("name"))
+
+
+def _late_foreign_key_steps(state: _Generation) -> None:
+    """
+    Adds the foreign keys that point at a key built after them: a new
+    table's key to a column or unique index the diff adds, and, with
+    online, a new column's key. With online, a key whose target the
+    online migration builds goes in the online `constraint` group, after
+    the `index` group has built the target.
+    """
+    for fk in state.late_foreign_keys:
+        if not state.online:
+            state.up_steps.append(fk.add)
+            state.down_steps.insert(0, fk.drop)
+            continue
+        late = fk.target in state.online_keys
+        up, down = (
+            (state.online_up["constraint"], state.online_down["constraint"])
+            if late or fk.partitioned
+            else (state.up_steps, state.down_steps)
+        )
+        down.insert(0, fk.drop)
+        if fk.partitioned or not (late or fk.validated):
+            # PostgreSQL before 18 refuses NOT VALID on a partitioned
+            # table, and a new table has no rows to validate.
+            up.append(fk.add)
+            continue
+        up.append(not_valid(fk.add))
+        state.online_up["validate"].append(
+            validate(state.compiler, fk.table_sql, fk.table, fk.name)
+        )
 
 
 def _constraint_rebuild_scan(state: _Generation) -> None:
@@ -339,8 +436,8 @@ def _index_steps(state: _Generation) -> None:
     # rebuild, and its old indexes went with the old table, so none of
     # these statements apply to it.
     # With online, every index is built and dropped concurrently in the
-    # migration that runs outside the DDL transaction.
-    build = concurrently if state.online else _as_is
+    # migration that runs outside the DDL transaction, and on a
+    # partitioned table on each partition.
     if state.online:
         up_steps = state.online_up["index"]
         down_steps = state.online_down["index"]
@@ -348,18 +445,23 @@ def _index_steps(state: _Generation) -> None:
         if (model.tableName or "").lower() in rebuild_tables:
             continue
         table_sql = model._qualified_table_sql(compiler)
-        up_steps.append(
-            build(
-                _index_intent(
-                    compiler.compile_create_index(
-                        index.name, table_sql, list(index.columns), index.unique
-                    ),
-                    _intent_table(model),
-                    index,
-                )
-            )
+        intent_table = _intent_table(model)
+        create = _index_intent(
+            compiler.compile_create_index(
+                index.name, table_sql, list(index.columns), index.unique
+            ),
+            intent_table,
+            index,
         )
-        down_steps.insert(0, build(compiler.compile_drop_index(index.name, table_sql)))
+        drop = compiler.compile_drop_index(index.name, table_sql)
+        if state.online:
+            up_steps.extend(
+                _built_online(state, model, index.name, index.columns, index.unique)
+            )
+            down_steps.insert(0, _dropped_online(state, model, drop))
+        else:
+            up_steps.append(create)
+            down_steps.insert(0, drop)
         if index.unique:
             state.online_keys.add(_key(model.tableName or "", index.columns))
     for model, index, actual_index in diff.changed_indexes:
@@ -367,18 +469,24 @@ def _index_steps(state: _Generation) -> None:
             continue
         table_sql = model._qualified_table_sql(compiler)
         intent_table = _intent_table(model)
-        up_steps.append(
-            build(
-                with_intent(
-                    compiler.compile_drop_index(index.name, table_sql),
-                    "drop_index",
-                    intent_table,
-                    name=index.name,
+        drop = with_intent(
+            compiler.compile_drop_index(index.name, table_sql),
+            "drop_index",
+            intent_table,
+            name=index.name,
+        )
+        actual_columns = _spelled_columns(
+            actual[(model.tableName or "").lower()], actual_index
+        )
+        if state.online:
+            up_steps.extend(
+                _replaced_online(
+                    state, model, drop, index.name, index.columns, index.unique
                 )
             )
-        )
-        up_steps.append(
-            build(
+        else:
+            up_steps.append(drop)
+            up_steps.append(
                 _index_intent(
                     compiler.compile_create_index(
                         index.name, table_sql, list(index.columns), index.unique
@@ -387,23 +495,164 @@ def _index_steps(state: _Generation) -> None:
                     index,
                 )
             )
-        )
-        down_steps.insert(
-            0,
-            build(
-                compiler.compile_create_index(
+        # An invalid index is rebuilt, and the down step leaves the
+        # valid one in its place: the invalid index did nothing.
+        if actual_index.valid:
+            restore: List[str]
+            if state.online:
+                restore = _replaced_online(
+                    state,
+                    model,
+                    str(drop),
                     index.name,
-                    table_sql,
-                    _spelled_columns(
-                        actual[(model.tableName or "").lower()], actual_index
-                    ),
+                    actual_columns,
                     actual_index.unique,
+                    intent=False,
                 )
-            ),
-        )
-        down_steps.insert(0, build(compiler.compile_drop_index(index.name, table_sql)))
+            else:
+                restore = [
+                    compiler.compile_drop_index(index.name, table_sql),
+                    compiler.compile_create_index(
+                        index.name, table_sql, actual_columns, actual_index.unique
+                    ),
+                ]
+            down_steps[0:0] = restore
         if index.unique:
             state.online_keys.add(_key(model.tableName or "", index.columns))
+    for model, column, actual_index in diff.invalid_keys:
+        if (model.tableName or "").lower() in rebuild_tables:
+            continue
+        _key_rebuild_steps(state, up_steps, model, column, actual_index)
+
+
+def _key_rebuild_steps(
+    state: _Generation,
+    up_steps: List[str],
+    model: Type["Model"],
+    column: str,
+    actual_index: IntrospectedIndex,
+) -> None:
+    """
+    Drops the invalid unique index behind a column declared UNIQUE and
+    builds the column's key again under the same name. Without online
+    the key goes in as ADD CONSTRAINT ... UNIQUE. With online the index
+    builds concurrently and ADD CONSTRAINT ... USING INDEX attaches it,
+    except on a partitioned table, where it stays a unique index built
+    on each partition. The invalid index enforced nothing, so the down
+    step leaves the key in place.
+    """
+    compiler = state.compiler
+    table_sql = model._qualified_table_sql(compiler)
+    table = _intent_table(model)
+    name = actual_index.name or ""
+    drop = with_intent(
+        compiler.compile_drop_index(name, table_sql),
+        "drop_index",
+        table,
+        name=name,
+    )
+    if not state.online:
+        up_steps.append(drop)
+        up_steps.append(
+            with_intent(
+                compiler.compile_add_unique(table_sql, name, [column]),
+                "add_unique",
+                table,
+                name=name,
+            )
+        )
+        return
+    up_steps.extend(_replaced_online(state, model, drop, name, (column,), True))
+    if not _is_partitioned(state, model):
+        up_steps.append(unique_using_index(compiler, table_sql, table, name))
+    state.online_keys.add(_key(model.tableName or "", (column,)))
+
+
+def _is_partitioned(state: _Generation, model: Type["Model"]) -> bool:
+    """Whether the snapshot reads the model's table as partitioned."""
+    found = state.actual.get((model.tableName or "").lower())
+    return found is not None and found.partitioned
+
+
+def _built_online(
+    state: _Generation,
+    model: Type["Model"],
+    name: str,
+    columns: Sequence[str],
+    unique: bool,
+    intent: bool = True,
+) -> List[str]:
+    """
+    With online, the statements that build an index: on a partitioned
+    table, the index ON ONLY the table with an index built concurrently
+    on each partition and attached to it, and elsewhere a drop of an
+    index an earlier attempt left under the name, then the build. With
+    `intent` False, as in a down step, the statements have no intent.
+    """
+    compiler = state.compiler
+    table_sql = model._qualified_table_sql(compiler)
+    table = _intent_table(model)
+    found = state.actual.get((model.tableName or "").lower())
+    if found is not None and found.partitioned:
+        return list(
+            partitioned_index(
+                compiler,
+                table_sql,
+                table,
+                name,
+                list(columns),
+                unique,
+                found.partitions,
+            )
+        )
+    drop = compiler.compile_drop_index(name, table_sql)
+    create = compiler.compile_create_index(name, table_sql, list(columns), unique)
+    if not intent:
+        return [str(s) for s in rebuilt(drop, create)]
+    return list(
+        rebuilt(
+            with_intent(drop, "drop_index", table, name=name),
+            with_intent(
+                create,
+                "create_index",
+                table,
+                name=name,
+                columns=tuple(columns),
+                unique=unique,
+            ),
+        )
+    )
+
+
+def _replaced_online(
+    state: _Generation,
+    model: Type["Model"],
+    drop: str,
+    name: str,
+    columns: Sequence[str],
+    unique: bool,
+    intent: bool = True,
+) -> List[str]:
+    """
+    With online, the statements that drop an index and build it again:
+    the build, which drops the index of the same name first, and on a
+    partitioned table, whose build drops nothing, `drop` before it.
+    """
+    built = _built_online(state, model, name, columns, unique, intent)
+    if _is_partitioned(state, model):
+        return [_dropped_online(state, model, drop)] + built
+    return built
+
+
+def _dropped_online(state: _Generation, model: Type["Model"], drop: str) -> str:
+    """
+    With online, a DROP INDEX with IF EXISTS: concurrently, except on a
+    partitioned table, where PostgreSQL refuses DROP INDEX CONCURRENTLY
+    and a plain drop takes the index of each partition with it.
+    """
+    if _is_partitioned(state, model):
+        return if_exists(drop)
+    return concurrently(drop)
 
 
 def _as_is(statement: str) -> str:
@@ -453,24 +702,40 @@ def _constraint_steps(state: _Generation) -> None:
         table_sql = model._qualified_table_sql(compiler)
         # A key the online migration builds is not there yet when the
         # DDL transaction runs, so a foreign key that points at it goes
-        # in after the key is built.
+        # in after the key is built. PostgreSQL before 18 refuses NOT
+        # VALID on a foreign key of a partitioned table, so there the
+        # key goes in validated, in the online migration.
         late = _key(fk.target_table, fk.target_columns) in state.online_keys
+        partitioned = state.online and _is_partitioned(state, model)
         up, down = (
             (state.online_up["constraint"], state.online_down["constraint"])
-            if late
+            if late or partitioned
             else (up_steps, down_steps)
         )
-        up.append(
-            added(
-                _declared_fk_intent(
-                    _declared_fk_sql(compiler, table_sql, fk),
-                    _intent_table(model),
-                    fk,
-                )
-            )
+        statement = _declared_fk_intent(
+            _declared_fk_sql(compiler, table_sql, fk), _intent_table(model), fk
         )
+        up.append(statement if partitioned else added(statement))
         down.insert(0, compiler.compile_drop_foreign_key(table_sql, fk.name))
-        _validate_online(state, table_sql, model, fk.name)
+        if not partitioned:
+            _validate_online(state, table_sql, model, fk.name)
+    # A declared constraint the catalog reads as not validated, such as
+    # one whose VALIDATE CONSTRAINT failed, is validated where it is.
+    for model, name in diff.unvalidated:
+        if (model.tableName or "").lower() in rebuild_tables:
+            continue
+        table_sql = model._qualified_table_sql(compiler)
+        (state.online_up["validate"] if state.online else up_steps).append(
+            validate(compiler, table_sql, _intent_table(model), name)
+        )
+    # A check the online SET NOT NULL route added and a failed run left
+    # comes off, unless the route runs again in this diff and drops it.
+    for model, name in diff.route_checks:
+        table_sql = model._qualified_table_sql(compiler)
+        drop = transient_drop(compiler, table_sql, _intent_table(model), name)
+        cleanup = state.online_up["cleanup"] if state.online else up_steps
+        if drop not in cleanup:
+            cleanup.append(drop)
     if allow_drops:
         for model, fk, actual_fk in diff.changed_foreign_keys:
             if (model.tableName or "").lower() in rebuild_tables:
@@ -504,18 +769,21 @@ def _constraint_steps(state: _Generation) -> None:
                     0, compiler.compile_drop_foreign_key(table_sql, fk.name)
                 )
         # With online, the drops run in the migration outside the DDL
-        # transaction, after everything else.
+        # transaction, after everything else, each with IF EXISTS.
         drop_up, drop_down = _drop_lists(state)
+        dropped = if_exists if state.online else _as_is
         for table, name, actual_fk in diff.extra_foreign_keys:
             if table.lower() in rebuild_tables:
                 continue
             table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
             drop_up.append(
-                with_intent(
-                    compiler.compile_drop_foreign_key(table_sql, name),
-                    "drop_foreign_key",
-                    _reported_intent_table(models_by_table, actual, table),
-                    name=name,
+                dropped(
+                    with_intent(
+                        compiler.compile_drop_foreign_key(table_sql, name),
+                        "drop_foreign_key",
+                        _reported_intent_table(models_by_table, actual, table),
+                        name=name,
+                    )
                 )
             )
             restore = _introspected_fk_sql(
@@ -530,11 +798,13 @@ def _constraint_steps(state: _Generation) -> None:
                 continue
             table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
             drop_up.append(
-                with_intent(
-                    compiler.compile_drop_constraint(table_sql, name),
-                    "drop_constraint",
-                    _reported_intent_table(models_by_table, actual, table),
-                    name=name,
+                dropped(
+                    with_intent(
+                        compiler.compile_drop_constraint(table_sql, name),
+                        "drop_constraint",
+                        _reported_intent_table(models_by_table, actual, table),
+                        name=name,
+                    )
                 )
             )
             drop_down.insert(0, compiler.compile_add_check(table_sql, name, expression))
@@ -549,9 +819,11 @@ def _drop_steps(state: _Generation) -> None:
     allow_drops = state.allow_drops
     rebuild_tables = state.rebuild_tables
     up_steps, down_steps = _drop_lists(state)
-    # With online, an index drops concurrently, and so does the index a
-    # down step builds again.
-    build = concurrently if state.online else _as_is
+    # With online, every drop takes IF EXISTS, an index drops
+    # concurrently, and the index a down step builds again is built
+    # concurrently. On a partitioned table the index drops without
+    # CONCURRENTLY, which PostgreSQL refuses there.
+    dropped = if_exists if state.online else _as_is
     if allow_drops:
         for table, name, actual_index in diff.extra_indexes:
             if table.lower() in rebuild_tables:
@@ -563,11 +835,13 @@ def _drop_steps(state: _Generation) -> None:
                 # The index belongs to a UNIQUE constraint, and the engine
                 # refuses DROP INDEX on it.
                 up_steps.append(
-                    with_intent(
-                        compiler.compile_drop_constraint(table_sql, name),
-                        "drop_constraint",
-                        intent_table,
-                        name=name,
+                    dropped(
+                        with_intent(
+                            compiler.compile_drop_constraint(table_sql, name),
+                            "drop_constraint",
+                            intent_table,
+                            name=name,
+                        )
                     )
                 )
                 down_steps.insert(
@@ -577,54 +851,58 @@ def _drop_steps(state: _Generation) -> None:
                     ),
                 )
                 continue
-            up_steps.append(
-                build(
-                    with_intent(
-                        compiler.compile_drop_index(name, table_sql),
-                        "drop_index",
-                        intent_table,
-                        name=name,
-                    )
-                )
+            drop = with_intent(
+                compiler.compile_drop_index(name, table_sql),
+                "drop_index",
+                intent_table,
+                name=name,
             )
-            down_steps.insert(
-                0,
-                build(
+            columns = _spelled_columns(actual_table, actual_index)
+            if not state.online:
+                up_steps.append(drop)
+                down_steps.insert(
+                    0,
                     compiler.compile_create_index(
-                        name,
-                        table_sql,
-                        _spelled_columns(actual_table, actual_index),
-                        actual_index.unique,
-                    )
-                ),
+                        name, table_sql, columns, actual_index.unique
+                    ),
+                )
+                continue
+            model = models_by_table[table.lower()]
+            up_steps.append(_dropped_online(state, model, drop))
+            down_steps[0:0] = _built_online(
+                state, model, name, columns, actual_index.unique, intent=False
             )
         for table, name in diff.extra_columns:
             if table.lower() in rebuild_tables:
                 continue
             table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
             up_steps.append(
-                with_intent(
-                    compiler.compile_drop_column(table_sql, name),
-                    "drop_column",
-                    _reported_intent_table(models_by_table, actual, table),
-                    name,
+                dropped(
+                    with_intent(
+                        compiler.compile_drop_column(table_sql, name),
+                        "drop_column",
+                        _reported_intent_table(models_by_table, actual, table),
+                        name,
+                    )
                 )
             )
             _irreversible(state)
         if diff.extra_tables:
             drops, bare = _extra_table_drops(compiler, actual, diff.extra_tables)
-            up_steps.extend(drops)
+            up_steps.extend(dropped(drop) for drop in drops)
             if bare and not state.online:
                 state.transactional = False
             _irreversible(state)
         # A type drops after every table and column that used it.
         for type_name in diff.extra_enum_types:
             up_steps.append(
-                with_intent(
-                    compiler.compile_drop_enum_type(type_name),
-                    "drop_enum_type",
-                    None,
-                    name=type_name,
+                dropped(
+                    with_intent(
+                        compiler.compile_drop_enum_type(type_name),
+                        "drop_enum_type",
+                        None,
+                        name=type_name,
+                    )
                 )
             )
 

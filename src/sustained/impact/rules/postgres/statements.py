@@ -15,6 +15,7 @@ from sustained.impact.model import (
 )
 from sustained.impact.rules import Effect, Facts, Outcome, Rule, common
 from sustained.impact.rules.postgres.catalog import (
+    ATTACH_INDEX,
     COMMENT,
     CREATE_INDEX,
     CREATE_INDEX_CONCURRENTLY,
@@ -38,6 +39,7 @@ from sustained.impact.rules.postgres.catalog import (
 )
 from sustained.impact.rules.postgres.locks import (
     ACCESS_EXCLUSIVE,
+    ACCESS_SHARE,
     EXCLUSIVE,
     ROW_EXCLUSIVE,
     SHARE,
@@ -98,6 +100,8 @@ def _create_index(facts: Facts) -> Outcome:
     table = common.table(facts)
     parent = partitioned(facts, table)
     if parsed.options.get("concurrently"):
+        name = parsed.options.get("name")
+        left = "an invalid index" if name is None else f"the invalid index {name}"
         findings = refused_in_transaction(
             facts, CREATE_INDEX_CONCURRENTLY, "CREATE INDEX CONCURRENTLY"
         )
@@ -115,8 +119,8 @@ def _create_index(facts: Facts) -> Outcome:
                     CREATE_INDEX_CONCURRENTLY.id,
                     Severity.INFO,
                     "the build scans the table twice and waits for every "
-                    "older transaction; a failed build leaves an invalid "
-                    "index behind, which must be dropped before a retry",
+                    f"older transaction; a failed build leaves {left} "
+                    "behind, which must be dropped before a retry",
                     source=CREATE_INDEX_CONCURRENTLY.source,
                 )
             )
@@ -164,6 +168,51 @@ def _create_index(facts: Facts) -> Outcome:
                 remedy=remedy,
             ),
         )
+    )
+
+
+def _attach_index(facts: Facts) -> Outcome:
+    """
+    ALTER INDEX ... ATTACH PARTITION reads the catalog only. It takes
+    ACCESS SHARE on the partitioned table and on the partition, SHARE
+    UPDATE EXCLUSIVE on the partitioned table's index, and ACCESS
+    EXCLUSIVE on the partition's index, which every query and write on
+    the partition locks, so those wait until the attach commits.
+    """
+    name = str(facts.parsed.options.get("name"))
+    partition = str(facts.parsed.options.get("partition"))
+    intent = facts.intent
+    parent_table = facts.state.index_table(name) or facts.context.index_table(name)
+    if parent_table is None and intent is not None:
+        parent_table = intent.table
+    child_table = facts.state.index_table(partition) or facts.context.index_table(
+        partition
+    )
+    if child_table is None and intent is not None:
+        reported = intent.get("partition")
+        child_table = None if reported is None else str(reported)
+    confidence = Confidence.KNOWN if parent_table and child_table else Confidence.LIKELY
+    child_label = _table_label(partition, child_table)
+    return Outcome(
+        (
+            Effect(
+                ATTACH_INDEX,
+                _table_label(name, parent_table),
+                ACCESS_SHARE,
+                Work.CATALOG,
+            ),
+            Effect(
+                ATTACH_INDEX,
+                child_label,
+                ACCESS_SHARE,
+                Work.CATALOG,
+                blocks=Blocks.READS_AND_WRITES,
+                message=f"reads and writes on {child_label} wait until the "
+                f"attach commits, which takes ACCESS EXCLUSIVE on the index "
+                f"{partition}",
+            ),
+        ),
+        confidence=confidence,
     )
 
 

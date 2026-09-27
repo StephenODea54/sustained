@@ -342,6 +342,10 @@ class Cursor:
         return self.dialect is not None and self.dialect.name == "MSSQL"
 
     @property
+    def postgres(self) -> bool:
+        return self.dialect is not None and self.dialect.name == "POSTGRES"
+
+    @property
     def sqlite(self) -> bool:
         """Whether the dialect is DEFAULT, which SQLite connections use."""
         return self.dialect is not None and self.dialect.name == "DEFAULT"

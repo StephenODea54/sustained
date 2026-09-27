@@ -301,7 +301,15 @@ class NotesTestCase(unittest.TestCase):
             )
         )
         self.assertEqual(rules(statement), ["pg.create_index.concurrently"])
-        self.assertIn("invalid index", statement.findings[0].message)
+        self.assertIn(
+            "leaves the invalid index ix behind", statement.findings[0].message
+        )
+        unnamed = impact(
+            MigrationStatement(
+                "CREATE INDEX CONCURRENTLY ON t (c)", "m1", transactional=False
+            )
+        )
+        self.assertIn("leaves an invalid index behind", unnamed.findings[0].message)
 
     def test_nowait_needs_no_timeout(self):
         statement = impact("LOCK TABLE t IN ACCESS EXCLUSIVE MODE NOWAIT")

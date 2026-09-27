@@ -237,32 +237,49 @@ A migration with `transactional=False` releases each lock when its statement end
 
 On PostgreSQL, the diff can generate the remedies in place of the direct statements. `sustained.autogenerate.autogenerate_migrations(..., online=True)` splits the migration the models generate into two:
 
-- The migration named with the generated id runs in one transaction and changes only the catalog. A new column goes in nullable and without its `UNIQUE` or `REFERENCES` clause. A new foreign key or check goes in `NOT VALID`, and so does the foreign key a new column's `REFERENCES` declares.
-- The migration named `<id>_online` has `transactional=False`, so each of its statements commits on its own and releases its locks when it ends. It runs, in this order: the backfills, as one `UPDATE ... WHERE c IS NULL` each; `CREATE INDEX CONCURRENTLY` for each new or changed index, and for a new column's `UNIQUE` a unique index built concurrently and attached with `ADD CONSTRAINT ... UNIQUE USING INDEX`; a foreign key `NOT VALID` that points at a key built in the same migration, which cannot go in before the key exists; `VALIDATE CONSTRAINT` for each constraint added `NOT VALID`; `SET NOT NULL` through a check, as `ADD CONSTRAINT <table>_<column>_not_null_check CHECK (c IS NOT NULL) NOT VALID`, `VALIDATE CONSTRAINT`, `SET NOT NULL`, and `DROP CONSTRAINT`; and the drops `allow_drops` generates, with `DROP INDEX CONCURRENTLY` for an index.
+- The migration named with the generated id runs in one transaction and changes only the catalog. A new column goes in nullable and without its `UNIQUE` or `REFERENCES` clause. A new `NOT NULL` column whose backfill is a value goes in with that value as its default, which PostgreSQL stores in the catalog without writing a row, and `ALTER COLUMN ... DROP DEFAULT` in the same migration takes the default off again. A new `NOT NULL` column with a default and no backfill goes in with its default, as in the direct form. A new foreign key or check goes in `NOT VALID`, and so does the foreign key a new column's `REFERENCES` declares.
+- The migration named `<id>_online` has `transactional=False`, so each of its statements commits on its own and releases its locks when it ends. It runs, in this order: the backfills, as one `UPDATE ... WHERE c IS NULL` each; `CREATE INDEX CONCURRENTLY IF NOT EXISTS` for each new or changed index, after `DROP INDEX CONCURRENTLY IF EXISTS` of the same name, and for a new column's `UNIQUE` a unique index built the same way and attached with `ADD CONSTRAINT ... UNIQUE USING INDEX`; a foreign key `NOT VALID` that points at a key built in the same migration, which cannot go in before the key exists, and a foreign key on a partitioned table; `VALIDATE CONSTRAINT` for each constraint added `NOT VALID`; `SET NOT NULL` through a check, as `DROP CONSTRAINT IF EXISTS <table>_<column>_not_null_check`, `ADD CONSTRAINT <table>_<column>_not_null_check CHECK (c IS NOT NULL) NOT VALID`, the backfill again, `VALIDATE CONSTRAINT`, and `SET NOT NULL`; the drops `allow_drops` generates, each with `IF EXISTS`, and with `DROP INDEX CONCURRENTLY` for an index; and last, `DROP CONSTRAINT IF EXISTS` for each check the `SET NOT NULL` route added.
 
-A migration with no statement is left out, so a run that only adds an index generates `<id>_online` alone. A constraint that a new column declares takes the name PostgreSQL gives it, such as `orders_code_key` or `orders_customer_id_fkey`, so the schema reads the same as after the direct form. The down step of `<id>_online` undoes its statements in the reverse order, with `DROP INDEX CONCURRENTLY` for an index, and leaves the schema the first migration made. It has no statement when `<id>_online` only validates or backfills, and it is missing when `<id>_online` drops a column or a table. The tracking row of a generated migration without a transaction stores `"transactional": false` beside its statements, so a later `down()` runs its down step outside a transaction too.
+A migration with no statement is left out, so a run that only adds an index generates `<id>_online` alone. A constraint or index name the diff generates is the name PostgreSQL's `makeObjectName()` gives it, such as `orders_code_key` or `orders_customer_id_fkey`, so the schema reads the same as after the direct form. When the table name, the column name, and the suffix are longer than 63 bytes together, the longer of the two names is shortened and the suffix is kept, so the `_key`, `_fkey`, and `_not_null_check` names of one column stay distinct. The down step of `<id>_online` undoes its statements in the reverse order, with `DROP INDEX CONCURRENTLY` for an index, and leaves the schema the first migration made. It has no statement when `<id>_online` only validates or backfills, and it is missing when `<id>_online` drops a column or a table. The tracking row of a generated migration without a transaction stores `"transactional": false` beside its statements, so a later `down()` runs its down step outside a transaction too.
 
-The NOT NULL example from [Transaction windows](#transaction-windows) becomes:
+The NOT NULL example from [Transaction windows](#transaction-windows) adds a column with a value backfill, so it becomes catalog work in `<id>` alone:
 
 ```console
 20260926_orders_region  transaction
-  ALTER TABLE "orders" ADD COLUMN "region" TEXT
-    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.add_column]
+  ALTER TABLE "orders" ADD COLUMN "region" TEXT NOT NULL DEFAULT 'us'
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  transaction  [pg.add_column]
+  ALTER TABLE "orders" ALTER COLUMN "region" DROP DEFAULT
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.alter_column.catalog]
+  window  orders: ACCESS EXCLUSIVE from statement 1, ACCESS EXCLUSIVE from statement 2, held to commit
+```
 
+When `region` already exists as a nullable column, or its backfill is an `Expression`, the column is set `NOT NULL` through the check in `<id>_online`:
+
+```console
 20260926_orders_region_online  no transaction
   UPDATE "orders" SET "region" = 'us' WHERE "region" IS NULL
     orders  ROW EXCLUSIVE  blocks writes  rows  statement  [pg.write_rows]
+  ALTER TABLE "orders" DROP CONSTRAINT IF EXISTS "orders_region_not_null_check"
+    orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.drop_constraint]
   ALTER TABLE "orders" ADD CONSTRAINT "orders_region_not_null_check" CHECK ("region" IS NOT NULL) NOT VALID
     orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.add_check.not_valid]
+  UPDATE "orders" SET "region" = 'us' WHERE "region" IS NULL
+    orders  ROW EXCLUSIVE  blocks writes  rows  statement  [pg.write_rows]
   ALTER TABLE "orders" VALIDATE CONSTRAINT "orders_region_not_null_check"
     orders  SHARE UPDATE EXCLUSIVE  blocks ddl  scan  statement  [pg.validate_constraint]
   ALTER TABLE "orders" ALTER COLUMN "region" SET NOT NULL
     orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.set_not_null.proven]
-  ALTER TABLE "orders" DROP CONSTRAINT "orders_region_not_null_check"
+  ALTER TABLE "orders" DROP CONSTRAINT IF EXISTS "orders_region_not_null_check"
     orders  ACCESS EXCLUSIVE  blocks reads_and_writes  catalog  brief  [pg.drop_constraint]
 ```
 
-The backfill stays one `UPDATE`, which keeps its row locks until it ends. On a large table its `pg.write_rows` finding stays `danger`, and a batched backfill is still a migration you write. A statement of `<id>_online` that fails leaves the statements before it committed, and the migration's failed row stops the next `up()` until `repair()`. A failed `CREATE INDEX CONCURRENTLY` also leaves an invalid index behind, which has to be dropped before a retry.
+The check goes in after the first backfill: PostgreSQL applies a `NOT VALID` check to every row written after it goes in, so an `UPDATE` of a row whose column is still NULL would fail against it. A row the application writes with a NULL between the first backfill and the check is filled by the second backfill, so `VALIDATE CONSTRAINT` finds no NULL.
+
+Each backfill is one `UPDATE`, which keeps its row locks until it ends. On a large table its `pg.write_rows` finding stays `danger`, and a batched backfill is still a migration you write.
+
+A statement of `<id>_online` that fails leaves the statements before it committed, and the migration's failed row stops the next `up()` until `repair()`. A run after `repair()` starts again from the first statement of `<id>_online`, so each statement runs again over what the failed run left: `DROP INDEX CONCURRENTLY IF EXISTS` drops the invalid index a failed `CREATE INDEX CONCURRENTLY` leaves, before `CREATE INDEX CONCURRENTLY IF NOT EXISTS` builds it again; the `SET NOT NULL` route drops its check before it adds it; and every drop has `IF EXISTS`. The `pg.create_index.concurrently` finding names the invalid index a failed build leaves. `ADD CONSTRAINT ... UNIQUE USING INDEX` and `ADD CONSTRAINT ... FOREIGN KEY` have no `IF NOT EXISTS` form, so a run again after one of them committed fails on the constraint it added. A diff generated after the failure reads what the failed run left: it builds an invalid index again, validates a constraint the catalog marks as not validated, and drops a leftover `SET NOT NULL` check; see [Invalid indexes and constraints not validated](/schema#invalid-indexes-and-constraints-not-validated).
+
+On a partitioned table, PostgreSQL refuses `CREATE INDEX CONCURRENTLY` and `DROP INDEX CONCURRENTLY`. The schema read lists the partitions of each partitioned table, and `<id>_online` builds a new or changed index there in steps: `CREATE INDEX IF NOT EXISTS ... ON ONLY` the partitioned table, which reads no rows and leaves the index invalid; `CREATE INDEX CONCURRENTLY IF NOT EXISTS` on each partition, with the name PostgreSQL gives the index it builds on a partition, such as `orders_a_email_idx`; and `ALTER INDEX ... ATTACH PARTITION` for each, which reads only the catalog. The index on the partitioned table turns valid once an index of every partition is attached. A partition that is partitioned in turn gets an index `ON ONLY` of its own, with the indexes of its partitions attached to it first. An index on a partitioned table is dropped with `DROP INDEX IF EXISTS`. A new column's `UNIQUE` there stays the attached unique index, since PostgreSQL refuses `ADD CONSTRAINT ... USING INDEX` on a partitioned table. A foreign key on a partitioned table goes in validated, in the `<id>_online` step for foreign keys, since PostgreSQL before 18 refuses `NOT VALID` there. A partition index a failed build left invalid is not dropped on a run again, since an index attached to the partitioned table's index cannot be dropped, so the run again fails on the `ATTACH PARTITION` of that index and names it.
 
 `up()`, `rehearse()`, `impact()`, and `preflight()` on either migrator take `online=True` with `models`, and `plan_migrations()` returns the list of migrations the models generate. `plan(online=True)` returns the one migration the split generates, and raises `ValueError` when the split generates two. `autogenerate()` returns one migration and takes no `online`. For the command line, pass `--online` to `plan`, `impact`, `rehearse`, or `migrate`, or set `online = True` in the config module. The flag exits 1 on a dialect other than PostgreSQL, MySQL, and MariaDB.
 
@@ -537,6 +554,7 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 | `CREATE INDEX CONCURRENTLY` | `SHARE UPDATE EXCLUSIVE` | index build | `pg.create_index.concurrently` |
 | `DROP INDEX` | `ACCESS EXCLUSIVE` on the table | catalog | `pg.drop_index` |
 | `DROP INDEX CONCURRENTLY` | `SHARE UPDATE EXCLUSIVE` on the table | catalog | `pg.drop_index.concurrently` |
+| `ALTER INDEX ... ATTACH PARTITION` | `ACCESS SHARE` on the partitioned table and on the partition, and `ACCESS EXCLUSIVE` on the partition's index, so reads and writes on the partition wait | catalog | `pg.attach_index` |
 | `CREATE TABLE ... REFERENCES`, `CREATE TABLE ... PARTITION OF` | `SHARE ROW EXCLUSIVE` on the referenced table, `ACCESS EXCLUSIVE` on the parent and its DEFAULT partition | catalog, and a scan of the DEFAULT partition | `pg.create_table` |
 | `DROP TABLE`, `TRUNCATE` | `ACCESS EXCLUSIVE`, with `TRUNCATE ... CASCADE` on every table it empties through a foreign key, and on the partitions of a partitioned table. Dropping a partition also locks its partitioned table and the DEFAULT partition. | catalog | `pg.drop_table` |
 | `UPDATE`, `DELETE` | `ROW EXCLUSIVE`, plus row locks on the rows changed | rows | `pg.write_rows` |

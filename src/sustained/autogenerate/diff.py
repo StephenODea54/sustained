@@ -69,6 +69,17 @@ class SchemaDiff:
             Tuple[Type["Model"], str, Tuple[str, ...], Optional[str]]
         ] = []
         self.extra_checks: List[Tuple[str, str, str]] = []
+        # A column declared UNIQUE whose unique index the catalog marks
+        # invalid, as a failed CREATE UNIQUE INDEX CONCURRENTLY leaves
+        # it: the model, the column, and the index.
+        self.invalid_keys: List[Tuple[Type["Model"], str, IntrospectedIndex]] = []
+        # A declared foreign key or check the catalog marks as not
+        # validated: the model and the constraint name as the catalog
+        # spells it.
+        self.unvalidated: List[Tuple[Type["Model"], str]] = []
+        # A check the online SET NOT NULL route adds and drops, left by
+        # a run that failed before the drop: the model and its name.
+        self.route_checks: List[Tuple[Type["Model"], str]] = []
         # Named enum types that only extra tables and columns use and no
         # model declares, spelled as the catalog spells them. They drop
         # with those tables and columns.
@@ -95,6 +106,9 @@ class SchemaDiff:
             or self.changed_checks
             or self.changed_enum_checks
             or self.extra_checks
+            or self.invalid_keys
+            or self.unvalidated
+            or self.route_checks
             or self.constraint_notes
         )
 
@@ -137,6 +151,11 @@ class SchemaDiff:
             lines.append(f"index '{index.name}' on '{model.tableName}' was not created")
         for model, index, _ in self.changed_indexes:
             lines.append(f"index '{index.name}' on '{model.tableName}' was not rebuilt")
+        for model, name, _ in self.invalid_keys:
+            lines.append(
+                f"the unique index on '{model.tableName}.{name}' is invalid "
+                "and was not rebuilt"
+            )
         for type_name, _ in self.new_enum_types:
             lines.append(f"enum type '{type_name}' was not created")
         for type_name, live_values, declared_values in self.changed_enum_types:
@@ -154,6 +173,10 @@ class SchemaDiff:
             )
         for model, check in self.new_checks:
             lines.append(f"check '{check.name}' on '{model.tableName}' was not added")
+        for model, name in self.unvalidated:
+            lines.append(
+                f"constraint '{name}' on '{model.tableName}' was not validated"
+            )
         for model, name, live_values, _ in self.changed_enum_checks:
             lines.append(
                 f"enum column '{model.tableName}.{name}' permits "
@@ -203,6 +226,7 @@ class SchemaDiff:
             )
         for model, check, _ in self.changed_checks:
             lines.append(f"change check {check.name} on {model.tableName}")
+        lines.extend(self._repair_lines())
         for model, name, live_values, _ in self.changed_enum_checks:
             lines.append(
                 f"change the values of enum column {model.tableName}.{name}: "
@@ -226,6 +250,27 @@ class SchemaDiff:
         for note in self.constraint_notes:
             lines.append(f"note: {note} (not auto-migrated)")
         return "\n".join(lines) if lines else "schema up to date"
+
+    def _repair_lines(self) -> List[str]:
+        """
+        The summary lines for what a failed online migration left: an
+        invalid unique index, a constraint not validated, and a check of
+        the SET NOT NULL route.
+        """
+        lines = [
+            f"rebuild the invalid unique index {actual_index.name} "
+            f"on {model.tableName}.{name}"
+            for model, name, actual_index in self.invalid_keys
+        ]
+        lines.extend(
+            f"validate constraint {name} on {model.tableName}"
+            for model, name in self.unvalidated
+        )
+        lines.extend(
+            f"drop the SET NOT NULL check {name} on {model.tableName}"
+            for model, name in self.route_checks
+        )
+        return lines
 
 
 def _declared_enum_values(model: Type["Model"], name: str) -> Tuple[str, ...]:
@@ -622,6 +667,9 @@ def _diff_indexes(
         elif (
             tuple(c.lower() for c in index.columns) != actual_index.columns
             or index.unique != actual_index.unique
+            # An invalid index, which a failed CREATE INDEX CONCURRENTLY
+            # leaves, answers no query and is built again.
+            or not actual_index.valid
         ):
             diff.changed_indexes.append((model, index, actual_index))
     for name, actual_index in actual_table.indexes.items():
@@ -641,11 +689,16 @@ def _diff_indexes(
         if name in actual_table.foreign_keys:
             continue
         # Unique indexes backing a declared column-level UNIQUE or the
-        # primary key are not extras.
+        # primary key are not extras. An invalid one enforces nothing,
+        # and the column's key is built again.
         if actual_index.unique and len(actual_index.columns) == 1:
             column = actual_index.columns[0]
             coldef = declared_columns.get(column)
             if coldef is not None and (coldef.unique or coldef.primary_key):
+                if not actual_index.valid and not coldef.primary_key:
+                    diff.invalid_keys.append(
+                        (model, _declared_name(model, column), actual_index)
+                    )
                 continue
         if actual_index.constraint and _constraints_fixed_at_create(compiler):
             diff.constraint_notes.append(
@@ -658,6 +711,14 @@ def _diff_indexes(
         diff.extra_indexes.append(
             (model.tableName or "", actual_index.name or name, actual_index)
         )
+
+
+def _declared_name(model: Type["Model"], column: str) -> str:
+    """A lowercased column key as the model spells the column."""
+    for name in model.tableColumns or {}:
+        if name.lower() == column:
+            return name
+    return column
 
 
 def _constraints_fixed_at_create(compiler: "Compiler") -> bool:

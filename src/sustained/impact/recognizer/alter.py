@@ -36,7 +36,23 @@ class AlterTable(Definitions):
             return self.alter_type()
         if self.mssql and self.accept("INDEX"):
             return self.alter_index()
+        if self.postgres and self.accept("INDEX"):
+            return self.attach_index()
         raise Unrecognized(f"no rule reads ALTER {self.where()}")
+
+    def attach_index(self) -> ParsedStatement:
+        """
+        PostgreSQL's `ALTER INDEX name ATTACH PARTITION index`, which
+        attaches the index of a partition to the index of its partitioned
+        table. Every other ALTER INDEX is unknown.
+        """
+        name = self.name()
+        self.expect("ATTACH", "PARTITION")
+        partition = self.name()
+        self.finish()
+        return ParsedStatement(
+            "attach_index", options=frozen({"name": name, "partition": partition})
+        )
 
     def alter_index(self) -> ParsedStatement:
         """

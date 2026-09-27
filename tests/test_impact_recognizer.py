@@ -330,6 +330,17 @@ class MssqlStatementsTestCase(RecognizerTestCase):
         self.assertUnknown("ALTER INDEX ix ON t REBUILD EXTRA", MSSQL, table="t")
         self.assertUnknown("ALTER INDEX ix ON t REBUILD")
 
+    def test_attach_index_on_postgres(self):
+        parsed = recognize('ALTER INDEX "app"."ix" ATTACH PARTITION "app"."ix_a"', PG)
+        self.assertEqual(parsed.kind, "attach_index")
+        self.assertEqual(
+            dict(parsed.options), {"name": "app.ix", "partition": "app.ix_a"}
+        )
+        self.assertUnknown("ALTER INDEX ix RENAME TO iy", PG)
+        self.assertUnknown("ALTER INDEX ix ATTACH PARTITION ix_a EXTRA", PG)
+        self.assertUnknown("ALTER INDEX ix ATTACH PARTITION ix_a", MYSQL)
+        self.assertUnknown("ALTER INDEX ix ATTACH PARTITION ix_a", SQLITE)
+
     def test_rebuild_and_switch(self):
         (rebuild,) = recognize(
             "ALTER TABLE t REBUILD PARTITION = ALL WITH (ONLINE = ON)", MSSQL

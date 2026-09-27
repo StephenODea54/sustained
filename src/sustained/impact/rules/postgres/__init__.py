@@ -85,6 +85,7 @@ from sustained.impact.rules.postgres.locks import (
 from sustained.impact.rules.postgres.partitions import descendants, partitioned
 from sustained.impact.rules.postgres.preflight import preflight_plan
 from sustained.impact.rules.postgres.statements import (
+    _attach_index,
     _cluster,
     _comment,
     _create_index,
@@ -220,6 +221,7 @@ def _on_partitions(
 
 _STATEMENTS: Dict[str, common.Handler] = {
     "alter_table": _alter_table,
+    "attach_index": _attach_index,
     "create_index": _create_index,
     "drop_index": _drop_index,
     "create_table": _create_table,

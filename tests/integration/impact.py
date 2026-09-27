@@ -35,10 +35,16 @@ from sustained.introspect.runner import run_plan
 from sustained.migrations import Migration, Migrator
 from sustained.model import Model
 from sustained.schema import Check, Index, Integer, String
+from sustained.types import Expression
 
 from . import aio_lifecycle, harness
 
+# A table and a column whose names with a suffix pass 63 bytes.
+LONG_TABLE = "it_impact_" + "t" * 40
+LONG_COLUMN = "c" * 40 + "_long_column"
+
 TABLES = (
+    LONG_TABLE,
     "it_impact_orders",
     "it_impact_parts",
     "it_impact_notes",
@@ -657,6 +663,229 @@ class ImpactCase(unittest.TestCase):
         self.assertEqual(applied, ["002_online_orders", "002_online_orders_online"])
         self.assertEqual(reverted, applied[::-1])
         self.assertEqual(self.online_schema()[1], [("it_impact_orders_pkey", True)])
+
+    def test_long_names_take_the_names_the_server_gives(self):
+        self.execute(
+            "CREATE TABLE it_impact_parts (id integer PRIMARY KEY)",
+            "INSERT INTO it_impact_parts VALUES (1)",
+            f"CREATE TABLE {LONG_TABLE} (id integer PRIMARY KEY, "
+            f"{LONG_COLUMN}_two integer)",
+            f"INSERT INTO {LONG_TABLE} SELECT g, NULL FROM generate_series(1, 20) g",
+        )
+        parts = type(
+            "Parts",
+            (Model,),
+            {
+                "tableName": "it_impact_parts",
+                "tableColumns": {"id": Integer(primary_key=True)},
+                "_dialect": self.DIALECT,
+            },
+        )
+        long = type(
+            "Long",
+            (Model,),
+            {
+                "tableName": LONG_TABLE,
+                "tableColumns": {
+                    "id": Integer(primary_key=True),
+                    LONG_COLUMN: Integer(unique=True, references="it_impact_parts.id"),
+                    f"{LONG_COLUMN}_two": Integer(nullable=False, backfill=1),
+                },
+                "_dialect": self.DIALECT,
+            },
+        )
+        migrator = self.migrator([])
+        applied = migrator.up(models=[parts, long], migration_id="002", online=True)
+        self.assertEqual(applied, ["002", "002_online"])
+        online = self.long_constraints()
+        # The unique key and the foreign key keep their suffixes.
+        self.assertEqual(
+            [(name[-5:], kind) for name, kind in online],
+            [("_fkey", "f"), ("c_key", "u"), ("_pkey", "p")],
+        )
+        self.assertTrue(all(len(name) <= 63 for name, _ in online))
+        # A later diff finds nothing to rename.
+        self.assertEqual(migrator.plan_migrations([parts, long], online=True), [])
+        self.connection.rollback()
+        self.assertEqual(migrator.down(steps=2), ["002_online", "002"])
+        # The direct form names the keys the same way.
+        migrator.up(models=[parts, long], migration_id="003")
+        self.assertEqual(self.long_constraints(), online)
+
+    def long_constraints(self):
+        return self.fetch(
+            "SELECT conname, contype FROM pg_constraint "
+            f"WHERE conrelid = '{LONG_TABLE}'::regclass AND contype <> 'n' "
+            "ORDER BY conname"
+        )
+
+    def test_a_failed_online_run_runs_again_after_repair(self):
+        self.orders()
+        orders = type(
+            "Orders",
+            (Model,),
+            {
+                "tableName": "it_impact_orders",
+                "tableColumns": {
+                    "id": Integer(primary_key=True),
+                    "note": String(10, nullable=False, backfill="x"),
+                },
+                "indexes": [Index("it_impact_note_ux", "note", unique=True)],
+                "tableConstraints": [Check("it_impact_note_ck", "note <> ''")],
+                "_dialect": self.DIALECT,
+            },
+        )
+        planned = self.migrator([]).plan_migrations(
+            [orders], migration_id="002", online=True
+        )
+        migrator = self.migrator(planned)
+        # Every note is 'n', so the unique index build fails part way.
+        with self.assertRaises(Exception):
+            migrator.up()
+        self.connection.rollback()
+        self.assertIn(("it_impact_note_ux", False), self.online_schema()[1])
+        self.assertIn(("it_impact_note_ck", "c", False), self.online_schema()[0])
+        # A fresh diff reads the invalid index and the check not
+        # validated, and builds and validates them again.
+        (again,) = self.migrator([]).plan_migrations(
+            [orders], migration_id="003", online=True
+        )
+        self.assertEqual(again.id, "003_online")
+        self.assertIn('DROP INDEX CONCURRENTLY IF EXISTS "it_impact_note_ux"', again.up)
+        self.assertIn(
+            'ALTER TABLE "it_impact_orders" VALIDATE CONSTRAINT "it_impact_note_ck"',
+            again.up,
+        )
+        self.assertNotIn(
+            'ALTER TABLE "it_impact_orders" ADD CONSTRAINT "it_impact_note_ck" '
+            "CHECK (note <> '') NOT VALID",
+            again.up,
+        )
+        # The failed migration itself runs again from its first statement.
+        self.execute("UPDATE it_impact_orders SET note = id::text")
+        migrator.repair()
+        self.assertEqual(migrator.up(), ["002_online"])
+        self.connection.rollback()
+        constraints, indexes, columns = self.online_schema()
+        self.assertIn(("it_impact_note_ux", True), indexes)
+        self.assertIn(("it_impact_note_ck", "c", True), constraints)
+        self.assertIn(("note", True), columns)
+        self.assertEqual(self.migrator([]).plan_migrations([orders], online=True), [])
+
+    def test_an_online_index_on_a_partitioned_table_is_built_on_each_partition(
+        self,
+    ):
+        self.execute(
+            "CREATE TABLE it_impact_parts (id integer, code varchar(10)) "
+            "PARTITION BY RANGE (id)",
+            "CREATE TABLE it_impact_parts_a PARTITION OF it_impact_parts "
+            "FOR VALUES FROM (0) TO (100)",
+            "CREATE TABLE it_impact_parts_b PARTITION OF it_impact_parts "
+            "FOR VALUES FROM (100) TO (1000) PARTITION BY RANGE (id)",
+            "CREATE TABLE it_impact_parts_b1 PARTITION OF it_impact_parts_b "
+            "FOR VALUES FROM (100) TO (1000)",
+            "INSERT INTO it_impact_parts SELECT g, 'c' || g "
+            "FROM generate_series(1, 300) g",
+        )
+        parts = type(
+            "Parts",
+            (Model,),
+            {
+                "tableName": "it_impact_parts",
+                "tableColumns": {
+                    "id": Integer(),
+                    "code": String(10, nullable=False, backfill="x"),
+                },
+                "indexes": [
+                    Index("it_impact_code_ix", "code"),
+                    Index("it_impact_id_code_ux", "id", "code", unique=True),
+                ],
+                "_dialect": self.DIALECT,
+            },
+        )
+        migrator = self.migrator([])
+        (online,) = migrator.plan_migrations([parts], migration_id="002", online=True)
+        self.assertNotIn(
+            'CREATE INDEX CONCURRENTLY IF NOT EXISTS "it_impact_code_ix"',
+            " ".join(online.up),
+        )
+        self.assertTrue(migrator.rehearse(models=[parts], online=True).ok)
+        self.connection.rollback()
+        self.assertEqual(
+            migrator.up(models=[parts], migration_id="002", online=True),
+            ["002_online"],
+        )
+        indexes = self.fetch(
+            "SELECT c.relname, i.indisvalid FROM pg_index i "
+            "JOIN pg_class c ON c.oid = i.indexrelid "
+            "JOIN pg_class t ON t.oid = i.indrelid "
+            "WHERE t.relname LIKE 'it_impact_parts%' ORDER BY c.relname"
+        )
+        self.assertEqual(
+            indexes,
+            [
+                ("it_impact_code_ix", True),
+                ("it_impact_id_code_ux", True),
+                ("it_impact_parts_a_code_idx", True),
+                ("it_impact_parts_a_id_code_idx", True),
+                ("it_impact_parts_b1_code_idx", True),
+                ("it_impact_parts_b1_id_code_idx", True),
+                ("it_impact_parts_b_code_idx", True),
+                ("it_impact_parts_b_id_code_idx", True),
+            ],
+        )
+        # The partitions are no tables the models leave out, and the
+        # indexes read as built.
+        self.assertEqual(migrator.plan_migrations([parts], online=True), [])
+        self.connection.rollback()
+        self.assertEqual(migrator.down(), ["002_online"])
+        self.assertEqual(
+            self.fetch(
+                "SELECT count(*) FROM pg_index i "
+                "JOIN pg_class t ON t.oid = i.indrelid "
+                "WHERE t.relname LIKE 'it_impact_parts%'"
+            ),
+            [(0,)],
+        )
+
+    def test_a_row_written_between_the_two_migrations_is_backfilled(self):
+        self.orders()
+        orders = type(
+            "Orders",
+            (Model,),
+            {
+                "tableName": "it_impact_orders",
+                "tableColumns": {
+                    "id": Integer(primary_key=True),
+                    "note": String(10, nullable=False, backfill="x"),
+                    "status": String(10, nullable=False, backfill="new"),
+                    "made": String(
+                        40, nullable=False, backfill=Expression("now()::text")
+                    ),
+                },
+                "_dialect": self.DIALECT,
+            },
+        )
+        ddl, online = self.migrator([]).plan_migrations(
+            [orders], migration_id="002", online=True
+        )
+        self.assertEqual(self.migrator([ddl]).up(), ["002"])
+        # Another session writes a row the first migration left NULL in
+        # the tightened and the expression-backfilled columns.
+        other = harness.connect(self.NAME)
+        self.addCleanup(other.close)
+        other.cursor().execute(
+            "INSERT INTO it_impact_orders (id, note, status) VALUES (900, NULL, 'a')"
+        )
+        other.commit()
+        self.assertEqual(self.migrator([ddl, online]).up(), ["002_online"])
+        rows = self.fetch(
+            "SELECT note, status, made IS NOT NULL FROM it_impact_orders "
+            "WHERE id IN (1, 900) ORDER BY id"
+        )
+        self.assertEqual(rows, [("n", "new", True), ("x", "a", True)])
+        self.assertIn(("made", True), self.online_schema()[2])
+        self.assertIn(("note", True), self.online_schema()[2])
 
     def test_online_impact_reads_the_run_as_two_migrations(self):
         self.orders()

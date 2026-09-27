@@ -11,6 +11,7 @@ import unittest
 from sustained.autogenerate import autogenerate, diff_schema
 from sustained.dialects import Dialects
 from sustained.introspect import (
+    IntrospectedPartition,
     introspect_schema,
     is_sequence_default,
     normalize_default,
@@ -30,6 +31,7 @@ class FakeCursor:
         checks=None,
         enums=None,
         comments=None,
+        partitions=(),
     ):
         self.columns = list(columns)
         self.indexes = indexes
@@ -37,6 +39,7 @@ class FakeCursor:
         self.checks = checks
         self.enums = enums
         self.comments = comments
+        self.partitions = partitions
         self.statements = []
         self._current = []
 
@@ -48,6 +51,10 @@ class FakeCursor:
             self.statements.append(statement)
         if "information_schema.columns" in sql:
             self._current = self.columns
+        elif "pg_inherits" in sql:
+            if self.partitions is None:
+                raise RuntimeError("no pg_inherits here")
+            self._current = self.partitions
         elif "pg_catalog.pg_index" in sql:
             if self.indexes is None:
                 raise RuntimeError("no pg_index here")
@@ -378,6 +385,93 @@ class TestPostgresCatalogQueries(unittest.TestCase):
         )
         schema = self.read(cursor)
         self.assertEqual(list(schema["shows"].checks), ["ck_shows_seats"])
+
+    def test_an_invalid_index_is_marked(self):
+        cursor = FakeCursor(
+            columns=[column_row("users", "email", "text")],
+            indexes=[
+                ("users", "ix_bad", False, False, "email", False, False),
+                ("users", "ix_good", False, False, "email", False, True),
+                ("users", "ix_unread", False, False, "email", False, None),
+            ],
+        )
+        indexes = self.read(cursor)["users"].indexes
+        self.assertFalse(indexes["ix_bad"].valid)
+        self.assertTrue(indexes["ix_good"].valid)
+        self.assertTrue(indexes["ix_unread"].valid)
+        (query,) = [s for s in cursor.statements if "pg_index" in s]
+        self.assertIn("ix.indisvalid", query)
+
+    def test_a_foreign_key_not_validated_is_marked(self):
+        cursor = FakeCursor(
+            columns=[column_row("shows", "venue_id", "integer")],
+            foreign_keys=[
+                fk_row("fk_new", "shows", "venue_id", "venues", "id") + (None, False),
+                fk_row("fk_old", "shows", "venue_id", "venues", "id") + (None, True),
+                fk_row("fk_short", "shows", "venue_id", "venues", "id"),
+            ],
+        )
+        table = self.read(cursor)["shows"]
+        self.assertEqual(table.not_valid, frozenset({"fk_new"}))
+        self.assertEqual(set(table.foreign_keys), {"fk_new", "fk_old", "fk_short"})
+
+    def test_a_check_not_validated_is_marked_and_read_without_the_words(self):
+        cursor = FakeCursor(
+            columns=[column_row("shows", "seats", "integer")],
+            checks=[
+                ("shows", "ck_new", "((seats > 0)) NOT VALID", False),
+                ("shows", "ck_old", "((seats < 9))", True),
+            ],
+        )
+        table = self.read(cursor)["shows"]
+        self.assertEqual(
+            table.checks, {"ck_new": "((seats > 0))", "ck_old": "((seats < 9))"}
+        )
+        self.assertEqual(table.not_valid, frozenset({"ck_new"}))
+
+    def test_partitions_are_read_with_their_tables(self):
+        cursor = FakeCursor(
+            columns=[
+                column_row(table, "id", "integer")
+                for table in ("Events", "events_a", "events_b", "events_b1", "empty")
+            ],
+            partitions=[
+                ("empty", None, None, None),
+                ("Events", "events_a", "arch", "r"),
+                ("Events", "events_b", None, "p"),
+                ("events_b", "events_b1", None, "r"),
+            ],
+        )
+        schema = self.read(cursor)
+        events = schema["events"]
+        self.assertTrue(events.partitioned)
+        self.assertEqual(
+            events.partitions,
+            (
+                IntrospectedPartition("events_a", "arch"),
+                IntrospectedPartition(
+                    "events_b",
+                    None,
+                    True,
+                    (IntrospectedPartition("events_b1"),),
+                ),
+            ),
+        )
+        self.assertIsNone(events.partition_of)
+        self.assertEqual(schema["events_a"].partition_of, "Events")
+        self.assertEqual(schema["events_b1"].partition_of, "events_b")
+        self.assertTrue(schema["events_b"].partitioned)
+        self.assertTrue(schema["empty"].partitioned)
+        self.assertEqual(schema["empty"].partitions, ())
+        self.assertFalse(schema["events_a"].partitioned)
+
+    def test_a_missing_pg_inherits_reads_no_partitions(self):
+        cursor = FakeCursor(
+            columns=[column_row("events", "id", "integer")], partitions=None
+        )
+        events = self.read(cursor)["events"]
+        self.assertFalse(events.partitioned)
+        self.assertEqual(events.partitions, ())
 
     def test_enum_types_and_their_columns_are_read(self):
         cursor = FakeCursor(

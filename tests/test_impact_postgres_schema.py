@@ -294,6 +294,52 @@ def table_named(statement, name):
     return next(t for t in statement.tables if t.table == name)
 
 
+class AttachIndexTestCase(unittest.TestCase):
+    SQL = "ALTER INDEX ix ATTACH PARTITION ix_a"
+
+    def test_the_tables_come_from_the_run(self):
+        *_, statement = analyze(
+            [
+                "CREATE INDEX ix ON ONLY t (c)",
+                "CREATE INDEX ix_a ON t1 (c)",
+                self.SQL,
+            ],
+            PG,
+        ).statements
+        self.assertEqual(
+            [(t.table, t.lock, t.work, t.blocks) for t in statement.tables],
+            [
+                ("t", "ACCESS SHARE", Work.CATALOG, Blocks.DDL),
+                ("t1", "ACCESS SHARE", Work.CATALOG, Blocks.READS_AND_WRITES),
+            ],
+        )
+        self.assertEqual(statement.confidence, Confidence.KNOWN)
+        (finding,) = statement.findings
+        self.assertEqual(finding.rule, "pg.attach_index")
+        self.assertEqual(
+            finding.message,
+            "reads and writes on t1 wait until the attach commits, which takes "
+            "ACCESS EXCLUSIVE on the index ix_a",
+        )
+
+    def test_unknown_tables_make_it_likely(self):
+        statement = impact(self.SQL)
+        self.assertEqual(
+            [t.table for t in statement.tables],
+            ["(table of index ix)", "(table of index ix_a)"],
+        )
+        self.assertEqual(statement.confidence, Confidence.LIKELY)
+
+    def test_the_intent_names_the_tables(self):
+        statement = impact(
+            with_intent(
+                self.SQL, "attach_index", "orders", name="ix", partition="orders_a"
+            )
+        )
+        self.assertEqual([t.table for t in statement.tables], ["orders", "orders_a"])
+        self.assertEqual(statement.confidence, Confidence.KNOWN)
+
+
 class ProvenNotNullTestCase(unittest.TestCase):
     CHECK = "ALTER TABLE t ADD CONSTRAINT k CHECK (c IS NOT NULL)"
     SET = "ALTER TABLE t ALTER COLUMN c SET NOT NULL"
