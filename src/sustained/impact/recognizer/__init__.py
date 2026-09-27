@@ -34,7 +34,9 @@ The statement kinds, and the options each one sets:
   online and ignore (MariaDB ALTER ONLINE and ALTER IGNORE), and
   nocheck (SQL Server WITH NOCHECK)
 - `create_table`: if_not_exists, temporary, references, partition_of,
-  as_select, and reads for `AS SELECT` (`sources.py`)
+  default_partition (a PARTITION OF with the bound DEFAULT),
+  partitioned (a PARTITION BY clause), as_select, and reads for `AS
+  SELECT` (`sources.py`)
 - `drop_type`: names
 - `drop_table`, `truncate`, `drop_view`, `optimize_table`,
   `lock_table`, `vacuum`, `analyze`: tables, plus if_exists where the

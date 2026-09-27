@@ -161,6 +161,29 @@ class CreateAndDropTestCase(RecognizerTestCase):
             "CREATE TABLE p_2026 PARTITION OF p FOR VALUES FROM (1) TO (2)"
         )
         self.assertEqual(partition.options["partition_of"], "p")
+        self.assertFalse(partition.options["default_partition"])
+        self.assertFalse(partition.options["partitioned"])
+        for sql in (
+            "CREATE TABLE p_d PARTITION OF p DEFAULT",
+            "CREATE TABLE p_d PARTITION OF p (a NOT NULL) DEFAULT PARTITION BY LIST (a)",
+        ):
+            with self.subTest(sql):
+                self.assertTrue(recognize(sql).options["default_partition"])
+        self.assertTrue(
+            recognize("CREATE TABLE p (a int) PARTITION BY RANGE (a)").options[
+                "partitioned"
+            ]
+        )
+        self.assertTrue(
+            recognize(
+                "CREATE TABLE p_1 PARTITION OF p FOR VALUES IN (1) PARTITION BY LIST (b)"
+            ).options["partitioned"]
+        )
+        self.assertFalse(
+            recognize(
+                "CREATE TABLE t AS SELECT row_number() OVER (PARTITION BY a) FROM u"
+            ).options["partitioned"]
+        )
 
     def test_mssql_guarded_create_table(self):
         parsed = recognize(

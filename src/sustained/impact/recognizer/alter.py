@@ -349,12 +349,18 @@ class AlterTable(Definitions):
         return Action("disable_constraint", None, frozen({"name": self.name()}))
 
     def action_attach(self) -> Action:
+        """`ATTACH PARTITION name`: partition, and default for a DEFAULT bound."""
         self.expect("PARTITION")
         partition = self.name()
-        if not (self.accept("DEFAULT") or self.accept("FOR", "VALUES")):
+        default = self.accept("DEFAULT")
+        if not (default or self.accept("FOR", "VALUES")):
             raise Unrecognized(f"expected FOR VALUES or DEFAULT {self.where()}")
         self.item()
-        return Action("attach_partition", None, frozen({"partition": partition}))
+        return Action(
+            "attach_partition",
+            None,
+            frozen({"partition": partition, "default": default}),
+        )
 
     def action_detach(self) -> Action:
         self.expect("PARTITION")

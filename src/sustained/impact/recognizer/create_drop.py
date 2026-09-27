@@ -142,11 +142,14 @@ class CreateDrop(Cursor):
         table = self.target()
         options["references"] = ()
         options["partition_of"] = None
+        options["default_partition"] = False
         options["as_select"] = False
         if self.accept("PARTITION", "OF"):
             options["partition_of"] = self.name()
         if self.is_punct("("):
             options["references"] = self.references_in(self.group())
+        if options["partition_of"] is not None:
+            options["default_partition"] = self.is_word("DEFAULT")
         if self.accept("AS") or self.top_level_word(
             self.tokens[self.pos :], "AS", "SELECT"
         ):
@@ -154,6 +157,9 @@ class CreateDrop(Cursor):
         # The tail holds storage options, which change nothing about a
         # table that does not exist yet, and the query of AS SELECT.
         tail = self.rest()
+        options["partitioned"] = not options["as_select"] and self.top_level_word(
+            tail, "PARTITION"
+        )
         if options["as_select"]:
             options["reads"] = tables_read(tail)
         return ParsedStatement("create_table", table, options=frozen(options))

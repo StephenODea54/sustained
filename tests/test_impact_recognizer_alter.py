@@ -327,9 +327,10 @@ class AlterTableTestCase(RecognizerTestCase):
         )
         self.assertEqual(attached.kind, "attach_partition")
         self.assertEqual(attached.options["partition"], "p_2026")
-        self.assertEqual(
-            action("ALTER TABLE p ATTACH PARTITION d DEFAULT").kind, "attach_partition"
-        )
+        self.assertFalse(attached.options["default"])
+        default = action("ALTER TABLE p ATTACH PARTITION d DEFAULT")
+        self.assertEqual(default.kind, "attach_partition")
+        self.assertTrue(default.options["default"])
         detached = action("ALTER TABLE p DETACH PARTITION p_2026 CONCURRENTLY")
         self.assertTrue(detached.options["concurrently"])
         self.assertTrue(

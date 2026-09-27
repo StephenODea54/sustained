@@ -944,3 +944,97 @@ class RowWriteTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunPartitionTestCase(unittest.TestCase):
+    """Partitioned tables and partitions the run creates and links."""
+
+    def last(self, statements, found):
+        run = [MigrationStatement(sql, "m1") for sql in statements]
+        return analyze(run, PG, found).statements[-1]
+
+    def test_an_index_on_a_table_the_run_attached_a_large_table_to(self):
+        found = context(
+            tables={"orders": TableStats(5_000_000, 10**9)},
+            read=READ | {"sizes"},
+        )
+        statement = self.last(
+            [
+                "CREATE TABLE orders_new (id int, created_at date, customer_id int) "
+                "PARTITION BY RANGE (created_at)",
+                "ALTER TABLE orders_new ATTACH PARTITION orders "
+                "FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')",
+                "CREATE INDEX ON orders_new (customer_id)",
+            ],
+            found,
+        )
+        tables = {t.table: t for t in statement.tables}
+        self.assertEqual(set(tables), {"orders_new", "orders"})
+        for table in tables.values():
+            self.assertEqual(
+                (table.lock, table.work, table.blocks, table.rows),
+                ("SHARE", Work.INDEX_BUILD, Blocks.WRITES, 5_000_000),
+            )
+        self.assertEqual(statement.confidence, Confidence.KNOWN)
+        self.assertEqual(unread_findings(statement), [])
+
+    def test_the_run_links_are_known_without_the_partitions_read(self):
+        found = context(
+            read=READ - {"partitions"} | {"sizes"},
+            relations={},
+            tables={"orders": TableStats(5_000_000, 10**9)},
+        )
+        statement = self.last(
+            [
+                "CREATE TABLE n (id int) PARTITION BY RANGE (id)",
+                "ALTER TABLE n ATTACH PARTITION orders FOR VALUES FROM (1) TO (9)",
+                "CREATE INDEX ON n (id)",
+            ],
+            found,
+        )
+        self.assertEqual(
+            {(t.table, t.work) for t in statement.tables},
+            {("n", Work.INDEX_BUILD), ("orders", Work.INDEX_BUILD)},
+        )
+        # What is below orders was not read.
+        self.assertEqual(statement.confidence, Confidence.LIKELY)
+        self.assertTrue(statement.partitions_unread)
+        (finding,) = unread_findings(statement)
+        self.assertIn(
+            "it is not known whether orders is a partitioned table or a "
+            "partition; if orders is a partitioned table, each partition below "
+            "it is also locked SHARE",
+            finding.message,
+        )
+
+    def test_a_partition_the_run_created_is_locked_with_its_parent(self):
+        statement = self.last(
+            [
+                "CREATE TABLE pt2 PARTITION OF pt FOR VALUES IN (2)",
+                "CREATE INDEX ix ON pt (id)",
+            ],
+            context(),
+        )
+        # The new partition is empty, so the build there blocks nothing.
+        tables = {t.table: t for t in statement.tables}
+        self.assertEqual(
+            (tables["pt2"].lock, tables["pt2"].blocks), ("SHARE", Blocks.NOTHING)
+        )
+        statement = self.last(
+            [
+                "ALTER TABLE pt DETACH PARTITION ptd",
+                "CREATE TABLE pt2 PARTITION OF pt DEFAULT",
+                "CREATE TABLE pt3 PARTITION OF pt FOR VALUES IN (3)",
+            ],
+            context(),
+        )
+        tables = {t.table for t in statement.tables}
+        self.assertIn("pt2", tables)
+        self.assertNotIn("ptd", tables)
+
+    def test_a_detached_partition_is_not_locked_with_its_parent(self):
+        statement = self.last(
+            ["ALTER TABLE pt DETACH PARTITION pt1", "CREATE INDEX ix ON pt (id)"],
+            context(),
+        )
+        self.assertNotIn("pt1", {t.table for t in statement.tables})

@@ -30,15 +30,23 @@ The rules read each statement against what came before it in the run:
   uses one of the table's row versions, a rebuild gives them back, and
   a FULLTEXT index or `ROW_FORMAT=COMPRESSED` stops instant column
   changes. The rules record these with `record_storage()`.
+- On PostgreSQL, a partitioned table the run created with `PARTITION
+  BY`, and the partitions it created with `PARTITION OF`, attached with
+  `ATTACH PARTITION`, or detached with `DETACH PARTITION`, change the
+  partitions the context read (`relation()`). A partitioned table the
+  run created has the rows of each partition attached to it, and an
+  `INSERT ... SELECT` into a partitioned table fills each partition
+  below it that the run created. `DROP TABLE` drops the partitions
+  below the table, and a rename keeps the table's place.
 - A `ROLLBACK`, or `ROLLBACK TO SAVEPOINT`, in a migration's
   transaction undoes what the migration did to tables, indexes, checks,
-  columns, and storage, on an engine whose DDL runs in the
+  columns, storage, and partitions, on an engine whose DDL runs in the
   transaction, so the facts go back to what they were as the migration
-  began (`rollback()`). Outside a transaction there is nothing to undo,
-  and on MySQL and MariaDB each DDL statement commits, so a ROLLBACK
-  there leaves the facts as they are. A table an `INSERT ... SELECT`
-  filled on MySQL then stays filled after a ROLLBACK that empties it,
-  which reports more work than the run does.
+  began (`rollback()`). Outside a transaction there is
+  nothing to undo, and on MySQL and MariaDB each DDL statement commits,
+  so a ROLLBACK there leaves the facts as they are. A table an `INSERT
+  ... SELECT` filled on MySQL then stays filled after a ROLLBACK that
+  empties it, which reports more work than the run does.
 - A lock timeout set earlier covers the statements after it, as far as
   its scope reaches (`TimeoutScope`). `RESET` of the setting, `RESET
   ALL`, and `DISCARD ALL` end it, and so does a `ROLLBACK` that undoes
@@ -59,6 +67,7 @@ from typing import (
     TYPE_CHECKING,
     Callable,
     Dict,
+    List,
     Mapping,
     Optional,
     Sequence,
@@ -66,7 +75,7 @@ from typing import (
     Tuple,
 )
 
-from sustained.impact.context import TableStats
+from sustained.impact.context import Relation, TableStats
 from sustained.impact.model import Action, ParsedStatement
 
 if TYPE_CHECKING:
@@ -82,7 +91,7 @@ _UNSET = object()
 _NOT_THE_SESSION = frozenset({"global", "persist", "persist_only", "user"})
 
 # The RunState attributes that hold what the run did to tables, indexes,
-# checks, columns, and storage, which a ROLLBACK undoes.
+# checks, columns, storage, and partitions, which a ROLLBACK undoes.
 _FACTS = (
     "born",
     "created",
@@ -94,6 +103,9 @@ _FACTS = (
     "schema_checks",
     "schema_columns",
     "storage",
+    "links",
+    "defaults",
+    "partitioned",
 )
 
 
@@ -226,6 +238,16 @@ class RunState:
         # The storage facts the rules recorded, by live table name, such
         # as InnoDB's instant row versions.
         self.storage: Dict[str, Dict[str, object]] = {}
+        # The partitions the run attached, created, or detached, by lower
+        # case name: the name as the statement spells it, and the
+        # partitioned table it is a partition of now, or None once
+        # detached.
+        self.links: Dict[str, Tuple[str, Optional[str]]] = {}
+        # Of those, the ones that are the DEFAULT partition of their
+        # partitioned table.
+        self.defaults: Set[str] = set()
+        # The partitioned tables the run created.
+        self.partitioned: Set[str] = set()
         self._migration: object = _UNSET
         # The facts as the current migration began, which a ROLLBACK in
         # its transaction goes back to.
@@ -322,6 +344,94 @@ class RunState:
         """
         return _schema_name(self.schema_columns.get(table.lower(), {}), column)
 
+    def relation(
+        self, table: str, context: Optional["EngineContext"] = None
+    ) -> Optional[Relation]:
+        """
+        The PostgreSQL catalog facts about a table at this point of the
+        run: those the context read, or `context` when given, with the
+        run's partitioned tables and partitions put in, and with the
+        names the run renamed or dropped followed. None when neither the
+        read nor the run has any.
+        """
+        context = context or self.context
+        key = table.lower()
+        read = None
+        if context is not None and key not in self.born | self.gone:
+            read = context.relations.get(self.original(table).lower())
+        below = [
+            name
+            for name, parent in self.links.values()
+            if parent is not None and parent.lower() == key
+        ]
+        if read is None and not below and key not in self.links:
+            if key not in self.partitioned:
+                return None
+        read = read or Relation()
+        partitions = [
+            name
+            for name in (self.now_named(p) for p in read.partitions)
+            if name is not None and name.lower() not in self.links
+        ]
+        default = self.now_named(read.default) if read.default else None
+        if default is None or default.lower() in self.links:
+            default = None
+        for name in below:
+            partitions.append(name)
+            if name.lower() in self.defaults:
+                default = name
+        if key in self.links:
+            parent: Optional[str] = self.links[key][1]
+        else:
+            parent = self.now_named(read.parent) if read.parent else None
+        return read._replace(
+            partitioned=read.partitioned or key in self.partitioned,
+            parent=parent,
+            default=default,
+            partitions=tuple(partitions),
+        )
+
+    def now_named(self, live: str) -> Optional[str]:
+        """
+        The name a table the context read has now: the name the run
+        renamed it to, or None once the run dropped it.
+        """
+        wanted = live.lower()
+        for now, was in self.renamed.items():
+            if was.lower() == wanted:
+                return now
+        if wanted in self.gone or wanted in self.born or wanted in self.renamed:
+            # The name is gone, or names a table the run made or renamed.
+            return None
+        return live
+
+    def below(self, table: str) -> List[str]:
+        """Every partition below a table, nearest first."""
+        found: List[str] = []
+        seen = {table.lower()}
+        pending = [table]
+        while pending:
+            current = self.relation(pending.pop(0))
+            for name in current.partitions if current is not None else ():
+                if name.lower() not in seen:
+                    seen.add(name.lower())
+                    found.append(name)
+                    pending.append(name)
+        return found
+
+    def above(self, table: str) -> List[str]:
+        """The partitioned tables a table is below, nearest first."""
+        found: List[str] = []
+        seen = {table.lower()}
+        current = self.relation(table)
+        while current is not None and current.parent is not None:
+            if current.parent.lower() in seen:
+                break
+            seen.add(current.parent.lower())
+            found.append(current.parent)
+            current = self.relation(current.parent)
+        return found
+
     def record(self, parsed: ParsedStatement, transactional: bool) -> None:
         """Takes in what the statement changes, after the rules read it."""
         kind = parsed.kind
@@ -329,8 +439,7 @@ class RunState:
         if kind == "create_table" and parsed.table:
             self.record_create(parsed.table, options)
         elif kind == "insert" and parsed.table and options.get("source") == "select":
-            if self.created_in_run(parsed.table):
-                self.fill(parsed.table, options.get("reads"))
+            self.insert(parsed.table, options.get("reads"))
         elif kind == "drop_table":
             for table in parsed.items("tables"):
                 self.drop(str(table))
@@ -344,6 +453,14 @@ class RunState:
                 self.record_checks(parsed.table, action)
                 if action.kind == "rename_to":
                     self.rename(parsed.table, str(action.options["new"]))
+                elif action.kind == "attach_partition":
+                    self.attach(
+                        parsed.table,
+                        str(action.options["partition"]),
+                        bool(action.options.get("default")),
+                    )
+                elif action.kind == "detach_partition":
+                    self.detach(str(action.options["partition"]))
         elif kind == "set":
             self.record_settings(parsed, transactional)
 
@@ -355,6 +472,13 @@ class RunState:
         self.forget(key)
         self.born.add(key)
         self.created.add(key)
+        if options.get("partitioned"):
+            self.partitioned.add(key)
+        parent = options.get("partition_of")
+        if parent:
+            self.links[key] = (table, str(parent))
+            if options.get("default_partition"):
+                self.defaults.add(key)
         if options.get("as_select"):
             self.fill(table, options.get("reads"))
 
@@ -399,6 +523,42 @@ class RunState:
         self.filled[key] = sources
         self.created.discard(key)
 
+    def insert(self, table: str, reads: object) -> None:
+        """
+        Takes in `INSERT ... SELECT`. The rows go to the table, or on a
+        partitioned table to some of the partitions below it, which the
+        statement does not say, so each table the run created among them,
+        and above them, counts as filled from the query.
+        """
+        for name in [table, *self.below(table), *self.above(table)]:
+            if self.created_in_run(name):
+                self.fill(name, reads)
+
+    def attach(self, parent: str, child: str, default: bool) -> None:
+        """
+        Takes in `ATTACH PARTITION`. A partitioned table the run created,
+        and each one it is below, then has the rows of the partition.
+        """
+        key = child.lower()
+        self.links[key] = (child, parent)
+        if default:
+            self.defaults.add(key)
+        else:
+            self.defaults.discard(key)
+        for name in [parent, *self.above(parent)]:
+            if self.created_in_run(name):
+                self.fill(name, (child,))
+
+    def detach(self, child: str) -> None:
+        """
+        Takes in `DETACH PARTITION`. A partitioned table the run filled
+        keeps the size its partitions gave it, which may be more than it
+        has now.
+        """
+        key = child.lower()
+        self.links[key] = (child, None)
+        self.defaults.discard(key)
+
     def sources_of(self, table: str) -> Optional[Tuple[str, ...]]:
         """The live tables whose rows a table has, as `filled` records them."""
         key = table.lower()
@@ -409,10 +569,14 @@ class RunState:
         return (self.original(table),)
 
     def drop(self, table: str) -> None:
-        """Takes in a DROP TABLE."""
-        key = table.lower()
-        self.forget(key)
-        self.gone.add(key)
+        """
+        Takes in a DROP TABLE, which drops each partition below the
+        table too.
+        """
+        for name in [table, *self.below(table)]:
+            key = name.lower()
+            self.forget(key)
+            self.gone.add(key)
 
     def forget(self, key: str) -> None:
         """Clears what the run knew of the table a lower case name named."""
@@ -423,6 +587,9 @@ class RunState:
         self.not_null_checks.pop(key, None)
         self.schema_checks.pop(key, None)
         self.schema_columns.pop(key, None)
+        self.links.pop(key, None)
+        self.defaults.discard(key)
+        self.partitioned.discard(key)
         self.gone.discard(key)
 
     def record_checks(self, table: str, action: Action) -> None:
@@ -474,6 +641,8 @@ class RunState:
         checks = self.not_null_checks.get(was)
         schema_checks = self.schema_checks.get(was)
         columns = self.schema_columns.get(was)
+        link = self.links.get(was)
+        default, partitioned = was in self.defaults, was in self.partitioned
         self.forget(was)
         self.forget(now)
         self.gone.add(was)
@@ -489,6 +658,15 @@ class RunState:
             self.schema_checks[now] = schema_checks
         if columns is not None:
             self.schema_columns[now] = columns
+        if link is not None:
+            self.links[now] = (new, link[1])
+        if default:
+            self.defaults.add(now)
+        if partitioned:
+            self.partitioned.add(now)
+        for child, (name, parent) in list(self.links.items()):
+            if parent is not None and parent.lower() == was:
+                self.links[child] = (name, new)
         self.renamed[now] = live
 
     def record_settings(self, parsed: ParsedStatement, transactional: bool) -> None:

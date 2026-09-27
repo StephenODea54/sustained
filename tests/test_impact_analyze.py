@@ -19,6 +19,7 @@ from sustained.impact import (
     supported,
 )
 from sustained.impact.analyzer import intent_agrees
+from sustained.impact.context import Relation
 from sustained.impact.model import Intent, ParsedStatement
 from sustained.impact.recognizer import recognize
 from sustained.impact.state import RunState, TimeoutScope, sets_a_timeout
@@ -501,6 +502,101 @@ class RollbackTestCase(unittest.TestCase):
         self.assertFalse(state.proves_not_null("orders", "id"))
         self.assertEqual(state.schema_column("orders", "x"), "x")
         self.assertEqual((state.filled, state.gone), ({}, set()))
+
+
+class PartitionStateTestCase(unittest.TestCase):
+    """The partitioned tables and partitions the run creates and links."""
+
+    # pt is partitioned, with pt1 and its DEFAULT partition ptd.
+    CONTEXT = EngineContext(
+        "postgres",
+        (16,),
+        tables={"pt1": TableStats(10, 100), "big": TableStats(5_000_000, 10**9)},
+        read=frozenset({"sizes", "partitions"}),
+        relations={
+            "pt": Relation(partitioned=True, default="ptd", partitions=("pt1", "ptd")),
+            "pt1": Relation(parent="pt"),
+            "ptd": Relation(parent="pt"),
+        },
+    )
+
+    def state(self, *statements):
+        state = RunState("lock_timeout", context=self.CONTEXT, transactional_ddl=True)
+        state.enter("m1")
+        for sql in statements:
+            state.record(recognize(sql, PG), True)
+        return state
+
+    def test_attach_fills_a_partitioned_table_the_run_created(self):
+        state = self.state(
+            "CREATE TABLE n (id int) PARTITION BY RANGE (id)",
+            "ALTER TABLE n ATTACH PARTITION big FOR VALUES FROM (1) TO (9)",
+        )
+        self.assertFalse(state.is_new("n"))
+        self.assertEqual(state.stats(self.CONTEXT, "n"), TableStats(5_000_000, 10**9))
+        found = state.relation("n")
+        self.assertEqual((found.partitioned, found.partitions), (True, ("big",)))
+        self.assertEqual(state.relation("big").parent, "n")
+
+    def test_attaching_a_new_empty_table_leaves_the_parent_empty(self):
+        state = self.state(
+            "CREATE TABLE n (id int) PARTITION BY LIST (id)",
+            "CREATE TABLE n1 (id int)",
+            "ALTER TABLE n ATTACH PARTITION n1 DEFAULT",
+        )
+        self.assertTrue(state.is_new("n"))
+        self.assertEqual(state.relation("n").default, "n1")
+
+    def test_partition_of_is_new_and_linked(self):
+        state = self.state("CREATE TABLE pt2 PARTITION OF pt DEFAULT")
+        self.assertTrue(state.is_new("pt2"))
+        found = state.relation("pt")
+        self.assertEqual(found.partitions, ("pt1", "ptd", "pt2"))
+        self.assertEqual(found.default, "pt2")
+        self.assertEqual(state.relation("pt2").parent, "pt")
+
+    def test_detach_unlinks_the_partition(self):
+        state = self.state("ALTER TABLE pt DETACH PARTITION ptd CONCURRENTLY")
+        found = state.relation("pt")
+        self.assertEqual((found.partitions, found.default), (("pt1",), None))
+        self.assertIsNone(state.relation("ptd").parent)
+
+    def test_rename_and_drop_follow_the_partitions(self):
+        state = self.state(
+            "ALTER TABLE pt1 RENAME TO pt_one",
+            "ALTER TABLE pt RENAME TO p",
+            "CREATE TABLE p2 PARTITION OF p FOR VALUES IN (2)",
+            "ALTER TABLE p2 RENAME TO p_two",
+        )
+        found = state.relation("p")
+        self.assertEqual(found.partitions, ("pt_one", "ptd", "p_two"))
+        self.assertEqual(state.relation("pt_one").parent, "p")
+        self.assertEqual(state.relation("p_two").parent, "p")
+        self.assertIsNone(state.relation("pt"))
+        state.record(recognize("DROP TABLE ptd", PG), True)
+        self.assertEqual(state.relation("p").partitions, ("pt_one", "p_two"))
+        self.assertIsNone(state.relation("p").default)
+        state.record(recognize("DROP TABLE p", PG), True)
+        self.assertEqual(state.gone >= {"p", "pt_one", "p_two"}, True)
+        self.assertIsNone(state.relation("p_two"))
+
+    def test_insert_into_a_partitioned_table_fills_its_new_partitions(self):
+        state = self.state(
+            "CREATE TABLE n (id int) PARTITION BY RANGE (id)",
+            "CREATE TABLE n1 PARTITION OF n FOR VALUES FROM (1) TO (9)",
+            "INSERT INTO n SELECT id FROM big",
+        )
+        self.assertFalse(state.is_new("n1"))
+        self.assertFalse(state.is_new("n"))
+
+    def test_a_rollback_undoes_the_links(self):
+        state = self.state(
+            "CREATE TABLE n (id int) PARTITION BY RANGE (id)",
+            "ALTER TABLE n ATTACH PARTITION big FOR VALUES FROM (1) TO (9)",
+            "ROLLBACK",
+        )
+        self.assertIsNone(state.relation("n"))
+        self.assertIsNone(state.relation("big"))
 
 
 class CheckStateTestCase(unittest.TestCase):

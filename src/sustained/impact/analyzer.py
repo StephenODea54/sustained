@@ -274,6 +274,8 @@ def _intent_reading(
             if_not_exists=False,
             references=(),
             partition_of=None,
+            default_partition=False,
+            partitioned=False,
             as_select=False,
         )
         unread.append("the tables its foreign keys reference")
