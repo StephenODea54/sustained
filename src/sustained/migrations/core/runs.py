@@ -393,6 +393,7 @@ def preflight_check(
     """
     from sustained.exceptions import DialectError
     from sustained.impact.preflight import covered
+    from sustained.impact.rules import engine
 
     if preflight is None:
         return None
@@ -406,7 +407,7 @@ def preflight_check(
             f"preflight must be None, 'warn', or 'refuse', not {check.mode!r}."
         )
     if not covered(dialect):
-        raise DialectError(f"The live preflight does not cover {dialect.name}.")
+        raise DialectError(f"The live preflight does not cover {engine(dialect)}.")
     return check
 
 
