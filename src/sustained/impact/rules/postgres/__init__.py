@@ -82,7 +82,13 @@ from sustained.impact.rules.postgres.locks import (
     lock_rank,
     timeout_statement,
 )
-from sustained.impact.rules.postgres.partitions import descendants, partitioned
+from sustained.impact.rules.postgres.partitions import (
+    descendants,
+    locked_below,
+    merge_unread,
+    partitioned,
+    unread,
+)
 from sustained.impact.rules.postgres.preflight import preflight_plan
 from sustained.impact.rules.postgres.statements import (
     _attach_index,
@@ -162,6 +168,7 @@ _NO_FILE = frozenset({"set_tablespace", "set_logged", "set_unlogged"})
 def _alter_table(facts: Facts) -> Outcome:
     effects: List[Effect] = []
     findings: List[Finding] = []
+    unnamed: List[Effect] = []
     confidence = Confidence.KNOWN
     table = common.table(facts)
     parent = partitioned(facts, table)
@@ -182,11 +189,17 @@ def _alter_table(facts: Facts) -> Outcome:
         effects.extend(found)
         findings.extend(outcome.findings)
         confidence = min(confidence, outcome.confidence)
+        unnamed.extend(outcome.unnamed)
+    if not only and any(a.kind not in _PARENT_ONLY for a in facts.parsed.actions):
+        own = [e.lock for e in effects if e.table.lower() == table.lower()]
+        if own:
+            strongest = max(own, key=lock_rank)
+            findings.extend(unread(facts, table, locked_below(table, strongest)))
     if len(facts.parsed.actions) > 1:
         # A remedy rewrites one action, so it cannot stand for a
         # statement that holds others.
         effects = [e._replace(remedy=()) for e in effects]
-    return Outcome(tuple(effects), tuple(findings), confidence)
+    return Outcome(tuple(effects), tuple(findings), confidence, unnamed=tuple(unnamed))
 
 
 def _on_partitions(
@@ -253,7 +266,7 @@ _STATEMENTS: Dict[str, common.Handler] = {
 
 def effects(facts: Facts) -> Outcome:
     """What the statement does on PostgreSQL, table by table."""
-    return common.dispatch(facts, _STATEMENTS)
+    return merge_unread(facts, common.dispatch(facts, _STATEMENTS))
 
 
 PROFILE = Profile(

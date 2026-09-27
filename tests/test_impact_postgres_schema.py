@@ -285,7 +285,7 @@ class PartitionTestCase(unittest.TestCase):
                 "m1",
                 transactional=False,
             ),
-            EngineContext("postgres", (14,)),
+            EngineContext("postgres", (14,), read=frozenset({"partitions"})),
         )
         self.assertEqual(newer.findings, ())
 

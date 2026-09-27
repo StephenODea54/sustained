@@ -9,15 +9,21 @@ from types import MappingProxyType
 
 from sustained.analysis import MigrationStatement, with_intent
 from sustained.dialects import Dialects
+from sustained.guards import max_blocking, no_rewrite
 from sustained.impact import (
+    Blocks,
     Confidence,
     EngineContext,
     Severity,
+    TableStats,
+    UnnamedLock,
     Work,
     analyze,
+    attach_impact,
 )
 from sustained.impact.context import Relation
 from sustained.impact.recognizer import recognize
+from sustained.impact.report import statement_data
 from sustained.impact.rules.postgres import type_change
 from sustained.impact.rules.postgres.context import _types, context_plan
 from sustained.impact.rules.postgres.trace import _literal
@@ -537,10 +543,259 @@ class PartitionTestCase(unittest.TestCase):
         self.assertEqual(dangers(impact("REINDEX SCHEMA app"))[0].rule, "pg.reindex")
         self.assertEqual(dangers(impact("REINDEX TABLE t")), [])
 
-    def test_without_the_partition_read_a_table_is_not_partitioned(self):
-        unread = context(read=READ - {"partitions"}, relations={})
-        statement = impact("CREATE INDEX ix ON pt (id)", unread)
+
+def unread_findings(statement):
+    return [f for f in statement.findings if f.rule == "pg.partitions_unread"]
+
+
+class UnreadPartitionsTestCase(unittest.TestCase):
+    """A statement whose answer depends on partitions that were not read."""
+
+    UNREAD = READ - {"partitions"}
+
+    def unread(self, sql, found=None, transactional=True):
+        return impact(
+            sql,
+            found or context(read=self.UNREAD, relations={}),
+            transactional,
+        )
+
+    def test_without_a_context_the_partitions_are_unread(self):
+        (statement,) = analyze(["CREATE INDEX ix ON pt (id)"], PG).statements
         self.assertEqual(locks(statement), {("pt", "SHARE", Work.INDEX_BUILD)})
+        self.assertEqual(statement.confidence, Confidence.LIKELY)
+        (finding,) = unread_findings(statement)
+        self.assertEqual(finding.severity, Severity.INFO)
+        self.assertEqual(
+            finding.message,
+            "the partitions were not read, so it is not known whether pt is a "
+            "partitioned table or a partition; if pt is a partitioned "
+            "table, each partition below it is also locked SHARE while the index "
+            "is built on it, and the server refuses CREATE INDEX CONCURRENTLY on it",
+        )
+        # The finding follows the one about the index build.
+        self.assertEqual(statement.findings[0].rule, "pg.create_index")
+
+    def test_a_failed_partition_read_names_what_else_is_locked(self):
+        cases = [
+            ("ALTER TABLE pt ADD COLUMN d integer", ["if pt is a partitioned table"]),
+            (
+                "CREATE TABLE p2 PARTITION OF pt FOR VALUES IN (5)",
+                ["if pt has a DEFAULT partition, it is also locked ACCESS EXCLUSIVE "],
+            ),
+            (
+                "ALTER TABLE pt ATTACH PARTITION ptx FOR VALUES IN (2)",
+                [
+                    "if ptx is a partitioned table, each partition below it is "
+                    "also locked ACCESS EXCLUSIVE",
+                    "if pt has a DEFAULT partition, it is also locked ACCESS "
+                    "EXCLUSIVE while each of its rows is checked against the bound "
+                    "of ptx",
+                ],
+            ),
+            (
+                "ALTER TABLE pt DETACH PARTITION ptx",
+                ["if ptx is a partitioned table", "if pt has a DEFAULT partition"],
+            ),
+            (
+                "DROP TABLE pt1",
+                [
+                    "if pt1 is a partitioned table",
+                    "if pt1 is a partition, its partitioned table and that "
+                    "table's DEFAULT partition are also locked ACCESS EXCLUSIVE",
+                ],
+            ),
+            ("TRUNCATE pt", ["if pt is a partitioned table"]),
+            ("DROP INDEX ix", ["if the table of index ix is a partitioned table"]),
+            (
+                "DROP INDEX CONCURRENTLY pi_c",
+                [
+                    "if pi is a partitioned table, the server refuses DROP INDEX "
+                    "CONCURRENTLY of pi_c"
+                ],
+            ),
+            ("REINDEX TABLE pt", ["refuses the REINDEX inside a transaction block"]),
+            ("CREATE TRIGGER tr AFTER INSERT ON pt EXECUTE FUNCTION f()", ["pt"]),
+            (
+                "LOCK TABLE pt IN SHARE MODE",
+                ["each partition below it is also locked SHARE"],
+            ),
+        ]
+        for sql, parts in cases:
+            with self.subTest(sql=sql):
+                statement = self.unread(sql)
+                self.assertEqual(statement.confidence, Confidence.LIKELY)
+                (finding,) = unread_findings(statement)
+                for part in parts:
+                    self.assertIn(part, finding.message)
+        statement = self.unread("VACUUM pt", transactional=False)
+        (finding,) = unread_findings(statement)
+        self.assertIn("also locked SHARE UPDATE EXCLUSIVE", finding.message)
+        statement = self.unread(
+            "CREATE INDEX CONCURRENTLY ix ON pt (id)", transactional=False
+        )
+        (finding,) = unread_findings(statement)
+        self.assertIn("refuses CREATE INDEX CONCURRENTLY on it", finding.message)
+        # The version decides whether a refusal depends on the partitions.
+        for version, sql in [
+            ((16,), "ALTER TABLE pt ADD CONSTRAINT x EXCLUDE USING gist (id WITH =)"),
+            (
+                (17,),
+                "ALTER TABLE pt ADD CONSTRAINT fk FOREIGN KEY (a) "
+                "REFERENCES r (id) NOT VALID",
+            ),
+        ]:
+            with self.subTest(version=version):
+                found = context(version, read=self.UNREAD, relations={})
+                (finding,) = unread_findings(self.unread(sql, found))
+                self.assertIn(
+                    f"PostgreSQL before {version[0] + 1} refuses", finding.message
+                )
+
+    def test_a_statement_that_touches_no_partition_has_no_finding(self):
+        for sql in [
+            "CREATE TABLE n (id integer)",
+            "CREATE INDEX ix ON ONLY pt (id)",
+            "ALTER TABLE pt RENAME TO pu",
+            "ALTER TABLE ONLY pt ALTER COLUMN id SET STATISTICS 100",
+            "LOCK TABLE ONLY pt IN SHARE MODE",
+            "UPDATE pt SET id = 1",
+            "ALTER TABLE pt DETACH PARTITION ptx CONCURRENTLY",
+        ]:
+            with self.subTest(sql=sql):
+                statement = self.unread(sql, transactional=False)
+                self.assertEqual(
+                    [f.rule for f in unread_findings(statement)],
+                    ["pg.partitions_unread"] if "DETACH" in sql else [],
+                )
+
+    def test_a_table_the_run_created_has_no_finding(self):
+        statements = [
+            MigrationStatement(sql, "m1")
+            for sql in [
+                "CREATE TABLE n (id integer)",
+                "CREATE INDEX ix ON n (id)",
+                "ALTER TABLE n ADD COLUMN d integer",
+                "CREATE TABLE n1 PARTITION OF n FOR VALUES IN (1)",
+                "DROP TABLE n",
+            ]
+        ]
+        found = context(read=self.UNREAD, relations={})
+        for statement in analyze(statements, PG, found).statements:
+            with self.subTest(sql=statement.statement):
+                self.assertEqual(unread_findings(statement), [])
+                self.assertEqual(statement.confidence, Confidence.KNOWN)
+
+    def test_a_table_the_read_found_unpartitioned_has_no_finding(self):
+        for sql in [
+            "CREATE INDEX ix ON d (at)",
+            "ALTER TABLE d ADD COLUMN e integer",
+            "DROP TABLE d",
+            "ALTER TABLE d ATTACH PARTITION p FOR VALUES IN (1)",
+        ]:
+            with self.subTest(sql=sql):
+                statement = impact(sql)
+                self.assertEqual(unread_findings(statement), [])
+        self.assertEqual(
+            impact("CREATE INDEX ix ON d (at)").confidence, Confidence.KNOWN
+        )
+
+    def test_a_partitioned_table_keeps_its_partitions(self):
+        statement = impact("CREATE INDEX ix ON pt (id)")
+        self.assertEqual(
+            {t for t, _, _ in locks(statement)}, {"pt", "pt1", "ptd", "ptx", "ptx1"}
+        )
+        self.assertEqual(unread_findings(statement), [])
+        self.assertEqual(statement.confidence, Confidence.KNOWN)
+
+    def test_the_statement_records_the_unread_partitions(self):
+        statement = self.unread("CREATE INDEX ix ON pt (id)")
+        self.assertTrue(statement.partitions_unread)
+        # The partitions below pt are smaller than pt, which is named.
+        self.assertEqual(statement.unnamed_locks, ())
+        self.assertFalse(impact("CREATE INDEX ix ON pt (id)").partitions_unread)
+        self.assertFalse(self.unread("CREATE TABLE n (id integer)").partitions_unread)
+        # A DEFAULT partition, or a partitioned table, the read did not
+        # name is no row of the report.
+        for sql, lock in [
+            (
+                "ALTER TABLE pt ATTACH PARTITION p FOR VALUES IN (9)",
+                UnnamedLock("ACCESS EXCLUSIVE", Blocks.READS_AND_WRITES, Work.SCAN),
+            ),
+            (
+                "DROP TABLE pt1",
+                UnnamedLock("ACCESS EXCLUSIVE", Blocks.READS_AND_WRITES, Work.CATALOG),
+            ),
+        ]:
+            with self.subTest(sql=sql):
+                statement = self.unread(sql)
+                self.assertEqual(statement.unnamed_locks, (lock,))
+                self.assertTrue(all("(" not in t for t, _, _ in locks(statement)))
+                data = statement_data(statement)
+                self.assertTrue(data["partitions_unread"])
+                self.assertEqual(
+                    data["unnamed_locks"],
+                    [
+                        {
+                            "lock": "ACCESS EXCLUSIVE",
+                            "blocks": "reads_and_writes",
+                            "work": str(lock.work),
+                        }
+                    ],
+                )
+        self.assertEqual(impact("DROP TABLE pt1").unnamed_locks, ())
+
+    def test_the_guards_count_an_unnamed_lock_as_a_table_of_unknown_size(self):
+        tables = {
+            name: TableStats(10, 8192) for name in ("pt", "pt1", "pt9", "d", "ix")
+        }
+        unread = context(read=self.UNREAD | {"sizes"}, relations={}, tables=tables)
+        # With the partitions read and no relations, no table is
+        # partitioned, so pt has no DEFAULT partition.
+        read = context(read=READ | {"sizes"}, relations={}, tables=tables)
+
+        def blocked(guard, sql, found):
+            statements = attach_impact([sql], PG, found)
+            return [v.rule for v in guard(statements, PG)]
+
+        attach = "ALTER TABLE pt ATTACH PARTITION pt9 FOR VALUES IN (9)"
+        self.assertEqual(
+            blocked(max_blocking("ddl", over_rows=1000), attach, unread),
+            ["max_blocking(ddl, over_rows=1000)"],
+        )
+        self.assertEqual(
+            blocked(
+                max_blocking("ddl", over_rows=1000, assume_small=True), attach, unread
+            ),
+            [],
+        )
+        self.assertEqual(blocked(max_blocking("ddl", over_rows=1000), attach, read), [])
+        drop = "DROP TABLE pt1"
+        self.assertEqual(
+            blocked(max_blocking("writes", over_rows=1000), drop, unread),
+            ["max_blocking(writes, over_rows=1000)"],
+        )
+        self.assertEqual(
+            blocked(
+                max_blocking("writes", over_rows=1000, assume_small=True), drop, unread
+            ),
+            [],
+        )
+        self.assertEqual(
+            blocked(max_blocking("writes", over_rows=1000), "DROP TABLE d", read), []
+        )
+        # The partitions below a table are smaller than the table, so a
+        # statement that locks only those draws no block for them.
+        self.assertEqual(
+            blocked(
+                max_blocking("nothing", over_rows=1000),
+                "CREATE INDEX ix ON pt (id)",
+                unread,
+            ),
+            [],
+        )
+        # No unnamed lock rewrites a table.
+        self.assertEqual(blocked(no_rewrite(over_rows=1000), attach, unread), [])
 
 
 class ValidateTestCase(unittest.TestCase):

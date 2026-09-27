@@ -47,6 +47,7 @@ from sustained.impact.model import (
     StatementImpact,
     TableImpact,
     Thresholds,
+    UnnamedLock,
     Window,
     Work,
 )
@@ -86,6 +87,7 @@ __all__ = [
     "TableImpact",
     "TableStats",
     "Thresholds",
+    "UnnamedLock",
     "Window",
     "Work",
 ]

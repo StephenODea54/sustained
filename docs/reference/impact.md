@@ -235,11 +235,18 @@ One migration: its id, or `None` for statements with no migration, its transacti
 ## `StatementImpact`
 
 ```python
-StatementImpact(statement, parsed, tables, findings, evidence, confidence)
+StatementImpact(statement, parsed, tables, findings, evidence, confidence, partitions_unread=False, unnamed_locks=())
 ```
 {: .sig}
 
-One statement. `parsed` is the recognizer's `ParsedStatement`, or `None` for a statement it could not read. `tables` is a tuple of `TableImpact`, and `findings` a tuple of `Finding`. `severity` is the worst severity among the findings, or `None` with none.
+One statement. `parsed` is the recognizer's `ParsedStatement`, or `None` for a statement it could not read. `tables` is a tuple of `TableImpact`, and `findings` a tuple of `Finding`. `severity` is the worst severity among the findings, or `None` with none. On PostgreSQL, `partitions_unread` is `True` when the partitions were not read and the answer depends on them: the statement has a `pg.partitions_unread` finding. `unnamed_locks` is a tuple of `UnnamedLock`, one for each lock the statement may then take on a table no read named that may be larger than every table the statement names: the DEFAULT partition an `ATTACH PARTITION` scans, and the partitioned table a `DROP TABLE` of a partition locks. `max_blocking()` and `no_rewrite()` count each one as a table of unknown size.
+
+```python
+UnnamedLock(lock, blocks, work)
+```
+{: .sig}
+
+The engine's lock name, what the lock blocks, and the work, on a table the report does not name.
 
 ```python
 TableImpact(table, lock, blocks, work, hold, rows=None, bytes=None, rule=None)
@@ -264,6 +271,7 @@ The analysis itself raises these findings:
 | `impact.from_intent` | `info` | The recognizer could not read a generated statement, so the analysis follows its intent. The message names each fact the intent does not give, which takes its worst case, and the statement's confidence is then at most `likely`. |
 | `impact.mismatch` | `warn` | A traced rehearsal saw the server take another lock than the rules predicted, copy a file the rules did not predict, or copy none where they predicted a rewrite or an index build. On MySQL and MariaDB: the server accepted another clause than the rules predicted, or its clause copied the table where they predicted none, or nothing where they predicted a copy. |
 | `impact.assumed_profile` | `info` | No context was given on a dialect with more than one profile, so the first was assumed. |
+| `pg.partitions_unread` | `info` | The partitions were not read, and the statement would lock more tables, or be refused, if a table it names is partitioned or a partition. The message says it is not known whether each such table is a partitioned table or a partition, and names what the statement also locks or is refused if it is. The statement's confidence is then at most `likely`, and its `partitions_unread` is `True`. |
 | `pg.lock_timeout` | `warn` | A lock that blocks writes or more waits with no `lock_timeout` in scope, from a `SET` earlier in the run or from the connection's settings. |
 | `mysql.lock_timeout`, `mariadb.lock_timeout` | `warn` | A statement that takes the exclusive metadata lock runs with no `lock_wait_timeout` below a day in scope. |
 | `mysql.refused`, `mariadb.refused` | `warn` | The statement spells an `ALGORITHM` or `LOCK` the change cannot run with, so the server refuses it. |
@@ -351,7 +359,7 @@ statement_data(impact) -> dict
 ```
 {: .sig #statement_data}
 
-One statement's impact as plain data: `kind` (`null` for an unknown statement), `severity` (`null` with no findings), `confidence`, `evidence`, `tables`, and `findings`. Each table has `table`, `lock`, `blocks`, `work`, `hold`, `rows`, `bytes`, and `rule`. Each finding has `rule`, `severity`, `message`, `remedy` as a list, and `source`.
+One statement's impact as plain data: `kind` (`null` for an unknown statement), `severity` (`null` with no findings), `confidence`, `evidence`, `tables`, `findings`, `partitions_unread`, and `unnamed_locks`. Each table has `table`, `lock`, `blocks`, `work`, `hold`, `rows`, `bytes`, and `rule`. Each finding has `rule`, `severity`, `message`, `remedy` as a list, and `source`. Each unnamed lock has `lock`, `blocks`, and `work`.
 
 ```python
 finding_data(finding) -> dict

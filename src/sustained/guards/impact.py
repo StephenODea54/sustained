@@ -119,6 +119,15 @@ class _Size:
                 return True
         return unknown and not self.assume_small
 
+    def unnamed(self) -> bool:
+        """
+        Whether a table no read named counts: it has no size, so it
+        counts as a table of unknown size does.
+        """
+        if self.over_rows is None and self.over_bytes is None:
+            return True
+        return not self.assume_small
+
 
 def max_blocking(
     limit: Union[Blocks, str],
@@ -136,9 +145,11 @@ def max_blocking(
     With neither `over_rows` nor `over_bytes`, every table counts. With
     either, a table counts when its estimated size passes one of them,
     and when the size the threshold reads is unknown, unless
-    `assume_small=True`. A table the run created earlier and left empty
-    blocks nothing in the analysis, so it never counts. A statement with
-    confidence `unknown` is blocked whatever the thresholds.
+    `assume_small=True`. A lock in `unnamed_locks`, on a table no read
+    named, counts as a table of unknown size does. A table the run
+    created earlier and left empty blocks nothing in the analysis, so it
+    never counts. A statement with confidence `unknown` is blocked
+    whatever the thresholds.
     """
     ceiling = Blocks(limit)
     size = _Size("max_blocking", over_rows, over_bytes, assume_small)
@@ -146,8 +157,10 @@ def max_blocking(
     return _impact_guard(
         rule,
         lambda impact: _unknown(impact)
-        or any(
-            table.blocks > ceiling and size.counts(table) for table in impact.tables
+        or any(table.blocks > ceiling and size.counts(table) for table in impact.tables)
+        or (
+            size.unnamed()
+            and any(lock.blocks > ceiling for lock in impact.unnamed_locks)
         ),
     )
 
@@ -171,6 +184,10 @@ def no_rewrite(
         lambda impact: _unknown(impact)
         or any(
             table.work >= Work.REWRITE and size.counts(table) for table in impact.tables
+        )
+        or (
+            size.unnamed()
+            and any(lock.work >= Work.REWRITE for lock in impact.unnamed_locks)
         ),
     )
 

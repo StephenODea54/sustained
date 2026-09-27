@@ -235,7 +235,8 @@ class DataTestCase(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(data)), data)
         self.assertEqual(data["profile"], "postgres")
         self.assertEqual(data["version"], "12")
-        self.assertEqual(data["counts"], {"info": 0, "warn": 3, "danger": 0})
+        # Each statement has a pg.partitions_unread finding, at info.
+        self.assertEqual(data["counts"], {"info": 2, "warn": 3, "danger": 0})
         (migration,) = data["migrations"]
         self.assertEqual(migration["id"], "m1")
         self.assertEqual(migration["statements"][0]["sql"], INDEX)
@@ -250,7 +251,8 @@ class DataTestCase(unittest.TestCase):
         data = statement_data(impact)
         self.assertEqual(data["kind"], "create_index")
         self.assertEqual(data["severity"], "warn")
-        self.assertEqual(data["confidence"], "known")
+        # Whether orders is partitioned was not read.
+        self.assertEqual(data["confidence"], "likely")
         self.assertEqual(data["evidence"], "static")
         self.assertEqual(data["tables"][0]["work"], "index_build")
         finding = data["findings"][0]

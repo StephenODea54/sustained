@@ -11,15 +11,31 @@ DEFAULT partition, whose rows PostgreSQL checks against the new bound.
 
 A table the run created is not in the read, so a partition the run
 added is not locked by a later statement on its parent.
+
+Without the partitions read, whether a table is a partitioned table or
+a partition is not known. A handler whose answer would change if a
+table it names were one gives `unread()` findings for that table, which
+`merge_unread()` joins into one `pg.partitions_unread` finding for the
+statement, whose confidence is then at most `likely`. A lock on a table
+no read names that may be larger than the tables the statement names,
+the DEFAULT partition `ATTACH PARTITION` scans and the partitioned table
+`DROP TABLE` of a partition locks, goes in the outcome's `unnamed`. A
+table the run created is never in the read, so it draws none.
 """
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from sustained.impact.context import Relation
-from sustained.impact.model import Confidence, Work
-from sustained.impact.rules import Effect, Facts, Rule
+from sustained.impact.model import Confidence, Finding, Severity, Work
+from sustained.impact.rules import Effect, Facts, Outcome, Rule
+from sustained.impact.rules.postgres.catalog import DOCS
+
+# The id of the finding for a statement whose answer depends on the
+# partitions, when they were not read.
+UNREAD = "pg.partitions_unread"
+_UNREAD_SOURCE = DOCS + "ddl-partitioning.html"
 
 
 def relation(facts: Facts, table: str) -> Optional[Relation]:
@@ -73,3 +89,91 @@ def parent_of(facts: Facts, table: str) -> Optional[str]:
     """The partitioned table a partition belongs to, or None."""
     found = relation(facts, table)
     return None if found is None else found.parent
+
+
+def is_unread(facts: Facts, table: str) -> bool:
+    """
+    Whether the partitions were not read, so whether the table is a
+    partitioned table or a partition is not known. A table the run
+    created is never in the read, and its partitions are the run's.
+    """
+    return "partitions" not in facts.context.read and not (
+        facts.state.created_in_run(table)
+    )
+
+
+def unread(facts: Facts, table: str, clause: str) -> Tuple[Finding, ...]:
+    """
+    A finding that says what the statement also does if the table is
+    partitioned or a partition, in `clause`, such as `if t is a
+    partitioned table, each partition below it is also locked SHARE`,
+    when `is_unread()`; otherwise none. `merge_unread()` joins these,
+    and reads the table's name from the remedy, where it is kept until
+    then.
+    """
+    if not is_unread(facts, table):
+        return ()
+    return (Finding(UNREAD, Severity.INFO, clause, (table,), _UNREAD_SOURCE),)
+
+
+def locked_below(table: str, lock: Optional[str]) -> str:
+    """The clause for the partitions below a table the read did not cover."""
+    return (
+        f"if {table} is a partitioned table, each partition below it is also "
+        f"locked {lock}"
+    )
+
+
+def _listed(names: List[str]) -> str:
+    if len(names) < 3:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + ", and " + names[-1]
+
+
+def merge_unread(facts: Facts, outcome: Outcome) -> Outcome:
+    """
+    The outcome with its `unread()` findings joined into one finding,
+    with the clauses in order and each once, with `partitions_unread`
+    set, and with its confidence at most `likely`. The analyzer gives a
+    statement the lowest confidence of its outcome and its effects, so
+    this lowers the statement's. The finding is a note on the last
+    effect on a table the run did not create, so it follows the
+    findings about the statement's work.
+    """
+    clauses: Dict[str, None] = {}
+    tables: Dict[str, None] = {}
+    others: List[Finding] = []
+    for finding in outcome.findings:
+        if finding.rule == UNREAD:
+            clauses[finding.message] = None
+            tables.update(dict.fromkeys(finding.remedy))
+        else:
+            others.append(finding)
+    if not clauses:
+        return outcome
+    names = list(tables)
+    unknown = (
+        f"whether {names[0]} is a partitioned table or a partition"
+        if len(names) == 1
+        else f"whether {_listed(names)} are partitioned tables or partitions"
+    )
+    note = Finding(
+        UNREAD,
+        Severity.INFO,
+        f"the partitions were not read, so it is not known {unknown}; "
+        + "; ".join(clauses),
+        source=_UNREAD_SOURCE,
+    )
+    effects = list(outcome.effects)
+    for i in reversed(range(len(effects))):
+        if not facts.state.created_in_run(effects[i].table):
+            effects[i] = effects[i]._replace(notes=effects[i].notes + (note,))
+            break
+    else:
+        others.append(note)
+    return outcome._replace(
+        effects=tuple(effects),
+        findings=tuple(others),
+        confidence=min(outcome.confidence, Confidence.LIKELY),
+        partitions_unread=True,
+    )

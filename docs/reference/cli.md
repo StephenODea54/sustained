@@ -256,7 +256,7 @@ $ sustained plan --json
           "impact": {
             "kind": "alter_table",
             "severity": "warn",
-            "confidence": "known",
+            "confidence": "likely",
             "evidence": "static",
             "tables": [
               {
@@ -272,13 +272,22 @@ $ sustained plan --json
             ],
             "findings": [
               {
+                "rule": "pg.partitions_unread",
+                "severity": "info",
+                "message": "the partitions were not read, so it is not known whether users is a partitioned table or a partition; if users is a partitioned table, each partition below it is also locked ACCESS EXCLUSIVE",
+                "remedy": [],
+                "source": "https://www.postgresql.org/docs/current/ddl-partitioning.html"
+              },
+              {
                 "rule": "pg.lock_timeout",
                 "severity": "warn",
                 "message": "no lock_timeout in scope: while this statement waits for its lock, every query that conflicts with it on users queues behind it, for as long as the longest open transaction runs",
                 "remedy": ["SET LOCAL lock_timeout = '5s'"],
                 "source": "https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-LOCK-TIMEOUT"
               }
-            ]
+            ],
+            "partitions_unread": true,
+            "unnamed_locks": []
           }
         }
       ],

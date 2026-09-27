@@ -17,6 +17,9 @@ from tests.test_impact_postgres import (
     table,
 )
 
+# With the partitions read, every table reads as not partitioned.
+PARTITIONS_READ = EngineContext("postgres", (12,), read=frozenset({"partitions"}))
+
 
 class RemedyTestCase(unittest.TestCase):
     def remedy(self, sql, rule):
@@ -126,7 +129,9 @@ class DefaultVolatilityTestCase(unittest.TestCase):
         self.assertIn("my_func()", finding.message)
 
     def test_a_known_volatile_function_is_certain(self):
-        statement = impact("ALTER TABLE t ADD COLUMN c float DEFAULT random()")
+        statement = impact(
+            "ALTER TABLE t ADD COLUMN c float DEFAULT random()", PARTITIONS_READ
+        )
         self.assertEqual(statement.confidence, Confidence.KNOWN)
         self.assertIn("random()", statement.findings[0].message)
 
@@ -205,7 +210,9 @@ class TypeChangeTestCase(unittest.TestCase):
         self.assertEqual(found.work, Work.CATALOG)
 
     def test_a_computing_using_clause_rewrites(self):
-        statement = impact(self.generated("varchar(10)", "text", using="upper(c)"))
+        statement = impact(
+            self.generated("varchar(10)", "text", using="upper(c)"), PARTITIONS_READ
+        )
         self.assertEqual(statement.tables[0].work, Work.REWRITE)
         self.assertEqual(statement.confidence, Confidence.KNOWN)
         statement = impact(self.generated("varchar(10)", "text", using="d::text"))
@@ -298,7 +305,8 @@ class NotesTestCase(unittest.TestCase):
         statement = impact(
             MigrationStatement(
                 "CREATE INDEX CONCURRENTLY ix ON t (c)", "m1", transactional=False
-            )
+            ),
+            PARTITIONS_READ,
         )
         self.assertEqual(rules(statement), ["pg.create_index.concurrently"])
         self.assertIn(

@@ -499,7 +499,7 @@ max_blocking(limit, over_rows=None, over_bytes=None, assume_small=False) -> Guar
 ```
 {: .sig #max_blocking}
 
-Blocks a statement that blocks more than `limit` on a table past the thresholds. `limit` is a `Blocks` member or its name. With neither threshold every table counts. With either, a table counts when its estimated size passes one of them, and when the size the threshold reads is unknown, unless `assume_small=True`. A statement whose impact has confidence `unknown` is blocked whatever the thresholds, since the analysis names no table for it. A negative threshold or an unknown `limit` raises `ValueError`. The verdict's rule reads `max_blocking(writes, over_rows=100000)`.
+Blocks a statement that blocks more than `limit` on a table past the thresholds. `limit` is a `Blocks` member or its name. With neither threshold every table counts. With either, a table counts when its estimated size passes one of them, and when the size the threshold reads is unknown, unless `assume_small=True`. A lock in the statement's `unnamed_locks`, on a table no read named, counts as a table of unknown size. A statement whose impact has confidence `unknown` is blocked whatever the thresholds, since the analysis names no table for it. A negative threshold or an unknown `limit` raises `ValueError`. The verdict's rule reads `max_blocking(writes, over_rows=100000)`.
 
 ```python
 no_rewrite(over_rows=None, over_bytes=None, assume_small=False) -> Guard

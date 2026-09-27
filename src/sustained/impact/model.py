@@ -267,8 +267,26 @@ class Finding(NamedTuple):
     source: Optional[str] = None
 
 
+class UnnamedLock(NamedTuple):
+    """
+    A lock a statement may take on a table no read named, which may be
+    larger than every table the statement names, such as the DEFAULT
+    partition an ATTACH PARTITION scans when the partitions were not
+    read: the engine's lock name, what it blocks, and the work.
+    """
+
+    lock: Optional[str]
+    blocks: Blocks
+    work: Work
+
+
 class StatementImpact(NamedTuple):
-    """The impact of one statement, with what the answer rests on."""
+    """
+    The impact of one statement, with what the answer rests on.
+    `partitions_unread` is True when the answer depends on partitions
+    the context did not read, and `unnamed_locks` lists the locks the
+    statement may then take on tables the report cannot name.
+    """
 
     statement: str
     parsed: Optional[ParsedStatement]
@@ -276,6 +294,8 @@ class StatementImpact(NamedTuple):
     findings: Tuple[Finding, ...]
     evidence: Evidence
     confidence: Confidence
+    partitions_unread: bool = False
+    unnamed_locks: Tuple[UnnamedLock, ...] = ()
 
     @property
     def severity(self) -> Optional[Severity]:

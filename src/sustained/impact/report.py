@@ -63,6 +63,11 @@ def statement_data(impact: StatementImpact) -> Dict[str, JsonValue]:
         "evidence": str(impact.evidence),
         "tables": [_table_data(t) for t in impact.tables],
         "findings": [finding_data(f) for f in impact.findings],
+        "partitions_unread": impact.partitions_unread,
+        "unnamed_locks": [
+            {"lock": u.lock, "blocks": str(u.blocks), "work": str(u.work)}
+            for u in impact.unnamed_locks
+        ],
     }
 
 

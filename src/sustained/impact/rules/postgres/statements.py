@@ -50,8 +50,11 @@ from sustained.impact.rules.postgres.partitions import (
     cascade,
     default_partition,
     descendants,
+    is_unread,
+    locked_below,
     parent_of,
     partitioned,
+    unread,
 )
 from sustained.impact.rules.postgres.remedies import (
     TRANSACTION_NOTE,
@@ -124,6 +127,14 @@ def _create_index(facts: Facts) -> Outcome:
                     source=CREATE_INDEX_CONCURRENTLY.source,
                 )
             )
+        findings.extend(
+            unread(
+                facts,
+                table,
+                f"if {table} is a partitioned table, the server refuses CREATE "
+                f"INDEX CONCURRENTLY on it; {_PARTITIONED_INDEX}",
+            )
+        )
         return Outcome(
             (
                 Effect(
@@ -156,6 +167,7 @@ def _create_index(facts: Facts) -> Outcome:
         )
     concurrent = insert_after(facts.statement, "INDEX", "CONCURRENTLY")
     remedy = (trimmed(concurrent),) if concurrent else ()
+    only = bool(parsed.options.get("only"))
     return Outcome(
         (
             Effect(
@@ -167,7 +179,17 @@ def _create_index(facts: Facts) -> Outcome:
                 f"build it CONCURRENTLY {TRANSACTION_NOTE}",
                 remedy=remedy,
             ),
-        )
+        ),
+        (
+            ()
+            if only
+            else unread(
+                facts,
+                table,
+                f"{locked_below(table, SHARE)} while the index is built on it, and "
+                "the server refuses CREATE INDEX CONCURRENTLY on it",
+            )
+        ),
     )
 
 
@@ -234,7 +256,12 @@ def _drop_index(facts: Facts) -> Outcome:
             table = facts.intent.table
         label = _table_label(name, table)
         parent = table is not None and partitioned(facts, table)
+        named = table if table is not None else f"the table of index {name}"
+        refusal = f"the server refuses DROP INDEX CONCURRENTLY of {name}"
         if concurrently:
+            findings.extend(
+                unread(facts, label, f"if {named} is a partitioned table, {refusal}")
+            )
             effects.append(
                 Effect(
                     DROP_INDEX_CONCURRENTLY,
@@ -268,6 +295,13 @@ def _drop_index(facts: Facts) -> Outcome:
                 cascade(facts, DROP_INDEX, label, ACCESS_EXCLUSIVE, Work.CATALOG)
             )
             continue
+        findings.extend(
+            unread(
+                facts,
+                label,
+                f"{locked_below(named, ACCESS_EXCLUSIVE)}, and {refusal}",
+            )
+        )
         concurrent = (
             insert_after(facts.statement, "INDEX", "CONCURRENTLY")
             if len(names) == 1
@@ -315,7 +349,21 @@ def _create_table(facts: Facts) -> Outcome:
         default = default_partition(facts, str(parent))
         if default is not None:
             effects.append(default_scan(CREATE_TABLE, default, "the new partition"))
+        return Outcome(
+            tuple(effects),
+            unread(
+                facts, str(parent), default_clause(str(parent), "the new partition")
+            ),
+        )
     return Outcome(tuple(effects))
+
+
+def default_clause(parent: str, partition: str) -> str:
+    """The clause for the DEFAULT partition the partitions read did not name."""
+    return (
+        f"if {parent} has a DEFAULT partition, it is also locked ACCESS EXCLUSIVE "
+        f"while each of its rows is checked against the bound of {partition}"
+    )
 
 
 def default_scan(rule: Rule, default: str, partition: str) -> Effect:
@@ -348,7 +396,10 @@ def _drop_table(facts: Facts) -> Outcome:
         Effect(DROP_TABLE, table, ACCESS_EXCLUSIVE, Work.CATALOG) for table in named
     ]
     seen = {table.lower() for table in named}
+    findings: List[Finding] = []
+    unnamed: List[Effect] = []
     for table in named:
+        findings.extend(unread(facts, table, locked_below(table, ACCESS_EXCLUSIVE)))
         for other in descendants(facts, table):
             if other.lower() not in seen:
                 seen.add(other.lower())
@@ -377,9 +428,21 @@ def _drop_table(facts: Facts) -> Outcome:
                         f"{other} wait until it commits",
                     )
                 )
-        return Outcome(tuple(effects))
+        return Outcome(tuple(effects), tuple(findings))
     for table in named:
         effects.extend(_parent_locks(facts, table, seen))
+        findings.extend(
+            unread(
+                facts,
+                table,
+                f"if {table} is a partition, its partitioned table and that "
+                "table's DEFAULT partition are also locked ACCESS EXCLUSIVE",
+            )
+        )
+        if is_unread(facts, table):
+            # If the table is a partition, its partitioned table, which
+            # may be larger, is locked too.
+            unnamed.append(Effect(DROP_TABLE, table, ACCESS_EXCLUSIVE, Work.CATALOG))
         live = facts.state.original(table)
         for other in context.references(live):
             if other.lower() not in seen:
@@ -390,7 +453,7 @@ def _drop_table(facts: Facts) -> Outcome:
                 if other.lower() not in seen:
                     seen.add(other.lower())
                     effects.append(foreign_key_effect(other, table, "dropped", other))
-    return Outcome(tuple(effects))
+    return Outcome(tuple(effects), tuple(findings), unnamed=tuple(unnamed))
 
 
 def _parent_locks(facts: Facts, table: str, seen: Set[str]) -> List[Effect]:
@@ -484,12 +547,14 @@ def _reindex(facts: Facts) -> Outcome:
     name = str(options.get("name"))
     findings: List[Finding] = []
     parent = False
+    named: Optional[str] = None
     if target == "table":
-        label = name
+        label = named = name
         parent = partitioned(facts, name)
     elif target == "index":
         table = facts.state.index_table(name) or facts.context.index_table(name)
         label = _table_label(name, table)
+        named = table if table is not None else f"the table of index {name}"
         parent = table is not None and partitioned(facts, table)
     else:
         label = f"(every table in {target} {name})"
@@ -526,6 +591,11 @@ def _reindex(facts: Facts) -> Outcome:
         ]
     if parent:
         effects.extend(cascade(facts, rule, label, lock, Work.INDEX_BUILD))
+    if named is not None:
+        clause = f"{locked_below(named, lock)} while its indexes are rebuilt"
+        if facts.transactional and not options.get("concurrently"):
+            clause += ", and the server refuses the REINDEX inside a transaction block"
+        findings.extend(unread(facts, label, clause))
     return Outcome(tuple(effects), tuple(findings))
 
 
@@ -560,6 +630,7 @@ def _vacuum(facts: Facts) -> Outcome:
     for table in tables:
         effects.append(Effect(rule, table, lock, work))
         effects.extend(cascade(facts, rule, table, lock, work))
+        findings.extend(unread(facts, table, locked_below(table, lock)))
     return Outcome(tuple(effects), tuple(findings))
 
 
@@ -606,7 +677,8 @@ def _trigger(facts: Facts) -> Outcome:
         (
             Effect(TRIGGER, table, lock, Work.CATALOG),
             *cascade(facts, TRIGGER, table, lock, Work.CATALOG),
-        )
+        ),
+        unread(facts, table, locked_below(table, lock)),
     )
 
 
@@ -622,6 +694,7 @@ def _lock_table(facts: Facts) -> Outcome:
     mode = str(options.get("mode"))
     waits = not options.get("nowait")
     effects: List[Effect] = []
+    findings: List[Finding] = []
     for table in common.tables(facts):
         effects.append(Effect(LOCK_TABLE, table, mode, Work.CATALOG, waits=waits))
         if not options.get("only"):
@@ -629,7 +702,8 @@ def _lock_table(facts: Facts) -> Outcome:
                 e._replace(waits=waits)
                 for e in cascade(facts, LOCK_TABLE, table, mode, Work.CATALOG)
             )
-    return Outcome(tuple(effects))
+            findings.extend(unread(facts, table, locked_below(table, mode)))
+    return Outcome(tuple(effects), tuple(findings))
 
 
 def _drop_object(facts: Facts) -> Outcome:

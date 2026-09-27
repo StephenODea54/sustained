@@ -150,7 +150,7 @@ class SeverityTestCase(unittest.TestCase):
 
     def test_catalog_work_draws_no_size_finding(self):
         (statement,) = analyze(["ALTER TABLE orders ADD COLUMN c int"], PG).statements
-        self.assertEqual(rules(statement), ["pg.lock_timeout"])
+        self.assertEqual(rules(statement), ["pg.partitions_unread", "pg.lock_timeout"])
 
     def test_default_wording_for_blocking_work_without_a_message(self):
         vacuum = MigrationStatement("VACUUM FULL orders", "m1", transactional=False)
@@ -469,9 +469,9 @@ class IntentFallbackTestCase(unittest.TestCase):
 
     UNREAD = "DO $$ BEGIN EXECUTE 'ALTER TABLE orders ADD COLUMN c int'; END $$"
 
-    def impact(self, kind, dialect=PG, column=None, **details):
+    def impact(self, kind, dialect=PG, column=None, context=None, **details):
         statement = with_intent(self.UNREAD, kind, "orders", column, **details)
-        (found,) = analyze([statement], dialect).statements
+        (found,) = analyze([statement], dialect, context).statements
         return found
 
     def test_a_column_with_a_default_is_a_rewrite_at_most_likely(self):
@@ -517,15 +517,18 @@ class IntentFallbackTestCase(unittest.TestCase):
         self.assertEqual(found.tables[0].work, Work.SCAN)
 
     def test_every_detail_given_keeps_the_confidence(self):
-        found = self.impact("drop_table")
+        # With the partitions read, orders reads as not partitioned.
+        read = EngineContext("postgres", (12,), read=frozenset({"partitions"}))
+        found = self.impact("drop_table", context=read)
         self.assertEqual(found.tables[0].rule, "pg.drop_table")
         self.assertEqual(found.confidence, Confidence.KNOWN)
         self.assertEqual(
-            self.impact("rename_column", column="c", new="d").confidence,
+            self.impact("rename_column", column="c", new="d", context=read).confidence,
             Confidence.KNOWN,
         )
         self.assertEqual(
-            self.impact("drop_constraint", name="ck").confidence, Confidence.KNOWN
+            self.impact("drop_constraint", name="ck", context=read).confidence,
+            Confidence.KNOWN,
         )
 
     def test_a_missing_detail_lowers_the_confidence(self):

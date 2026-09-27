@@ -125,11 +125,18 @@ class Facts(NamedTuple):
 
 
 class Outcome(NamedTuple):
-    """A profile's answer for one statement."""
+    """
+    A profile's answer for one statement. `partitions_unread` says the
+    answer depends on partitions the context did not read, and
+    `unnamed` holds the lock and work on each table the statement may
+    lock that no read named, with the named table it belongs to.
+    """
 
     effects: Tuple[Effect, ...] = ()
     findings: Tuple[Finding, ...] = ()
     confidence: Confidence = Confidence.KNOWN
+    partitions_unread: bool = False
+    unnamed: Tuple[Effect, ...] = ()
 
 
 class Probe(NamedTuple):

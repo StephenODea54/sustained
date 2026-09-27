@@ -60,8 +60,11 @@ from sustained.impact.rules.postgres.partitions import (
     cascade,
     default_partition,
     descendants,
+    is_unread,
+    locked_below,
     partitioned,
     relation,
+    unread,
 )
 from sustained.impact.rules.postgres.remedies import (
     TRANSACTION_NOTE,
@@ -72,6 +75,7 @@ from sustained.impact.rules.postgres.remedies import (
     trimmed,
 )
 from sustained.impact.rules.postgres.statements import (
+    default_clause,
     default_scan,
     foreign_key_effect,
     refused,
@@ -307,6 +311,13 @@ def _add_constraint(facts: Facts, action: Action) -> Outcome:
                 "a partitioned table",
             ),
         )
+    elif facts.context.version < (17,):
+        findings = unread(
+            facts,
+            table,
+            f"if {table} is a partitioned table, PostgreSQL before 17 refuses an "
+            "exclusion constraint on it",
+        )
     return Outcome(
         (Effect(ADD_EXCLUSION, table, ACCESS_EXCLUSIVE, Work.INDEX_BUILD),),
         findings,
@@ -359,6 +370,13 @@ def _add_foreign_key(facts: Facts, action: Action) -> Outcome:
                     f"{table}, a partitioned table; add the key to each partition "
                     "NOT VALID instead",
                 ),
+            )
+        elif facts.context.version < (18,):
+            findings = unread(
+                facts,
+                table,
+                f"if {table} is a partitioned table, PostgreSQL before 18 refuses "
+                "a NOT VALID foreign key on it",
             )
         return Outcome(
             tuple(
@@ -507,6 +525,19 @@ def _attach_partition(facts: Facts, action: Action) -> Outcome:
     default = default_partition(facts, table)
     if default is not None and default.lower() != partition.lower():
         effects.append(default_scan(ATTACH_PARTITION, default, partition))
+    findings = unread(
+        facts,
+        partition,
+        f"{locked_below(partition, ACCESS_EXCLUSIVE)} while its rows are checked "
+        "against the bound",
+    ) + unread(facts, table, default_clause(table, partition))
+    # If the table has a DEFAULT partition, which may be larger than the
+    # partition, reads and writes on it wait while its rows are checked.
+    unnamed = (
+        (Effect(ATTACH_PARTITION, table, ACCESS_EXCLUSIVE, Work.SCAN),)
+        if is_unread(facts, table)
+        else ()
+    )
     if _has_indexes(facts, table) is not False:
         effects.append(
             Effect(
@@ -520,7 +551,7 @@ def _attach_partition(facts: Facts, action: Action) -> Outcome:
                 "wait; build those indexes on it CONCURRENTLY before attaching it",
             )
         )
-    return Outcome(tuple(effects), confidence=Confidence.LIKELY)
+    return Outcome(tuple(effects), findings, Confidence.LIKELY, unnamed=unnamed)
 
 
 def _has_indexes(facts: Facts, table: str) -> Optional[bool]:
@@ -561,6 +592,14 @@ def _detach_partition(facts: Facts, action: Action) -> Outcome:
                     f"has a DEFAULT partition, {default}",
                 )
             )
+        findings.extend(
+            unread(
+                facts,
+                table,
+                f"if {table} has a DEFAULT partition, the server refuses DETACH "
+                "PARTITION CONCURRENTLY",
+            )
+        )
         return Outcome(
             (
                 Effect(
@@ -589,7 +628,16 @@ def _detach_partition(facts: Facts, action: Action) -> Outcome:
         Effect(DETACH_PARTITION, name, ACCESS_EXCLUSIVE, Work.CATALOG)
         for name in locked
     )
-    return Outcome(tuple(effects))
+    below = unread(facts, partition, locked_below(partition, ACCESS_EXCLUSIVE))
+    return Outcome(
+        tuple(effects),
+        below
+        + unread(
+            facts,
+            table,
+            f"if {table} has a DEFAULT partition, it is also locked ACCESS EXCLUSIVE",
+        ),
+    )
 
 
 def _needs_version(

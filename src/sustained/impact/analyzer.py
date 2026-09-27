@@ -55,6 +55,7 @@ from sustained.impact.model import (
     StatementImpact,
     TableImpact,
     Thresholds,
+    UnnamedLock,
     Work,
 )
 from sustained.impact.recognizer import recognize
@@ -467,6 +468,8 @@ class _Run:
             tuple(findings),
             self.evidence,
             min(confidence, outcome.confidence, ceiling),
+            outcome.partitions_unread,
+            tuple(UnnamedLock(e.lock, self.blocks(e), e.work) for e in outcome.unnamed),
         )
 
     def tables(
