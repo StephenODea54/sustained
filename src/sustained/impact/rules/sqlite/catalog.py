@@ -40,6 +40,11 @@ RENAME = Rule(
     ("ALTER TABLE t RENAME COLUMN name TO label", "ALTER TABLE t RENAME TO u"),
 )
 REBUILD = Rule("sqlite.rebuild", _ALTER_TABLE + "#otheralter")
+COPY = Rule(
+    "sqlite.copy",
+    DOCS + "lang_createtable.html#create_table_as_select_statements",
+    ("CREATE TABLE n AS SELECT * FROM t",),
+)
 CREATE_INDEX = Rule(
     "sqlite.create_index",
     DOCS + "lang_createindex.html",
@@ -79,6 +84,7 @@ RULES = (
     DROP_COLUMN,
     RENAME,
     REBUILD,
+    COPY,
     CREATE_INDEX,
     DROP_INDEX,
     REINDEX,

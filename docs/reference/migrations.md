@@ -499,28 +499,28 @@ max_blocking(limit, over_rows=None, over_bytes=None, assume_small=False) -> Guar
 ```
 {: .sig #max_blocking}
 
-Blocks a statement that blocks more than `limit` on a table past the thresholds. `limit` is a `Blocks` member or its name. With neither threshold every table counts. With either, a table counts when its estimated size passes one of them, and when the size the threshold reads is unknown, unless `assume_small=True`. A negative threshold or an unknown `limit` raises `ValueError`. The verdict's rule reads `max_blocking(writes, over_rows=100000)`.
+Blocks a statement that blocks more than `limit` on a table past the thresholds. `limit` is a `Blocks` member or its name. With neither threshold every table counts. With either, a table counts when its estimated size passes one of them, and when the size the threshold reads is unknown, unless `assume_small=True`. A statement whose impact has confidence `unknown` is blocked whatever the thresholds, since the analysis names no table for it. A negative threshold or an unknown `limit` raises `ValueError`. The verdict's rule reads `max_blocking(writes, over_rows=100000)`.
 
 ```python
 no_rewrite(over_rows=None, over_bytes=None, assume_small=False) -> Guard
 ```
 {: .sig #no_rewrite}
 
-Blocks a statement whose work on a table past the thresholds is `rewrite` or `unknown`. The thresholds read as they do for `max_blocking()`.
+Blocks a statement whose work on a table past the thresholds is `rewrite` or `unknown`, and a statement whose impact has confidence `unknown`. The thresholds read as they do for `max_blocking()`.
 
 ```python
 lock_timeout_required() -> Guard
 ```
 {: .sig #lock_timeout_required}
 
-Blocks a statement with a `<profile>.lock_timeout` finding, such as `pg.lock_timeout`, or `mysql.lock_timeout` and `mariadb.lock_timeout` on MySQL and MariaDB: a lock that would queue other sessions with no lock timeout in scope. On PostgreSQL, timeout scopes read as they do for `no_lock_without_timeout()`. On MySQL and MariaDB, the timeout is `lock_wait_timeout`, and a `SET` of it in any session scope covers the rest of the run. A timeout the connection already has covers the run when `up()` read it.
+Blocks a statement with a `<profile>.lock_timeout` finding, such as `pg.lock_timeout`, or `mysql.lock_timeout` and `mariadb.lock_timeout` on MySQL and MariaDB: a lock that would queue other sessions with no lock timeout in scope. On PostgreSQL, timeout scopes read as they do for `no_lock_without_timeout()`. On MySQL and MariaDB, the timeout is `lock_wait_timeout`, and a `SET` of it in any session scope covers the rest of the run. A timeout the connection already has covers the run when `up()` read it. A statement whose impact has confidence `unknown` is blocked, since the analysis cannot say which locks it takes.
 
 ```python
 no_unknown_impact() -> Guard
 ```
 {: .sig #no_unknown_impact}
 
-Blocks a statement whose impact has confidence `unknown`.
+Blocks a statement whose impact has confidence `unknown`, and nothing else. The other three rules block such a statement as well.
 
 The four rules above are silent on a dialect the impact analysis does not cover.
 

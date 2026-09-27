@@ -42,7 +42,7 @@ A flag that changes nothing is an error. `--older-than` needs `--live`, and `scr
 | 2 | `plan` only: work is waiting. |
 | 3 | `plan` and `migrate`: a guard blocked a statement. |
 | 4 | `migrate` only: the run removes data and no rehearsal proved it. |
-| 5 | `migrate` only: with `preflight` set to `refuse`, another session has a lock a statement of the run would wait for. |
+| 5 | `migrate` only: with `preflight` set to `refuse`, another session has a lock a statement of the run would wait for, a read the preflight needs failed, or a statement is one the analysis cannot read. |
 
 `plan` uses every code except 4 and 5. It exits 0 when the database is current, 2 when migrations are pending or the models have drifted, 3 when a guard blocked a statement, and 1 when validation found problems. Problems outrank a blocked statement, and a blocked statement outranks pending work.
 
@@ -60,7 +60,7 @@ A `migrate` that fails part way leaves the migrations it already applied in plac
 
 `impact` exits 0 when it prints the report, whatever the report says, and 1 on a failure, including a dialect the analysis does not cover. Blocking a run on impact is the job of guards. `impact --live` also exits 1 on a dialect without a [live preflight](/impact#live-preflight), which SQLite and DuckDB lack.
 
-`migrate --preflight refuse` reads the sessions the run would wait behind after the guards pass, and exits 5 when there is one, with each blocker on stderr. The first read comes before any migration applies. A run with `models` reads the generated migration a second time, once the registered migrations have applied, and a refusal on that read leaves them applied, with their ids on stdout as `applied  <id>` lines. `--preflight warn` prints the same lines on stderr as `preflight: ...` and the run goes on. The flag takes precedence over the config module's `preflight` attribute. On a dialect without a [live preflight](/impact#live-preflight), SQLite and DuckDB among them, `migrate` with either mode, from the flag or the config, exits 1 before the run starts.
+`migrate --preflight refuse` reads the sessions the run would wait behind after the guards pass, and exits 5 when there is one, with each blocker on stderr. It also exits 5 when a read the blockers come from failed, and when a statement is one the analysis cannot read, whose locks the preflight cannot check. The first read comes before any migration applies. A run with `models` reads the generated migration a second time, once the registered migrations have applied, and a refusal on that read leaves them applied, with their ids on stdout as `applied  <id>` lines. `--preflight warn` prints the same lines on stderr as `preflight: ...` and the run goes on. The flag takes precedence over the config module's `preflight` attribute. On a dialect without a [live preflight](/impact#live-preflight), SQLite and DuckDB among them, `migrate` with either mode, from the flag or the config, exits 1 before the run starts.
 
 ## The config module
 

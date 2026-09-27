@@ -111,6 +111,8 @@ def preflight_data(preflight: "Preflight") -> Dict[str, JsonValue]:
         "profile": preflight.profile,
         "older_than": preflight.older_than,
         "read": sorted(preflight.read),
+        "needs": sorted(preflight.needs),
+        "unread": list(preflight.unread),
         "blockers": [
             {
                 "statement": blocker.statement,
@@ -392,6 +394,14 @@ def transaction_line(session: "LiveSession") -> str:
     return f"{line} ({', '.join(details)})" if details else line
 
 
+def unread_line(statement: str) -> str:
+    """One statement the preflight cannot check, on one line."""
+    return (
+        f"{_one_line(statement)} is not read, so the preflight cannot check "
+        "the locks it takes"
+    )
+
+
 def preflight_summary(preflight: "Preflight") -> str:
     """The preflight's last line: the counts and what was read."""
     blockers = len(preflight.blockers)
@@ -407,6 +417,9 @@ def preflight_summary(preflight: "Preflight") -> str:
     missing = sorted({"locks", "transactions"} - preflight.read)
     if missing:
         line += f". Not read: {', '.join(missing)}"
+    if preflight.unread:
+        count = len(preflight.unread)
+        line += f". Not checked: {count} statement" + ("" if count == 1 else "s")
     return line
 
 
@@ -421,6 +434,8 @@ def render_preflight(preflight: "Preflight") -> str:
         lines.append(f"  {transaction_line(session)}")
         if session.query:
             lines.append(f"    last statement: {_one_line(session.query, 200)}")
+    for statement in preflight.unread:
+        lines.append(f"  {unread_line(statement)}")
     lines.append(f"  {preflight_summary(preflight)}")
     return "\n".join(lines)
 
@@ -442,4 +457,5 @@ __all__ = [
     "summary",
     "table_line",
     "transaction_line",
+    "unread_line",
 ]

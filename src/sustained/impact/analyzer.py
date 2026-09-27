@@ -3,9 +3,11 @@
 
 For each statement, in run order, the analyzer:
 
-1. recognizes the text, and checks it against the intent a generated
-   statement carries; when they disagree, the text wins and the
-   disagreement is a finding
+1. recognizes the text, and checks it against the intent of a generated
+   statement; when they disagree, the text wins and the disagreement is
+   a finding. When the text cannot be read, the statement is read from
+   its intent, and a fact the intent does not give takes its worst case
+   and lowers the confidence to `likely`
 2. asks the profile's rules for the lock and the work on each table
 3. rates blocking work against the table's size: `danger` past the
    thresholds, `info` below them, and `warn` when the size is unknown
@@ -17,12 +19,15 @@ For each statement, in run order, the analyzer:
 Then it groups the statements by migration and reads each migration's
 transaction window (`sustained.impact.window`).
 
-A table the run created earlier is empty and unseen by other sessions,
-so work on it blocks nothing and draws no findings.
+A table the run created earlier and left empty is unseen by other
+sessions, so work on it blocks nothing and draws no findings. A table
+the run filled from a query has the size of the tables the query read
+(`sustained.impact.state`).
 """
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Dict,
@@ -222,23 +227,135 @@ def parsed_from_intent(intent: Intent) -> Optional[ParsedStatement]:
     """
     What a generated statement the recognizer cannot read does, from its
     intent alone: the one statement kind, and ALTER TABLE action, the
-    intent reads as. None for an intent that reads as more than one.
+    intent reads as, with the options its details give. A fact the
+    details leave out takes its worst case, and `intent_unread()` names
+    it. None for an intent that reads as more than one statement kind.
     """
     forms = _INTENT_FORMS.get(intent.kind)
     if forms is None or len(forms) != 1 or intent.table is None:
         return None
     ((kind, action),) = forms
-    actions = () if action is None else (Action(action, intent.column),)
-    return ParsedStatement(kind, intent.table, actions)
-
-
-def _from_intent(intent: Intent) -> Finding:
-    return Finding(
-        "impact.from_intent",
-        Severity.INFO,
-        f"the statement text is not read, so the analysis follows the intent it "
-        f"was generated with: {intent.kind} on {intent.table}",
+    options, action_options, _ = _intent_reading(intent)
+    actions = (
+        ()
+        if action is None
+        else (Action(action, intent.column, MappingProxyType(action_options)),)
     )
+    return ParsedStatement(kind, intent.table, actions, MappingProxyType(options))
+
+
+def intent_unread(intent: Intent) -> Tuple[str, ...]:
+    """
+    The facts `parsed_from_intent()` needs and the intent's details do
+    not give, which it takes at their worst case.
+    """
+    return _intent_reading(intent)[2]
+
+
+def _intent_reading(
+    intent: Intent,
+) -> Tuple[Dict[str, object], Dict[str, object], Tuple[str, ...]]:
+    """
+    The statement options, the action options, and the unread facts of
+    an intent read without its statement text.
+    """
+    kind = intent.kind
+    statement: Dict[str, object] = {}
+    action: Dict[str, object] = {}
+    unread: List[str] = []
+    name = intent.get("name")
+    if kind == "drop_table":
+        statement["tables"] = (intent.table,)
+    elif kind == "create_table":
+        statement.update(
+            temporary=False,
+            if_not_exists=False,
+            references=(),
+            partition_of=None,
+            as_select=False,
+        )
+        unread.append("the tables its foreign keys reference")
+    elif kind == "add_column":
+        nullable = intent.get("nullable")
+        action.update(_UNREAD_COLUMN)
+        action["not_null"] = nullable is not True
+        if nullable is None:
+            unread.append("whether the column is nullable")
+        if intent.get("has_default") is False:
+            action["default"] = None
+        else:
+            # The default's expression is not in the intent, so it
+            # counts as one that gives each row a new value.
+            action.update(_UNREAD_DEFAULT)
+            unread.append("the default")
+        unread.append("the column's type and constraints")
+    elif kind == "rename_column":
+        action.update(old=intent.column, new=intent.get("new"))
+        if intent.get("new") is None:
+            unread.append("the new name")
+    elif kind in ("add_foreign_key", "add_check"):
+        action.update(name=name, not_valid=False, using_index=None)
+        if kind == "add_foreign_key":
+            action.update(constraint="foreign_key", references=intent.get("references"))
+            unread.append("whether the key is NOT VALID")
+        else:
+            action["constraint"] = "check"
+            unread.append("the check's expression, and whether it is NOT VALID")
+    elif kind in ("drop_foreign_key", "drop_constraint", "validate_constraint"):
+        action["name"] = name
+        if kind != "validate_constraint":
+            action.update(if_exists=False, cascade=False)
+    return statement, action, tuple(unread)
+
+
+# The column facts an add_column intent does not give, at the values the
+# recognizer gives a column definition that does not spell them.
+_UNREAD_COLUMN: Mapping[str, object] = MappingProxyType(
+    {
+        "type": None,
+        "serial": False,
+        "generated": None,
+        "identity": False,
+        "references": None,
+        "unique": False,
+        "primary_key": False,
+        "check": False,
+        "position": None,
+    }
+)
+
+# A default whose expression is not read: an expression no rule knows,
+# which counts as volatile. The parentheses make it an expression
+# default on MySQL and MariaDB, the worst case there.
+_UNREAD_DEFAULT: Mapping[str, object] = MappingProxyType(
+    {
+        "default": "(?)",
+        "default_volatility": "volatile",
+        "default_function": None,
+        "default_certain": False,
+    }
+)
+
+
+def _from_intent(intent: Intent, unread: Sequence[str]) -> Finding:
+    message = (
+        f"the statement text is not read, so the analysis follows the intent it "
+        f"was generated with: {intent.kind} on {intent.table}"
+    )
+    if intent.kind == "create_table":
+        # No worst case names the tables a key references.
+        message += f"; the intent does not give {_listed(unread)}, so no lock on "
+        message += "them is reported"
+    elif unread:
+        message += f"; the intent does not give {_listed(unread)}, so the analysis "
+        message += "assumes the worst case" + (" for each" if len(unread) > 1 else "")
+    return Finding("impact.from_intent", Severity.INFO, message)
+
+
+def _listed(items: Sequence[str]) -> str:
+    if len(items) < 3:
+        return " or ".join(items)
+    return ", ".join(items[:-1]) + f", or {items[-1]}"
 
 
 def _same_table(intended: Optional[str], parsed: Optional[str]) -> bool:
@@ -267,7 +384,7 @@ class _Run:
         self.thresholds = thresholds
         self.evidence = evidence
         self.state = RunState(
-            profile.timeout_setting, profile.bounded, profile.local_scope
+            profile.timeout_setting, profile.bounded, profile.local_scope, context
         )
         # A timeout the connection already has, from the role, the
         # database, or the connection string, covers the whole run.
@@ -304,11 +421,17 @@ class _Run:
         if intent is not None and parsed.known and not intent_agrees(intent, parsed):
             findings.append(_mismatch(intent, parsed))
             intent = None
+        # A statement read from its intent alone is at best as sure as
+        # the facts the intent gives.
+        ceiling = Confidence.KNOWN
         if not parsed.known and intent is not None:
             from_intent = parsed_from_intent(intent)
             if from_intent is not None:
-                findings.append(_from_intent(intent))
+                unread = intent_unread(intent)
+                findings.append(_from_intent(intent, unread))
                 parsed = from_intent
+                if unread:
+                    ceiling = Confidence.LIKELY
         if not parsed.known:
             findings.append(
                 Finding(
@@ -336,7 +459,7 @@ class _Run:
             tables,
             tuple(findings),
             self.evidence,
-            min(confidence, outcome.confidence),
+            min(confidence, outcome.confidence, ceiling),
         )
 
     def tables(
@@ -384,7 +507,7 @@ class _Run:
             rows: Optional[int] = 0
             size: Optional[int] = 0
         else:
-            stats = self.context.stats(self.state.original(table))
+            stats = self.state.stats(self.context, table)
             rows, size = stats.rows, stats.bytes
         if held_to_commit and blocked > Blocks.NOTHING:
             hold = Hold.TRANSACTION
@@ -395,7 +518,9 @@ class _Run:
         )
 
     def effect_findings(self, effect: Effect, impact: TableImpact) -> List[Finding]:
-        found = list(effect.notes)
+        # No running code names a table the run created, so the notes
+        # about it, such as a rename breaking that code, do not apply.
+        found = [] if self.state.created_in_run(effect.table) else list(effect.notes)
         blocked = self.blocks(effect)
         if blocked < Blocks.WRITES:
             return found

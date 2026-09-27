@@ -133,6 +133,9 @@ def _add_column(facts: Facts, action: Action) -> Optional[Effect]:
         reason = (
             f"the default calls {function}(), which no rule knows, so it counts "
             "as volatile: a new value for each row"
+            if function
+            else "the default was not read, so it counts as volatile: a new value "
+            "for each row"
         )
     return _effect(
         ADD_COLUMN_VOLATILE,

@@ -60,6 +60,22 @@ class DmlTestCase(RecognizerTestCase):
         )
         self.assertUnknown("INSERT INTO t SET a = 1", MYSQL, table="t")
 
+    def test_the_tables_an_insert_reads(self):
+        def reads(sql):
+            return recognize(sql).options.get("reads")
+
+        self.assertEqual(
+            reads('INSERT INTO "new" ("id") SELECT "id" FROM "old"'), ("old",)
+        )
+        self.assertEqual(
+            reads("INSERT INTO t SELECT * FROM app.a JOIN b ON a.i = b.i, c AS cc"),
+            ("app.a", "b", "c"),
+        )
+        self.assertEqual(reads("INSERT INTO t TABLE u"), ("u",))
+        self.assertEqual(reads("INSERT INTO t SELECT 1"), ())
+        self.assertIsNone(reads("INSERT INTO t SELECT * FROM generate_series(1, 5)"))
+        self.assertIsNone(reads("INSERT INTO t VALUES (1)"))
+
     def test_with_prefixed_writes(self):
         parsed = recognize(
             "WITH RECURSIVE ids (id) AS NOT MATERIALIZED (SELECT 1), "
@@ -203,6 +219,52 @@ class SetTestCase(RecognizerTestCase):
 
     def test_a_setting_with_no_value_is_unknown(self):
         self.assertUnknown("SET lock_timeout =")
+
+    def test_resets(self):
+        self.assertEqual(
+            self.settings("RESET lock_timeout"),
+            (("reset", "lock_timeout", "DEFAULT"),),
+        )
+        for sql in ("RESET ALL", "DISCARD ALL"):
+            self.assertEqual(self.settings(sql), (("reset", "all", "DEFAULT"),))
+        self.assertUnknown("RESET SESSION AUTHORIZATION")
+        self.assertUnknown("RESET ROLE")
+        self.assertUnknown("DISCARD PLANS")
+
+    def test_rollbacks(self):
+        for sql, dialect in (
+            ("ROLLBACK", PG),
+            ("ROLLBACK WORK", PG),
+            ("ROLLBACK TO SAVEPOINT s", PG),
+            ("ROLLBACK TO s", PG),
+            ("ROLLBACK AND NO CHAIN", PG),
+            ("ROLLBACK WORK AND CHAIN", MYSQL),
+            ("ROLLBACK TRANSACTION t1", MSSQL),
+            ("ROLLBACK TRAN", MSSQL),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(
+                    self.settings(sql, dialect), (("rollback", "all", ""),)
+                )
+        self.assertUnknown("ROLLBACK PREPARED 'tx1'")
+
+    def test_set_config(self):
+        self.assertEqual(
+            self.settings(
+                "SELECT set_config('lock_timeout', '5s', true), "
+                "pg_catalog.set_config('Search_Path', 'app', 'f')"
+            ),
+            (("local", "lock_timeout", "5s"), ("session", "search_path", "app")),
+        )
+        for sql in (
+            "SELECT now()",
+            "SELECT set_config('lock_timeout', '5s')",
+            "SELECT set_config('lock_timeout', $1, false)",
+            "SELECT set_config('lock_timeout', '5s', is_local)",
+            "SELECT set_config('lock_timeout', '5s', false) FROM t",
+        ):
+            with self.subTest(sql):
+                self.assertUnknown(sql)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from sustained.impact.recognizer.cursor import (
     Unrecognized,
     frozen,
 )
+from sustained.impact.recognizer.sources import tables_read
 from sustained.impact.tokens import (
     PUNCT,
     Token,
@@ -136,8 +137,10 @@ class CreateDrop(Cursor):
         ):
             options["as_select"] = True
         # The tail holds storage options, which change nothing about a
-        # table that does not exist yet.
-        self.rest()
+        # table that does not exist yet, and the query of AS SELECT.
+        tail = self.rest()
+        if options["as_select"]:
+            options["reads"] = tables_read(tail)
         return ParsedStatement("create_table", table, options=frozen(options))
 
     def references_in(self, tokens: Sequence[Token]) -> Tuple[str, ...]:

@@ -32,7 +32,7 @@ The statement kinds, and the options each one sets:
 - `alter_table`: actions, plus if_exists, only, algorithm, lock, and
   nocheck (SQL Server WITH NOCHECK)
 - `create_table`: if_not_exists, temporary, references, partition_of,
-  as_select
+  as_select, and reads for `AS SELECT` (`sources.py`)
 - `drop_type`: names
 - `drop_table`, `truncate`, `drop_view`, `optimize_table`,
   `lock_table`, `vacuum`, `analyze`: tables, plus if_exists where the
@@ -41,7 +41,9 @@ The statement kinds, and the options each one sets:
 - `rename_table`: new, renames (every old and new pair)
 - `update`, `delete`: where, limited (a LIMIT or TOP caps the rows)
 - `insert`: source (`values`, `select`, or `default`), rows (the row
-  count of a VALUES list)
+  count of a VALUES list), and reads for a query source: the tables
+  the query reads, or None when it reads rows from something else
+  (`sources.py`)
 - `reindex`: target (`index`, `table`, ..., or on SQLite `database`
   for every index and `any` for a name the text cannot place), name,
   concurrently
@@ -54,8 +56,10 @@ The statement kinds, and the options each one sets:
 - `create_object`, `drop_object`: object, such as `schema`, `sequence`,
   `function`, `procedure`, `extension`, or `domain`
 - `set`: settings, a tuple of (scope, name, value), where scope is
-  `session`, `local`, `global`, `persist`, or `pragma`, and the name is
-  lower case
+  `session`, `local`, `global`, `persist`, `pragma`, `reset`, or
+  `rollback`, and the name is lower case. `RESET`, `DISCARD ALL`,
+  `ROLLBACK`, and `SELECT set_config(...)` read as `set` too; see
+  `session.py`
 
 An ALTER TABLE action's kind is one of `ACTION_KINDS`; the options each
 one sets are named where `alter.py` or `definitions.py` reads it.
@@ -72,6 +76,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable, Dict, Optional, Sequence
 
 from sustained.impact.model import UNKNOWN_KIND, ParsedStatement
+from sustained.impact.recognizer import session
 from sustained.impact.recognizer.alter import AlterTable
 from sustained.impact.recognizer.create_drop import CreateDrop
 from sustained.impact.recognizer.cursor import Unrecognized, frozen
@@ -203,6 +208,10 @@ _STATEMENTS: Dict[str, _Handler] = {
     "EXEC": _Parser.execute,
     "EXECUTE": _Parser.execute,
     "IF": _Parser.if_statement,
+    "RESET": session.reset,
+    "DISCARD": session.discard,
+    "ROLLBACK": session.rollback,
+    "SELECT": session.select,
 }
 
 

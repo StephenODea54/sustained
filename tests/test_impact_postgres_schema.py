@@ -362,6 +362,94 @@ class ProvenNotNullTestCase(unittest.TestCase):
             self.work(self.SET, context=context), (Work.SCAN, "pg.set_not_null")
         )
 
+    NAME = "ALTER TABLE t ALTER COLUMN name SET NOT NULL"
+
+    def test_a_schema_check_the_run_dropped_proves_nothing(self):
+        for steps in (
+            ["ALTER TABLE t DROP CONSTRAINT name_present"],
+            [
+                "ALTER TABLE t RENAME CONSTRAINT name_present TO present",
+                "ALTER TABLE t DROP CONSTRAINT present",
+            ],
+        ):
+            with self.subTest(steps):
+                self.assertEqual(
+                    self.work(*steps, self.NAME, context=FIXTURE_CONTEXT),
+                    (Work.SCAN, "pg.set_not_null"),
+                )
+
+    def test_a_renamed_schema_check_still_proves_it(self):
+        self.assertEqual(
+            self.work(
+                "ALTER TABLE t RENAME CONSTRAINT name_present TO present",
+                "ALTER TABLE t RENAME TO t2",
+                "ALTER TABLE t2 ALTER COLUMN name SET NOT NULL",
+                context=FIXTURE_CONTEXT,
+            ),
+            (Work.CATALOG, "pg.set_not_null.proven"),
+        )
+
+    def test_a_schema_check_follows_its_column_through_renames(self):
+        # The check tests the column now named label, and the column
+        # now named name is the schema's c, which it does not test.
+        steps = [
+            "ALTER TABLE t RENAME COLUMN name TO label",
+            "ALTER TABLE t RENAME COLUMN c TO name",
+        ]
+        self.assertEqual(
+            self.work(*steps, self.NAME, context=FIXTURE_CONTEXT),
+            (Work.SCAN, "pg.set_not_null"),
+        )
+        self.assertEqual(
+            self.work(
+                *steps,
+                "ALTER TABLE t ALTER COLUMN label SET NOT NULL",
+                context=FIXTURE_CONTEXT,
+            ),
+            (Work.CATALOG, "pg.set_not_null.proven"),
+        )
+        self.assertEqual(
+            self.work(
+                "ALTER TABLE t DROP COLUMN name",
+                "ALTER TABLE t ADD COLUMN name text",
+                self.NAME,
+                context=FIXTURE_CONTEXT,
+            ),
+            (Work.SCAN, "pg.set_not_null"),
+        )
+
+    def test_a_table_the_run_made_again_has_none_of_the_schema_checks(self):
+        found = analyze(
+            [
+                "DROP TABLE t",
+                "CREATE TABLE t (id int, name text)",
+                "INSERT INTO t SELECT id, name FROM r",
+                self.NAME,
+            ],
+            PG,
+            FIXTURE_CONTEXT,
+        ).statements[-1]
+        self.assertEqual(found.tables[0].rule, "pg.set_not_null")
+
+    def test_a_check_the_run_added_follows_a_column_rename(self):
+        self.assertEqual(
+            self.work(
+                self.CHECK,
+                "ALTER TABLE t RENAME COLUMN c TO d",
+                "ALTER TABLE t ALTER COLUMN d SET NOT NULL",
+            ),
+            (Work.CATALOG, "pg.set_not_null.proven"),
+        )
+        self.assertEqual(
+            self.work(
+                self.CHECK,
+                "ALTER TABLE t RENAME CONSTRAINT k TO k2",
+                "ALTER TABLE t DROP CONSTRAINT k2",
+                self.SET,
+            ),
+            (Work.SCAN, "pg.set_not_null"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

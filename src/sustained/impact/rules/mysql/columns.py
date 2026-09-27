@@ -117,10 +117,11 @@ def _add_column(facts: Facts, action: Action) -> Change:
     if default.startswith("("):
         volatile = options.get("default_volatility") == "volatile"
         if not mariadb or volatile:
+            function = options.get("default_function")
             what = (
-                "an expression default"
-                if not mariadb
-                else f"the default calls {options.get('default_function')}()"
+                f"the default calls {function}()"
+                if mariadb and function
+                else "an expression default"
             )
             return Change(
                 copy_algorithm(facts),

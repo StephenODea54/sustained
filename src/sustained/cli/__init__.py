@@ -60,7 +60,8 @@ also blocked: a plan that cannot be trusted outranks the rest.
 rehearsal has covered them, and exits 4. `--unrehearsed` applies them
 anyway and records the override on the database. `migrate` with
 `preflight` set to 'refuse' exits 5 when another session has a lock a
-statement of the run would wait for.
+statement of the run would wait for, when a read the preflight needs
+failed, or when a statement is one the analysis cannot read.
 
 `impact` prints the locks each statement of the run would take, what
 they block, and the work each does; see sustained.impact. It never

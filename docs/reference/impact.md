@@ -168,16 +168,18 @@ PreflightCheck(mode, older_than=60.0)
 ```
 {: .sig #up-preflight}
 
-With `preflight="warn"` or `"refuse"`, or a `PreflightCheck` with one of them as its `mode`, `up()` reads the preflight of the run's statements after the guards pass and before any migration applies, and again for the generated migration with `models`. `warn` prints each blocker, each transaction open `older_than` seconds or longer, 60 for a plain mode, and each read that failed on stderr as `preflight: <line>`, once per run. `refuse` raises `PreflightBlocked` when there is a blocker, and prints the other lines otherwise. Any other mode raises `ValueError` before the run starts. `PreflightCheck` lives in `sustained.migrations`, and raises `ValueError` for an `older_than` that is negative, NaN, or not a number. On a dialect without a preflight, SQLite and DuckDB among them, `up()` with a preflight raises `DialectError` before the run starts, as `impact(live=True)` does.
+With `preflight="warn"` or `"refuse"`, or a `PreflightCheck` with one of them as its `mode`, `up()` reads the preflight of the run's statements after the guards pass and before any migration applies, and again for the generated migration with `models`. `warn` prints each blocker, each transaction open `older_than` seconds or longer, 60 for a plain mode, each read that failed, and each statement the preflight cannot check on stderr as `preflight: <line>`, once per run. `refuse` raises `PreflightBlocked` when the `Preflight` is not `clear`: when there is a blocker, when a read in `needs` failed, or when a statement is in `unread`. It prints the transaction lines otherwise. Any other mode raises `ValueError` before the run starts. `PreflightCheck` lives in `sustained.migrations`, and raises `ValueError` for an `older_than` that is negative, NaN, or not a number. On a dialect without a preflight, SQLite and DuckDB among them, `up()` with a preflight raises `DialectError` before the run starts, as `impact(live=True)` does.
 
-`PreflightBlocked` lives in `sustained.exceptions` and in `sustained`. It is a `SustainedError` whose `preflight` attribute is the `Preflight` that stopped the run, and whose message lists each blocker's line.
+`PreflightBlocked` lives in `sustained.exceptions` and in `sustained`. It is a `SustainedError` whose `preflight` attribute is the `Preflight` that stopped the run, and whose message lists each blocker's line, the reads in `missing`, and each unread statement's line.
 
 ```python
-Preflight(profile, blockers, transactions, older_than, read=frozenset())
+Preflight(profile, blockers, transactions, older_than, read=frozenset(), needs=frozenset(), unread=())
+Preflight.missing -> tuple[str, ...]
+Preflight.clear -> bool
 ```
 {: .sig}
 
-`profile` is the rule profile the server reads as, such as `'postgres'` or `'mariadb'`. `blockers` is a tuple of `Blocker`, in run order. `transactions` is a tuple of `LiveSession`: the other transactions open at least `older_than` seconds whose sessions are not blockers, oldest first. `read` lists `locks` and `transactions` for the reads that came from the server.
+`profile` is the rule profile the server reads as, such as `'postgres'` or `'mariadb'`. `blockers` is a tuple of `Blocker`, in run order. `transactions` is a tuple of `LiveSession`: the other transactions open at least `older_than` seconds whose sessions are not blockers, oldest first. `read` lists `locks` and `transactions` for the reads that came from the server. `needs` names the reads the blockers of these statements come from: `locks` when a statement takes a table lock, and on PostgreSQL `transactions` as well when a statement is `CREATE INDEX CONCURRENTLY` or `REINDEX CONCURRENTLY`, which wait for every transaction with a snapshot. `unread` is a tuple of the statements whose impact has confidence `unknown`, in run order: they name no table, so their locks are not checked. `missing` is the reads in `needs` that are not in `read`, in name order. `clear` is true when there is no blocker, nothing is missing, and nothing is unread. `preflight_plan()` fills in `needs` and `unread`.
 
 ```python
 Blocker(statement, table, lock, held, granted, session)
@@ -252,6 +254,7 @@ The analysis itself raises these findings:
 | --- | --- | --- |
 | `impact.unknown` | `info` | The recognizer could not read the statement. The message gives the reason. |
 | `impact.intent_mismatch` | `warn` | A generated statement's text reads as something other than its intent. The analysis follows the text. |
+| `impact.from_intent` | `info` | The recognizer could not read a generated statement, so the analysis follows its intent. The message names each fact the intent does not give, which takes its worst case, and the statement's confidence is then at most `likely`. |
 | `impact.mismatch` | `warn` | A traced rehearsal saw the server take another lock than the rules predicted, copy a file the rules did not predict, or copy none where they predicted a rewrite or an index build. On MySQL and MariaDB: the server accepted another clause than the rules predicted, or its clause copied the table where they predicted none, or nothing where they predicted a copy. |
 | `impact.assumed_profile` | `info` | No context was given on a dialect with more than one profile, so the first was assumed. |
 | `pg.lock_timeout` | `warn` | A lock that blocks writes or more waits with no `lock_timeout` in scope, from a `SET` earlier in the run or from the connection's settings. |
@@ -360,9 +363,10 @@ flagged_line(impact) -> str
 render_preflight(preflight) -> str
 blocker_line(blocker) -> str
 transaction_line(session) -> str
+unread_line(statement) -> str
 preflight_summary(preflight) -> str
 preflight_data(preflight) -> dict
 ```
 {: .sig #render_preflight}
 
-`render_preflight()` returns the preflight as `sustained impact --live` prints it: a `preflight` line, each blocker's line and each transaction's line, each followed by the session's statement when it is known, and the summary. `blocker_line()` renders one blocker as `<statement> would queue behind <label> (<state> for <age>, user=..., app=..., has <lock> on <table>)`, with `waits for` in place of `has` for a lock not yet granted, and `would wait for the transaction of <label> to end` for a blocker with no `held`. `transaction_line()` renders one transaction as `<label> has had a transaction open for <age> (<state>, user=..., app=...)`. `preflight_summary()` counts both and names what was read and what was not. `preflight_data()` returns the preflight as plain data with the keys `profile`, `older_than`, `read`, `blockers`, and `transactions`; each blocker has `statement`, `table`, `lock`, `held`, `granted`, and `session`, and each session has `id`, `label`, `user`, `application`, `state`, `transaction_seconds`, and `query`.
+`render_preflight()` returns the preflight as `sustained impact --live` prints it: a `preflight` line, each blocker's line and each transaction's line, each followed by the session's statement when it is known, each unread statement's line, and the summary. `blocker_line()` renders one blocker as `<statement> would queue behind <label> (<state> for <age>, user=..., app=..., has <lock> on <table>)`, with `waits for` in place of `has` for a lock not yet granted, and `would wait for the transaction of <label> to end` for a blocker with no `held`. `transaction_line()` renders one transaction as `<label> has had a transaction open for <age> (<state>, user=..., app=...)`. `unread_line()` renders one statement of `unread` as `<statement> is not read, so the preflight cannot check the locks it takes`. `preflight_summary()` counts both, names what was read and what was not, and counts the unread statements after `Not checked:` when there are any. `preflight_data()` returns the preflight as plain data with the keys `profile`, `older_than`, `read`, `needs` (a sorted list), `unread` (a list of statements), `blockers`, and `transactions`; each blocker has `statement`, `table`, `lock`, `held`, `granted`, and `session`, and each session has `id`, `label`, `user`, `application`, `state`, `transaction_seconds`, and `query`.

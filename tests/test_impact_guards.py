@@ -135,9 +135,29 @@ class NoUnknownImpactTestCase(unittest.TestCase):
     def test_blocks_a_statement_the_analysis_cannot_read(self):
         self.assertEqual(flagged(no_unknown_impact(), [GRANT, ADD]), [GRANT])
 
-    def test_the_other_impact_rules_pass_it(self):
-        for guard in (max_blocking("nothing"), no_rewrite(), lock_timeout_required()):
-            self.assertEqual(flagged(guard, [GRANT]), [])
+    def test_every_impact_rule_blocks_an_unknown_statement(self):
+        # A DO block, a data-modifying CTE, and two statements in one
+        # string name no table, and each may lock or rewrite any table.
+        unknown = [
+            "DO $$ BEGIN ALTER TABLE orders ALTER COLUMN note TYPE int; END $$",
+            "WITH moved AS (DELETE FROM orders RETURNING *) "
+            "INSERT INTO archive SELECT * FROM moved",
+            "ALTER TABLE orders ADD COLUMN a int; "
+            "ALTER TABLE orders ALTER COLUMN note TYPE int",
+            GRANT,
+        ]
+        for guard in (
+            max_blocking("reads_and_writes"),
+            max_blocking("nothing", over_rows=10**9, assume_small=True),
+            no_rewrite(over_rows=10**9, assume_small=True),
+            lock_timeout_required(),
+            no_unknown_impact(),
+        ):
+            with self.subTest(guard=guard):
+                self.assertEqual(flagged(guard, unknown), unknown)
+
+    def test_a_statement_read_to_its_end_is_not_unknown(self):
+        self.assertEqual(flagged(no_unknown_impact(), [TIMEOUT, ADD]), [])
 
 
 class ImpactRuleTestCase(unittest.TestCase):

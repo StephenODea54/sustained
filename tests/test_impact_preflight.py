@@ -45,6 +45,7 @@ from sustained.impact.report import (
     render_preflight,
     report_data,
     transaction_line,
+    unread_line,
 )
 from sustained.impact.rules import postgres
 from sustained.impact.rules.mssql import preflight as mssql_preflight
@@ -64,6 +65,7 @@ INDEX = "CREATE INDEX ix_orders_customer ON orders (customer_id)"
 CONCURRENT = "CREATE INDEX CONCURRENTLY ix_orders_note ON orders (note)"
 ADD = "ALTER TABLE orders ADD COLUMN note text"
 UPDATE = "UPDATE orders SET note = 'x'"
+UNREAD = "DO $$ BEGIN ALTER TABLE orders ADD COLUMN c int; END $$"
 
 # pid, gid, schema, table, visible, mode, granted, user, app, state,
 # transaction age, query
@@ -451,6 +453,59 @@ class MssqlPreflightTestCase(unittest.TestCase):
         self.assertEqual(found.read, frozenset())
 
 
+class NeededReadsTestCase(unittest.TestCase):
+    """What preflight_plan() adds to each profile's read."""
+
+    def test_a_table_lock_needs_the_locks_read(self):
+        _, found = drive(
+            preflight_plan(PG, impacts([ADD]), 60.0),
+            [RuntimeError("permission denied"), [], []],
+        )
+        self.assertEqual(found.needs, {"locks"})
+        self.assertEqual(found.missing, ("locks",))
+        self.assertFalse(found.clear)
+
+    def test_a_concurrent_build_needs_the_transactions_read_too(self):
+        denied = RuntimeError("permission denied")
+        _, found = drive(
+            preflight_plan(PG, impacts([CONCURRENT]), 60.0), [[], denied, denied]
+        )
+        self.assertEqual(found.needs, {"locks", "transactions"})
+        self.assertEqual(found.missing, ("transactions",))
+        # Any other statement is checked from the locks read alone.
+        _, found = drive(preflight_plan(PG, impacts([ADD]), 60.0), [[], denied, denied])
+        self.assertEqual(found.missing, ())
+        self.assertTrue(found.clear)
+
+    def test_a_mariadb_server_without_a_lock_source_is_missing_locks(self):
+        _, found = drive(
+            preflight_plan(Dialects.MYSQL, impacts(["DROP TABLE orders"]), 60.0),
+            [
+                [("10.6.18-MariaDB", "shop")],
+                RuntimeError("no performance_schema"),
+                [("0", "YES")],
+                RuntimeError("Unknown table 'METADATA_LOCK_INFO'"),
+                [],
+            ],
+        )
+        self.assertEqual(found.read, {"transactions"})
+        self.assertEqual(found.missing, ("locks",))
+
+    def test_an_unknown_statement_is_unread(self):
+        _, found = drive(preflight_plan(PG, impacts([UNREAD, ADD]), 60.0), [[], [], []])
+        self.assertEqual(found.unread, (UNREAD,))
+        self.assertEqual(found.missing, ())
+        self.assertFalse(found.clear)
+
+    def test_statements_that_lock_no_table_need_no_read(self):
+        _, found = drive(
+            preflight_plan(PG, impacts(["SET lock_timeout = '5s'"]), 60.0),
+            [RuntimeError("denied"), RuntimeError("denied"), RuntimeError("denied")],
+        )
+        self.assertEqual(found.needs, frozenset())
+        self.assertTrue(found.clear)
+
+
 BLOCKED = Preflight(
     "postgres",
     (
@@ -533,8 +588,51 @@ class PreflightReportTestCase(unittest.TestCase):
             "Not read: locks, transactions",
         )
 
+    def test_an_unread_statement_is_listed(self):
+        unread = Preflight("postgres", (), (), 60.0, frozenset(), unread=(UNREAD,))
+        self.assertEqual(
+            unread_line(UNREAD),
+            f"{UNREAD} is not read, so the preflight cannot check the locks it takes",
+        )
+        self.assertEqual(
+            render_preflight(unread).splitlines()[1:],
+            [
+                f"  {unread_line(UNREAD)}",
+                "  0 blockers, 0 transactions open 60s or longer. Read: nothing. "
+                "Not read: locks, transactions. Not checked: 1 statement",
+            ],
+        )
+        self.assertEqual(preflight_data(unread)["unread"], [UNREAD])
+
+    def test_the_blocked_message_names_each_reason(self):
+        self.assertEqual(
+            str(PreflightBlocked(BLOCKED)).splitlines(),
+            [
+                "Other sessions have locks this run would wait for:",
+                f"  {blocker_line(BLOCKED.blockers[0])}",
+                "End those transactions, or run again once they finish.",
+            ],
+        )
+        blind = Preflight(
+            "postgres", (), (), 60.0, frozenset(), frozenset({"locks"}), (UNREAD,)
+        )
+        self.assertEqual(
+            str(PreflightBlocked(blind)).splitlines(),
+            [
+                "The preflight could not read locks, so it cannot see the sessions "
+                "this run would wait for. Make that read work on the server, or "
+                "run with preflight='warn'.",
+                "The preflight cannot check these statements:",
+                f"  {unread_line(UNREAD)}",
+                "Split them into statements the analysis reads, or run with "
+                "preflight='warn'.",
+            ],
+        )
+
     def test_preflight_data(self):
         data = preflight_data(BLOCKED)
+        self.assertEqual(data["needs"], [])
+        self.assertEqual(data["unread"], [])
         self.assertEqual(data["read"], ["locks", "transactions"])
         self.assertEqual(data["older_than"], 60.0)
         (blocker,) = data["blockers"]
@@ -713,13 +811,36 @@ class MigratorPreflightTestCase(unittest.TestCase):
         self.assertIn(ADD, connection.log)
         self.assertNotIn("preflight:", stderr.getvalue())
 
-    def test_up_names_a_read_that_failed(self):
+    def test_up_refuses_when_the_locks_read_fails(self):
+        connection = ScriptedConnection(refuse="pg_locks")
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(PreflightBlocked) as caught:
+                Migrator(connection, run(), dialect=PG).up(preflight="refuse")
+        self.assertNotIn(ADD, connection.log)
+        self.assertEqual(caught.exception.preflight.missing, ("locks",))
+        self.assertIn("could not read locks", str(caught.exception))
+
+    def test_up_warns_when_the_locks_read_fails(self):
         connection = ScriptedConnection(refuse="pg_locks")
         stderr = io.StringIO()
         with redirect_stderr(stderr):
-            Migrator(connection, run(), dialect=PG).up(preflight="refuse")
+            Migrator(connection, run(), dialect=PG).up(preflight="warn")
         self.assertIn(ADD, connection.log)
         self.assertIn("preflight: could not read locks", stderr.getvalue())
+
+    def test_up_refuses_a_statement_it_cannot_check(self):
+        connection = ScriptedConnection(busy=False)
+        migrations = [Migration("001_orders", up=[UNREAD])]
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(PreflightBlocked) as caught:
+                Migrator(connection, migrations, dialect=PG).up(preflight="refuse")
+        self.assertNotIn(UNREAD, connection.log)
+        self.assertEqual(caught.exception.preflight.unread, (UNREAD,))
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            Migrator(connection, migrations, dialect=PG).up(preflight="warn")
+        self.assertIn(UNREAD, connection.log)
+        self.assertIn(f"preflight: {unread_line(UNREAD)}", stderr.getvalue())
 
     def test_up_without_a_preflight_reads_no_locks(self):
         connection = ScriptedConnection()

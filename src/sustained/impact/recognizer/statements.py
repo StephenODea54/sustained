@@ -19,6 +19,7 @@ from sustained.impact.recognizer.cursor import (
     Unrecognized,
     frozen,
 )
+from sustained.impact.recognizer.sources import tables_read
 from sustained.impact.tokens import (
     PUNCT,
     WORD,
@@ -108,6 +109,8 @@ class Statements(Cursor):
             rest and rest[0].text == "("
         ):
             raise Unrecognized("expected VALUES or SELECT in INSERT")
+        else:
+            options["reads"] = tables_read(rest)
         return ParsedStatement("insert", table, options=frozen(options))
 
     def select_group_follows(self) -> bool:

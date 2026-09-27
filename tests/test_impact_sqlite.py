@@ -249,6 +249,75 @@ class RebuildTestCase(unittest.TestCase):
         )
 
 
+class CopyTestCase(unittest.TestCase):
+    """CREATE TABLE ... AS SELECT, and INSERT ... SELECT into a new table."""
+
+    SIZED = context(items=(5_000_000, 1 << 31), tags=(10, 4096))
+
+    def run_of(self, statements, ctx=SIZED):
+        return analyze(
+            [MigrationStatement(sql, "001", True) for sql in statements], SQLITE, ctx
+        ).statements
+
+    def test_create_table_as_select_rewrites_each_table_it_reads(self):
+        (copy,) = self.run_of(
+            ["CREATE TABLE n AS SELECT * FROM items JOIN tags USING (id)"]
+        )
+        self.assertEqual(
+            [(t.table, t.work, t.rule, t.rows) for t in copy.tables],
+            [
+                ("items", Work.REWRITE, "sqlite.copy", 5_000_000),
+                ("tags", Work.REWRITE, "sqlite.copy", 10),
+            ],
+        )
+        self.assertEqual(copy.confidence, Confidence.KNOWN)
+        self.assertEqual(str(copy.severity), "danger")
+        self.assertIn(
+            "the copy reads every row of items and writes it into n",
+            copy.findings[0].message,
+        )
+
+    def test_a_hand_written_rebuild_reports_the_copy(self):
+        statements = self.run_of(
+            [
+                "CREATE TABLE items_new (id INTEGER PRIMARY KEY, n INTEGER)",
+                "INSERT INTO items_new (id, n) SELECT id, n FROM items",
+                "DROP TABLE items",
+                "ALTER TABLE items_new RENAME TO items",
+                "CREATE INDEX ix_n ON items (n)",
+            ]
+        )
+        copy, rename, index = statements[1], statements[3], statements[4]
+        self.assertEqual(
+            [(t.table, t.work, t.rule) for t in copy.tables],
+            [("items", Work.REWRITE, "sqlite.copy")],
+        )
+        # No running code names the new table, so its rename warns of nothing.
+        self.assertNotIn("sqlite.rename", rules(rename))
+        (built,) = index.tables
+        self.assertEqual((built.work, built.rows), (Work.INDEX_BUILD, 5_000_000))
+
+    def test_rows_from_something_else_lock_the_database(self):
+        (copy,) = self.run_of(
+            ["CREATE TABLE n AS SELECT value FROM json_each('[1, 2]')"]
+        )
+        (only,) = copy.tables
+        self.assertEqual((only.table, only.work), (DATABASE, Work.REWRITE))
+        self.assertEqual(copy.confidence, Confidence.LIKELY)
+
+    def test_a_query_that_reads_no_table_is_a_schema_change(self):
+        (copy,) = self.run_of(["CREATE TABLE n AS SELECT 1 AS id"])
+        self.assertEqual(copy.tables[0].rule, "sqlite.schema_change")
+        _, insert = self.run_of(["CREATE TABLE n (id int)", "INSERT INTO n SELECT 1"])
+        self.assertEqual(insert.tables[0].rule, "sqlite.write_rows")
+
+    def test_an_insert_into_a_live_table_writes_rows(self):
+        (insert,) = self.run_of(["INSERT INTO tags SELECT * FROM items"])
+        self.assertEqual(
+            [(t.table, t.rule) for t in insert.tables], [("tags", "sqlite.write_rows")]
+        )
+
+
 class WindowTestCase(unittest.TestCase):
     def test_locks_on_two_tables_are_one_window(self):
         run = [

@@ -98,12 +98,15 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
             rewrite_reason = (
                 f"the default calls {function}(), which no rule knows, so it "
                 "counts as volatile: a new value for each row"
+                if function
+                else "the default was not read, so it counts as volatile: a new "
+                "value for each row"
             )
     effects: List[Effect] = []
     if rewrite_reason is not None:
         remedy: Tuple[str, ...] = ()
         default = options.get("default")
-        if volatility == "volatile" and default:
+        if volatility == "volatile" and default and function and options.get("type"):
             remedy = (
                 f"ALTER TABLE {ident(table)} ADD COLUMN {ident(column)} "
                 f"{options.get('type')}",
@@ -204,15 +207,29 @@ def _constraint_columns(
 def _proven_not_null(facts: Facts, table: str, column: str) -> bool:
     """
     Whether a valid check of the form `column IS NOT NULL`, which the
-    run added or the schema read holds, proves the column has no NULL.
+    run added or the schema read reports, proves the column has no NULL.
     pg_get_constraintdef() writes NOT VALID after a check not yet
-    validated, so a check read with it proves nothing.
+    validated, so a check read with it proves nothing. A schema check
+    the run dropped proves nothing, and the run's renames of checks and
+    columns decide which column a schema check tests now. A table the
+    run created has none of the schema's checks.
     """
-    if facts.state.proves_not_null(table, column):
+    state = facts.state
+    if state.proves_not_null(table, column):
         return True
-    found = facts.context.table(facts.state.original(table))
-    if found is None:
+    if state.created_in_run(table):
         return False
+    found = facts.context.table(state.original(table))
+    schema = state.schema_column(table, column)
+    if found is None or schema is None:
+        return False
+    for name, expression in found.checks.items():
+        if not state.schema_check_kept(table, name):
+            continue
+        tested = not_null_column(tokenize(expression, Dialects.POSTGRES))
+        if tested is not None and tested.lower() == schema:
+            return True
+    return False
     for expression in found.checks.values():
         tested = not_null_column(tokenize(expression, Dialects.POSTGRES))
         if tested is not None and tested.lower() == column.lower():

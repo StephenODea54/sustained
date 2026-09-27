@@ -522,7 +522,7 @@ $ sustained script --annotate       # the same, with each statement's impact abo
 $ sustained baseline 001_create_users
 ```
 
-Commands exit 0 on success and 1 on failure, with errors on stderr, so they slot into deploy pipelines. `plan` exits 2 when work is waiting, `plan` and `migrate` exit 3 when a [guard](#guards) blocked a statement, and `migrate` exits 4 when a run that removes data has no rehearsal row. `migrate --preflight refuse` exits 5 when another session has a lock the run would wait for; see [Live preflight](/impact#live-preflight).
+Commands exit 0 on success and 1 on failure, with errors on stderr, so they slot into deploy pipelines. `plan` exits 2 when work is waiting, `plan` and `migrate` exit 3 when a [guard](#guards) blocked a statement, and `migrate` exits 4 when a run that removes data has no rehearsal row. `migrate --preflight refuse` exits 5 when another session has a lock the run would wait for, or when the preflight cannot see or check what the run would wait for; see [Live preflight](/impact#live-preflight).
 
 When the config module names `models`, `rehearse` and `migrate` use them: `rehearse` proves the generated migration alongside the pending ones, and `migrate` applies it after them. A targeted `migrate` applies the registered migrations only, since the generated migration always runs last.
 

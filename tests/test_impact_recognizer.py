@@ -10,6 +10,7 @@ from sustained.impact.recognizer import (
     classify_default,
     recognize,
 )
+from sustained.impact.recognizer.sources import tables_read
 from sustained.impact.tokens import tokenize
 
 PG = Dialects.POSTGRES
@@ -145,6 +146,17 @@ class CreateAndDropTestCase(RecognizerTestCase):
                 "as_select"
             ]
         )
+        self.assertEqual(
+            recognize("CREATE TABLE t AS SELECT * FROM u JOIN v USING (i)").options[
+                "reads"
+            ],
+            ("u", "v"),
+        )
+        self.assertEqual(
+            recognize("CREATE TABLE t AS TABLE u WITH NO DATA").options["reads"],
+            ("u",),
+        )
+        self.assertNotIn("reads", recognize("CREATE TABLE t (a int)").options)
         partition = recognize(
             "CREATE TABLE p_2026 PARTITION OF p FOR VALUES FROM (1) TO (2)"
         )
@@ -342,6 +354,50 @@ class MssqlStatementsTestCase(RecognizerTestCase):
         sampled = recognize("UPDATE STATISTICS t ix WITH SAMPLE 10 PERCENT", MSSQL)
         self.assertFalse(sampled.options["fullscan"])
         self.assertFalse(recognize("UPDATE STATISTICS t", MSSQL).options["fullscan"])
+
+
+class TablesReadTestCase(unittest.TestCase):
+    def reads(self, sql):
+        return tables_read(list(tokenize(sql, PG)))
+
+    def test_from_lists_joins_and_subqueries(self):
+        self.assertEqual(
+            self.reads(
+                "SELECT x FROM a JOIN b ON a.i = b.i, c AS cc, ONLY d dd "
+                "WHERE y IN (SELECT z FROM e) GROUP BY a, b"
+            ),
+            ("a", "b", "c", "d", "e"),
+        )
+        self.assertEqual(self.reads("SELECT * FROM (SELECT * FROM a) s, b"), ("a", "b"))
+        self.assertEqual(self.reads("SELECT (SELECT max(i) FROM b) FROM a"), ("b", "a"))
+        self.assertEqual(self.reads("TABLE app.a"), ("app.a",))
+
+    def test_a_cte_is_not_a_table(self):
+        self.assertEqual(
+            self.reads("WITH w (i) AS (SELECT i FROM a) SELECT * FROM w"), ("a",)
+        )
+
+    def test_the_from_of_a_function_names_no_table(self):
+        self.assertEqual(
+            self.reads("SELECT extract(year FROM c), substring(n FROM 2) FROM a"),
+            ("a",),
+        )
+
+    def test_no_table(self):
+        self.assertEqual(self.reads("SELECT 1"), ())
+        self.assertEqual(self.reads("VALUES (1)"), ())
+
+    def test_rows_from_something_else(self):
+        for sql in (
+            "SELECT * FROM generate_series(1, 3)",
+            "SELECT * FROM (VALUES (1)) v",
+            "SELECT * FROM a, LATERAL unnest(a.x)",
+            "SELECT * FROM (a JOIN b ON true)",
+            "SELECT * FROM",
+            "TABLE",
+        ):
+            with self.subTest(sql):
+                self.assertIsNone(self.reads(sql))
 
 
 class UnknownTestCase(RecognizerTestCase):

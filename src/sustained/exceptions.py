@@ -76,23 +76,37 @@ class PreflightBlocked(SustainedError):
     """
     Raised by up(preflight='refuse') when another session has a table
     lock, or has asked for one, that a statement of the run would wait
-    for. `preflight` is the whole read. Nothing of the run had applied
-    when it was raised, except the registered migrations of a run with
-    models when the generated migration is the one that would wait.
+    for; when a read the blockers come from failed, so the preflight
+    could not see them; or when a statement is one the analysis cannot
+    read, whose locks the preflight cannot check. `preflight` is the
+    whole read. Nothing of the run had applied when it was raised,
+    except the registered migrations of a run with models when the
+    generated migration is the one that would wait.
     """
 
     def __init__(self, preflight: "Preflight") -> None:
-        from sustained.impact.report import blocker_line
+        from sustained.impact.report import blocker_line, unread_line
 
         self.preflight = preflight
-        lines = [f"  {blocker_line(b)}" for b in preflight.blockers]
-        super().__init__(
-            "\n".join(
-                ["Other sessions have locks this run would wait for:"]
-                + lines
-                + ["End those transactions, or run again once they finish."]
+        lines: List[str] = []
+        if preflight.blockers:
+            lines.append("Other sessions have locks this run would wait for:")
+            lines.extend(f"  {blocker_line(b)}" for b in preflight.blockers)
+            lines.append("End those transactions, or run again once they finish.")
+        if preflight.missing:
+            lines.append(
+                f"The preflight could not read {' or '.join(preflight.missing)}, "
+                "so it cannot see the sessions this run would wait for. Make "
+                "that read work on the server, or run with preflight='warn'."
             )
-        )
+        if preflight.unread:
+            lines.append("The preflight cannot check these statements:")
+            lines.extend(f"  {unread_line(s)}" for s in preflight.unread)
+            lines.append(
+                "Split them into statements the analysis reads, or run with "
+                "preflight='warn'."
+            )
+        super().__init__("\n".join(lines))
 
 
 class MigrationError(SustainedError):

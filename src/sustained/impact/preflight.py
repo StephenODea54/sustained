@@ -22,7 +22,9 @@ Each profile with a preflight sets `Profile.preflight`, a read plan that
 yields SQL and takes rows back, like the context read, so either
 migrator runs it and a failed read leaves the transaction usable. A read
 that fails, for example for lack of a privilege, is left out of `read`,
-and its sessions are not reported. PostgreSQL, MySQL, MariaDB, and SQL
+and its sessions are not reported, so a caller that refuses to run
+past a blocker also refuses when a read in `needs` is missing, or when
+a statement is in `unread`. PostgreSQL, MySQL, MariaDB, and SQL
 Server have one; SQLite and DuckDB do not, since neither has other
 sessions to wait behind in the same way.
 """
@@ -106,6 +108,14 @@ class Preflight(NamedTuple):
     oldest first. `read` names what came from the server: `locks` for
     the other sessions' table locks, and `transactions` for the open
     transactions. `profile` is the rule profile the server reads as.
+
+    `needs` names the reads the blockers come from for these
+    statements: `locks` when a statement takes a table lock, and on
+    PostgreSQL `transactions` as well when a statement waits for every
+    transaction with a snapshot. A read in `needs` and not in `read`
+    leaves blockers the preflight could not see; `missing` names them.
+    `unread` lists the statements whose impact has confidence
+    `unknown`, whose locks the preflight cannot check, in run order.
     """
 
     profile: str
@@ -113,6 +123,22 @@ class Preflight(NamedTuple):
     transactions: Tuple[LiveSession, ...]
     older_than: float
     read: FrozenSet[str] = frozenset()
+    needs: FrozenSet[str] = frozenset()
+    unread: Tuple[str, ...] = ()
+
+    @property
+    def missing(self) -> Tuple[str, ...]:
+        """The reads the blockers come from that failed, in name order."""
+        return tuple(sorted(self.needs - self.read))
+
+    @property
+    def clear(self) -> bool:
+        """
+        Whether the read shows nothing the run would wait behind: no
+        blocker, no read it needs missing, and no statement it cannot
+        check.
+        """
+        return not (self.blockers or self.missing or self.unread)
 
 
 PreflightPlan = Generator[str, Rows, Preflight]
@@ -144,13 +170,32 @@ class Granted(NamedTuple):
 
 
 def planned(impacts: Sequence["StatementImpact"]) -> List[Planned]:
-    """Every table lock the statements take, in run order."""
+    """
+    Every table lock the statements take, in run order. A statement
+    with confidence `unknown` names no lock here; `unplanned()` lists
+    it.
+    """
     return [
         Planned(impact.statement, table.table, table.lock, table.rule)
         for impact in impacts
         for table in impact.tables
         if table.lock is not None
     ]
+
+
+def unplanned(impacts: Sequence["StatementImpact"]) -> Tuple[str, ...]:
+    """
+    The statements whose impact has confidence `unknown`, in run order:
+    the analysis cannot say which tables they lock, so the preflight
+    cannot check them.
+    """
+    from sustained.impact.model import Confidence
+
+    return tuple(
+        impact.statement
+        for impact in impacts
+        if impact.confidence is Confidence.UNKNOWN
+    )
 
 
 def names(schema: str, table: str, bare: bool) -> FrozenSet[str]:
@@ -270,9 +315,10 @@ def preflight_plan(
     older_than: float = OLDER_THAN,
 ) -> PreflightPlan:
     """
-    The dialect's preflight read for the statements' impacts. Raises
-    ValueError for a dialect that has no preflight, and for an
-    `older_than` checked_older_than() refuses.
+    The dialect's preflight read for the statements' impacts, with
+    `needs` and `unread` filled in. Raises ValueError for a dialect
+    that has no preflight, and for an `older_than` checked_older_than()
+    refuses.
     """
     from sustained.impact.rules import engine, profile_for
 
@@ -280,7 +326,18 @@ def preflight_plan(
     profile = profile_for(dialect)
     if profile is None or profile.preflight is None:
         raise ValueError(f"The live preflight does not cover {engine(dialect)}.")
-    return profile.preflight(impacts, seconds)
+    return _completed(profile.preflight(impacts, seconds), impacts)
+
+
+def _completed(
+    plan: PreflightPlan, impacts: Sequence["StatementImpact"]
+) -> PreflightPlan:
+    """The profile's read, then the reads it needs and the unread statements."""
+    found = yield from plan
+    needs = set(found.needs)
+    if planned(impacts):
+        needs.add("locks")
+    return found._replace(needs=frozenset(needs), unread=unplanned(impacts))
 
 
 def _impacts(

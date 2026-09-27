@@ -420,32 +420,38 @@ def check_preflight(
 ) -> Core[None]:
     """
     Reads what the statements would wait behind on the live server, for
-    up(preflight=...). With `refuse`, a blocker raises PreflightBlocked.
-    Otherwise each blocker, each transaction open the check's
-    `older_than` seconds or longer, and each read that failed prints on
-    stderr, once per run: `shown` collects the lines already printed. A
-    dialect without a preflight, or statements without impact, read
-    nothing.
+    up(preflight=...). With `refuse`, PreflightBlocked is raised for a
+    blocker, for a read the blockers come from that failed, and for a
+    statement the analysis cannot read, whose locks the preflight cannot
+    check. Otherwise each blocker, each transaction open the check's
+    `older_than` seconds or longer, each read that failed, and each
+    statement the preflight cannot check prints on stderr, once per run:
+    `shown` collects the lines already printed. A dialect without a
+    preflight reads nothing.
     """
     from sustained.exceptions import PreflightBlocked
     from sustained.impact.preflight import covered, preflight_plan
-    from sustained.impact.report import blocker_line, transaction_line
+    from sustained.impact.report import blocker_line, transaction_line, unread_line
 
-    if check is None or not covered(m._dialect):
+    if check is None or not covered(m._dialect) or not statements:
         return
     impacts = [s.impact for s in statements if s.impact is not None]
-    if not impacts:
-        return
     found: "Preflight" = yield ReadCatalog(
         preflight_plan(m._dialect, impacts, check.older_than)
     )
-    if check.mode == "refuse" and found.blockers:
+    # A statement that reached the check without an impact is one the
+    # preflight cannot check either.
+    found = found._replace(
+        unread=found.unread + tuple(str(s) for s in statements if s.impact is None)
+    )
+    if check.mode == "refuse" and not found.clear:
         raise PreflightBlocked(found)
     lines = [blocker_line(b) for b in found.blockers]
     lines.extend(transaction_line(s) for s in found.transactions)
     missing = sorted({"locks", "transactions"} - found.read)
     if missing:
         lines.append(f"could not read {' or '.join(missing)}")
+    lines.extend(unread_line(statement) for statement in found.unread)
     for line in lines:
         if line not in shown:
             shown.add(line)

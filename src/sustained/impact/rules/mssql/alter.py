@@ -119,7 +119,13 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
     if not fills:
         return Outcome((_effect(ADD_COLUMN, table, Work.CATALOG),))
     if options.get("default_volatility") == "volatile":
-        function = options.get("default_function") or str(default)
+        function = options.get("default_function")
+        gives = (
+            f"{function} gives each row its own value"
+            if function
+            else "the default was not read, so it counts as giving each row its "
+            "own value"
+        )
         confidence = (
             Confidence.KNOWN if options.get("default_certain") else Confidence.LIKELY
         )
@@ -130,8 +136,8 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
                     table,
                     Work.REWRITE,
                     confidence,
-                    message=f"{function} gives each row its own value, so adding the "
-                    f"column writes every row of {table}",
+                    message=f"{gives}, so adding the column writes every row of "
+                    f"{table}",
                     remedy=(
                         f"add the column as NULL without a default, backfill {table} "
                         "in batches, then make it NOT NULL",

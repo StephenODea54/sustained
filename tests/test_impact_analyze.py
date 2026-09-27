@@ -283,6 +283,259 @@ class RunStateTestCase(unittest.TestCase):
         self.assertEqual(state.settings["foreign_key_checks"], "0")
 
 
+class FilledTableTestCase(unittest.TestCase):
+    """Tables the run creates with IF NOT EXISTS, or fills from a query."""
+
+    def index(self, statements, context=None):
+        """The table impact of a CREATE INDEX that ends the run."""
+        report = analyze(
+            [m(sql) for sql in statements] + [m("CREATE INDEX ix ON x (id)")],
+            PG,
+            context,
+        )
+        (found,) = report.statements[-1].tables
+        return found
+
+    def test_if_not_exists_on_a_table_the_context_reads_creates_nothing(self):
+        found = self.index(
+            ["CREATE TABLE IF NOT EXISTS x (id int)"],
+            sized(5_000_000, x=TableStats(5_000_000, 10**9)),
+        )
+        self.assertEqual((found.work, found.rows), (Work.INDEX_BUILD, 5_000_000))
+
+    def test_if_not_exists_on_an_absent_table_creates_it(self):
+        found = self.index(["CREATE TABLE IF NOT EXISTS x (id int)"], sized())
+        self.assertEqual((found.blocks, found.rows), (Blocks.NOTHING, 0))
+
+    def test_if_not_exists_without_a_read_may_name_a_table_that_exists(self):
+        found = self.index(["CREATE TABLE IF NOT EXISTS x (id int)"])
+        self.assertEqual((found.blocks, found.rows), (Blocks.WRITES, None))
+
+    def test_if_not_exists_after_a_drop_creates_it(self):
+        found = self.index(
+            ["DROP TABLE x", "CREATE TABLE IF NOT EXISTS x (id int)"],
+            sized(x=TableStats(5_000_000, 10**9)),
+        )
+        self.assertEqual(found.blocks, Blocks.NOTHING)
+
+    def test_create_table_as_select_has_the_rows_it_reads(self):
+        found = self.index(
+            ["CREATE TABLE x AS SELECT * FROM orders"], sized(5_000_000, 10**9)
+        )
+        self.assertEqual(
+            (found.work, found.rows, found.bytes),
+            (Work.INDEX_BUILD, 5_000_000, 10**9),
+        )
+
+    def test_insert_select_fills_a_new_table_from_every_table_it_reads(self):
+        found = self.index(
+            [
+                "CREATE TABLE x (id int)",
+                "INSERT INTO x SELECT o.id FROM orders o JOIN items i ON o.id = i.id",
+            ],
+            sized(5_000_000, 10**9, items=TableStats(1_000, 10**6)),
+        )
+        self.assertEqual((found.rows, found.bytes), (5_001_000, 10**9 + 10**6))
+
+    def test_a_source_of_unknown_size_leaves_the_size_unknown(self):
+        for source in (
+            "SELECT * FROM generate_series(1, 10)",
+            "SELECT * FROM orders, items",
+        ):
+            with self.subTest(source):
+                found = self.index(
+                    ["CREATE TABLE x (id int)", f"INSERT INTO x {source}"],
+                    sized(5_000_000, 10**9),
+                )
+                self.assertEqual((found.blocks, found.rows), (Blocks.WRITES, None))
+
+    def test_a_query_that_reads_no_table_leaves_it_new(self):
+        found = self.index(
+            ["CREATE TABLE x (id int)", "INSERT INTO x SELECT 1"], sized(5)
+        )
+        self.assertEqual((found.blocks, found.rows), (Blocks.NOTHING, 0))
+
+    def test_a_copy_of_a_new_table_is_new(self):
+        found = self.index(
+            [
+                "CREATE TABLE e (id int)",
+                "CREATE TABLE x AS SELECT * FROM e",
+            ],
+            sized(5),
+        )
+        self.assertEqual(found.blocks, Blocks.NOTHING)
+
+    def test_a_table_swap_gives_the_live_name_the_rows_copied_into_it(self):
+        report = analyze(
+            [
+                m("CREATE TABLE orders_new (id bigint, c int)"),
+                m("INSERT INTO orders_new SELECT * FROM orders"),
+                m("DROP TABLE orders"),
+                m("ALTER TABLE orders_new RENAME TO orders"),
+                m("ALTER TABLE orders ALTER COLUMN c TYPE bigint", "m2"),
+                m("CREATE INDEX ix ON orders (c)", "m2"),
+            ],
+            PG,
+            sized(5_000_000, 10**9),
+        )
+        retype, index = (s.tables[0] for s in report.statements[-2:])
+        self.assertEqual((retype.work, retype.rows), (Work.REWRITE, 5_000_000))
+        self.assertEqual((index.work, index.rows), (Work.INDEX_BUILD, 5_000_000))
+        self.assertEqual(report.statements[-1].severity, Severity.DANGER)
+
+    def test_a_swap_with_an_empty_table_leaves_it_new(self):
+        report = analyze(
+            [
+                m("CREATE TABLE orders_new (id int)"),
+                m("DROP TABLE orders"),
+                m("ALTER TABLE orders_new RENAME TO orders"),
+                m("CREATE INDEX ix ON orders (id)"),
+            ],
+            PG,
+            sized(5_000_000),
+        )
+        self.assertEqual(report.statements[-1].tables[0].blocks, Blocks.NOTHING)
+
+    def test_the_state_on_its_own(self):
+        context = sized(10, 100, a=TableStats(1, 2))
+        state = RunState("lock_timeout", context=context)
+        for sql in [
+            "CREATE TABLE n (id int)",
+            "CREATE TABLE f AS SELECT * FROM orders JOIN a USING (id)",
+            "INSERT INTO f SELECT * FROM n",
+            "CREATE TABLE IF NOT EXISTS a (id int)",
+            "INSERT INTO a SELECT * FROM orders",
+            "ALTER TABLE f RENAME TO g",
+        ]:
+            state.record(recognize(sql, PG), True)
+        self.assertTrue(state.is_new("n"))
+        self.assertTrue(state.created_in_run("G"))
+        self.assertFalse(state.is_new("g"))
+        self.assertFalse(state.created_in_run("a"))
+        self.assertFalse(state.may_exist("f"))
+        self.assertEqual(state.stats(context, "n"), TableStats(0, 0))
+        self.assertEqual(state.stats(context, "g"), TableStats(11, 102))
+        self.assertEqual(state.stats(context, "a"), TableStats(1, 2))
+        self.assertEqual(state.sources_of("g"), ("orders", "a"))
+        state.record(
+            recognize("INSERT INTO g SELECT * FROM unnest('{1}'::int[])", PG), True
+        )
+        self.assertEqual(state.stats(context, "g"), TableStats())
+
+
+class CheckStateTestCase(unittest.TestCase):
+    def state(self, *statements):
+        state = RunState()
+        for sql in statements:
+            state.record(recognize(sql, PG), True)
+        return state
+
+    def test_schema_checks_follow_renames_and_drops(self):
+        state = self.state(
+            "ALTER TABLE t RENAME CONSTRAINT a TO b",
+            "ALTER TABLE t RENAME CONSTRAINT b TO c",
+            "ALTER TABLE t DROP CONSTRAINT d",
+        )
+        self.assertTrue(state.schema_check_kept("t", "a"))
+        self.assertFalse(state.schema_check_kept("t", "d"))
+        self.assertTrue(state.schema_check_kept("t", "e"))
+        self.assertTrue(state.schema_check_kept("u", "d"))
+        state = self.state(
+            "ALTER TABLE t RENAME CONSTRAINT a TO b",
+            "ALTER TABLE t DROP CONSTRAINT b",
+        )
+        self.assertFalse(state.schema_check_kept("t", "a"))
+
+    def test_schema_columns_follow_renames_and_drops(self):
+        state = self.state(
+            "ALTER TABLE t RENAME COLUMN a TO b",
+            "ALTER TABLE t RENAME COLUMN c TO a",
+            "ALTER TABLE t DROP COLUMN d",
+        )
+        self.assertEqual(state.schema_column("t", "B"), "a")
+        self.assertEqual(state.schema_column("t", "a"), "c")
+        self.assertIsNone(state.schema_column("t", "c"))
+        self.assertIsNone(state.schema_column("t", "d"))
+        self.assertEqual(state.schema_column("t", "e"), "e")
+        state.record(recognize("ALTER TABLE t RENAME TO u", PG), True)
+        self.assertEqual(state.schema_column("u", "b"), "a")
+        state.record(recognize("DROP TABLE u", PG), True)
+        self.assertEqual(state.schema_column("u", "b"), "b")
+
+
+class IntentFallbackTestCase(unittest.TestCase):
+    """A generated statement the recognizer cannot read, read from its intent."""
+
+    UNREAD = "DO $$ BEGIN EXECUTE 'ALTER TABLE orders ADD COLUMN c int'; END $$"
+
+    def impact(self, kind, dialect=PG, column=None, **details):
+        statement = with_intent(self.UNREAD, kind, "orders", column, **details)
+        (found,) = analyze([statement], dialect).statements
+        return found
+
+    def test_a_column_with_a_default_is_a_rewrite_at_most_likely(self):
+        for dialect in (PG, Dialects.MSSQL, Dialects.MYSQL):
+            with self.subTest(dialect):
+                found = self.impact(
+                    "add_column", dialect, "c", nullable=False, has_default=True
+                )
+                self.assertEqual(found.tables[0].work, Work.REWRITE)
+                self.assertEqual(found.confidence, Confidence.LIKELY)
+                self.assertEqual(found.findings[0].rule, "impact.from_intent")
+                self.assertIn(
+                    "does not give the default or the column's type",
+                    found.findings[0].message,
+                )
+
+    def test_an_intent_without_details_takes_the_worst_case(self):
+        found = self.impact("add_column", column="c")
+        self.assertEqual(found.tables[0].work, Work.REWRITE)
+        self.assertIn(
+            "whether the column is nullable, the default, or the column's type",
+            found.findings[0].message,
+        )
+
+    def test_a_nullable_column_without_a_default_is_catalog_work(self):
+        found = self.impact("add_column", column="c", nullable=True, has_default=False)
+        self.assertEqual(found.tables[0].work, Work.CATALOG)
+        self.assertEqual(found.confidence, Confidence.LIKELY)
+
+    def test_a_foreign_key_counts_as_validated(self):
+        found = self.impact("add_foreign_key", name="fk", references="customers")
+        self.assertEqual(
+            [(t.table, t.work) for t in found.tables],
+            [("orders", Work.SCAN), ("customers", Work.CATALOG)],
+        )
+        self.assertEqual(found.confidence, Confidence.LIKELY)
+        self.assertTrue(
+            found.findings[0].message.endswith(
+                "whether the key is NOT VALID, so the analysis assumes the worst case"
+            )
+        )
+        found = self.impact("add_check", name="ck")
+        self.assertEqual(found.tables[0].work, Work.SCAN)
+
+    def test_every_detail_given_keeps_the_confidence(self):
+        found = self.impact("drop_table")
+        self.assertEqual(found.tables[0].rule, "pg.drop_table")
+        self.assertEqual(found.confidence, Confidence.KNOWN)
+        self.assertEqual(
+            self.impact("rename_column", column="c", new="d").confidence,
+            Confidence.KNOWN,
+        )
+        self.assertEqual(
+            self.impact("drop_constraint", name="ck").confidence, Confidence.KNOWN
+        )
+
+    def test_a_missing_detail_lowers_the_confidence(self):
+        self.assertEqual(
+            self.impact("rename_column", column="c").confidence, Confidence.LIKELY
+        )
+        found = self.impact("create_table")
+        self.assertEqual(found.confidence, Confidence.LIKELY)
+        self.assertIn("so no lock on them is reported", found.findings[0].message)
+
+
 class TimeoutTestCase(unittest.TestCase):
     def covered(self, statements):
         """Whether each lock-taking statement is covered by a timeout."""
@@ -338,6 +591,103 @@ class TimeoutTestCase(unittest.TestCase):
             ),
             [False],
         )
+
+    def test_each_reset_ends_the_timeout(self):
+        for reset in (
+            "RESET lock_timeout",
+            "RESET ALL",
+            "DISCARD ALL",
+            "SELECT set_config('lock_timeout', '0', false)",
+        ):
+            with self.subTest(reset):
+                self.assertEqual(
+                    self.covered(
+                        [
+                            m("SET lock_timeout = '2s'"),
+                            m("DROP TABLE a"),
+                            m(reset),
+                            m("DROP TABLE b"),
+                        ]
+                    ),
+                    [True, False],
+                )
+
+    def test_another_setting_reset_keeps_the_timeout(self):
+        self.assertEqual(
+            self.covered(
+                [
+                    m("SET lock_timeout = '2s'"),
+                    m("RESET statement_timeout"),
+                    m("DROP TABLE b"),
+                ]
+            ),
+            [True],
+        )
+
+    def test_set_config_sets_the_timeout_in_its_scope(self):
+        self.assertEqual(
+            self.covered(
+                [
+                    m("SELECT set_config('lock_timeout', '2s', true)"),
+                    m("DROP TABLE a"),
+                    m("DROP TABLE b", "m2"),
+                    m("SELECT pg_catalog.set_config('lock_timeout', '2s', 'f')", "m2"),
+                    m("DROP TABLE c", "m3"),
+                ]
+            ),
+            [True, False, True],
+        )
+
+    def test_a_rollback_undoes_the_timeout_its_transaction_set(self):
+        self.assertEqual(
+            self.covered(
+                [
+                    m("SET lock_timeout = '2s'"),
+                    m("ROLLBACK"),
+                    m("DROP TABLE a"),
+                ]
+            ),
+            [False],
+        )
+        # A timeout set before the migration began is not undone.
+        self.assertEqual(
+            self.covered(
+                [
+                    m("SET lock_timeout = '2s'"),
+                    m("SET LOCAL lock_timeout = '5s'", "m2"),
+                    m("ROLLBACK TO SAVEPOINT s", "m2"),
+                    m("DROP TABLE a", "m2"),
+                ]
+            ),
+            [True],
+        )
+
+    def test_a_session_setting_replaces_a_local_one(self):
+        self.assertEqual(
+            self.covered(
+                [
+                    m("SET LOCAL lock_timeout = '2s'"),
+                    m("SET lock_timeout = 0"),
+                    m("DROP TABLE a"),
+                ]
+            ),
+            [False],
+        )
+
+    def test_a_rollback_on_mysql_keeps_the_session_setting(self):
+        state = RunState("lock_wait_timeout", local_scope=False)
+        state.timeouts.enter("m1")
+        for sql in ("SET lock_wait_timeout = 5", "ROLLBACK"):
+            state.record(recognize(sql, Dialects.MYSQL), True)
+        self.assertTrue(state.timeouts.covered)
+
+    def test_a_reset_forgets_the_settings(self):
+        state = RunState("lock_timeout")
+        for sql in ("SET a = '1'", "SET b = '2'", "RESET a"):
+            state.record(recognize(sql, PG), True)
+        self.assertEqual(state.settings, {"b": "2"})
+        state.record(recognize("DISCARD ALL", PG), True)
+        self.assertEqual(state.settings, {})
 
     def test_the_remedy_fits_the_migration(self):
         (statement,) = analyze([m("DROP TABLE a")], PG).statements

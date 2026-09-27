@@ -4,7 +4,9 @@ instead of its text; see sustained.impact.
 
 Each rule is a test over one statement's impact. `_impact_guard()`
 turns the test into a guard that blocks every statement it passes, and
-marks the guard with `reads_impact`.
+marks the guard with `reads_impact`. A statement with confidence
+`unknown` names no table the analysis can vouch for, so it may lock or
+rewrite any table, and every rule blocks it.
 """
 
 from __future__ import annotations
@@ -134,15 +136,17 @@ def max_blocking(
     With neither `over_rows` nor `over_bytes`, every table counts. With
     either, a table counts when its estimated size passes one of them,
     and when the size the threshold reads is unknown, unless
-    `assume_small=True`. A table the run created earlier blocks nothing
-    in the analysis, so it never counts.
+    `assume_small=True`. A table the run created earlier and left empty
+    blocks nothing in the analysis, so it never counts. A statement with
+    confidence `unknown` is blocked whatever the thresholds.
     """
     ceiling = Blocks(limit)
     size = _Size("max_blocking", over_rows, over_bytes, assume_small)
     rule = f"max_blocking({', '.join([str(ceiling)] + size.label())})"
     return _impact_guard(
         rule,
-        lambda impact: any(
+        lambda impact: _unknown(impact)
+        or any(
             table.blocks > ceiling and size.counts(table) for table in impact.tables
         ),
     )
@@ -157,12 +161,15 @@ def no_rewrite(
     Blocks a statement that rewrites a table past the size thresholds:
     work `rewrite`, or `unknown`, which the analysis ranks above it. The
     thresholds read as they do for `max_blocking()`. A table the run
-    created earlier is never rewritten in the analysis.
+    created earlier and left empty is never rewritten in the analysis. A
+    statement with confidence `unknown` is blocked whatever the
+    thresholds.
     """
     size = _Size("no_rewrite", over_rows, over_bytes, assume_small)
     return _impact_guard(
         f"no_rewrite({', '.join(size.label())})",
-        lambda impact: any(
+        lambda impact: _unknown(impact)
+        or any(
             table.work >= Work.REWRITE and size.counts(table) for table in impact.tables
         ),
     )
@@ -176,23 +183,30 @@ def lock_timeout_required() -> Guard:
     reads timeout scopes as `no_lock_without_timeout()` does, and covers
     every such lock where that rule reads only ALTER TABLE and DROP
     TABLE. A timeout the connection already has covers the whole run
-    when the migrator read it.
+    when the migrator read it. A statement with confidence `unknown` is
+    blocked, since the analysis cannot say which locks it takes.
     """
     from sustained.impact.analyzer import is_lock_timeout
 
     return _impact_guard(
         "lock_timeout_required",
-        lambda impact: any(is_lock_timeout(f) for f in impact.findings),
+        lambda impact: _unknown(impact)
+        or any(is_lock_timeout(f) for f in impact.findings),
     )
 
 
 def no_unknown_impact() -> Guard:
     """
-    Blocks a statement the impact analysis cannot read, the strict mode
-    for hand-written SQL. The other impact rules pass such a statement,
-    since the analysis names no table for it.
+    Blocks a statement the impact analysis cannot read: confidence
+    `unknown`. The other impact rules block such a statement as well;
+    this rule blocks nothing else.
     """
-    return _impact_guard(
-        "no_unknown_impact",
-        lambda impact: impact.confidence is Confidence.UNKNOWN,
-    )
+    return _impact_guard("no_unknown_impact", _unknown)
+
+
+def _unknown(impact: StatementImpact) -> bool:
+    """
+    Whether the analysis could not read the statement, or a part of it,
+    so it cannot say what the statement locks or rewrites.
+    """
+    return impact.confidence is Confidence.UNKNOWN

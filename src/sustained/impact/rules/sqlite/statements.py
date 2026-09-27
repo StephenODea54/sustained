@@ -20,6 +20,7 @@ from sustained.impact.rules.sqlite.catalog import (
     ADD_COLUMN,
     ADD_COLUMN_CHECKED,
     ANALYZE,
+    COPY,
     CREATE_INDEX,
     DROP_COLUMN,
     DROP_INDEX,
@@ -191,7 +192,54 @@ def _insert(facts: Facts) -> Outcome:
                 ),
             )
         )
+    table = common.table(facts)
+    if facts.parsed.options.get("source") == "select" and facts.state.is_new(table):
+        copied = _copy(facts, table)
+        if copied is not None:
+            return copied
     return _write_rows(facts)
+
+
+def _create_table(facts: Facts) -> Outcome:
+    if facts.parsed.options.get("as_select"):
+        copied = _copy(facts, common.table(facts))
+        if copied is not None:
+            return copied
+    return _schema_change(facts)
+
+
+def _copy(facts: Facts, target: str) -> Optional[Outcome]:
+    """
+    A copy of a query's rows into a table the statement creates, or one
+    the run created, reported on each table the query reads, since the
+    write lock lasts while every row of each is read and written again.
+    A query that reads rows from something other than a table is
+    reported on the whole database. None for a query that reads no
+    table, whose rows are few.
+    """
+    reads = facts.parsed.options.get("reads")
+    if isinstance(reads, tuple) and not reads:
+        return None
+    sources = [str(s) for s in reads] if isinstance(reads, tuple) else [DATABASE]
+    confidence = Confidence.KNOWN if isinstance(reads, tuple) else Confidence.LIKELY
+    return Outcome(
+        tuple(
+            _effect(
+                facts,
+                COPY,
+                source,
+                Work.REWRITE,
+                (
+                    f"the copy reads every row of {source} and writes it into {target}"
+                    if source != DATABASE
+                    else f"the copy writes rows the query gives into {target}, and "
+                    "their number was not read"
+                ),
+                confidence=confidence,
+            )
+            for source in sources
+        )
+    )
 
 
 def _write_rows(facts: Facts) -> Outcome:
@@ -352,7 +400,7 @@ STATEMENTS: Dict[str, common.Handler] = {
     "create_index": _create_index,
     "drop_index": _drop_index,
     "reindex": _reindex,
-    "create_table": _schema_change,
+    "create_table": _create_table,
     "create_view": _schema_change,
     "drop_view": _schema_change,
     "create_trigger": _schema_change,

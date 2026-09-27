@@ -238,12 +238,14 @@ def preflight_plan(
             sessions.append(session)
             snapshots[session.label] = session
     found.extend(_snapshot_blockers(impacts, snapshots, found))
+    waits = any(p.rule in _WAITS_FOR_SNAPSHOTS for p in planned(impacts))
     return Preflight(
         "postgres",
         tuple(found),
         older(sessions, older_than, found),
         older_than,
         frozenset(read),
+        frozenset({"transactions"} if waits else ()),
     )
 
 

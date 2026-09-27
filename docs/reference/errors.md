@@ -108,7 +108,7 @@ No flag waives a guard. `sustained plan` and `sustained migrate` exit 3 when a g
 
 ## `PreflightBlocked`
 
-Another session has a table lock, or has asked for one, that a statement of the run would wait for, and the run was started with `preflight='refuse'`.
+The run was started with `preflight='refuse'`, and the preflight did not come back clear: another session has a table lock, or has asked for one, that a statement of the run would wait for; a read the blockers come from failed, so the preflight could not see them; or a statement is one the analysis cannot read, whose locks the preflight cannot check.
 
 `Migrator.up()` and `AsyncMigrator.up()` raise it after the guards pass and before any migration applies. A run with models reads the generated migration a second time, once the registered migrations have applied, and a refusal there leaves them applied and lists their ids on the exception's `applied` attribute. The `preflight` attribute is the whole `Preflight` read. The message names each blocker:
 
@@ -116,6 +116,15 @@ Another session has a table lock, or has asked for one, that a statement of the 
 Other sessions have locks this run would wait for:
   ALTER TABLE orders ADD COLUMN note text would queue behind pid 4121 (idle in transaction for 42m, user=billing, app=billing-worker, has ACCESS SHARE on orders)
 End those transactions, or run again once they finish.
+```
+
+each read that failed, and each statement the preflight cannot check:
+
+```
+The preflight could not read locks, so it cannot see the sessions this run would wait for. Make that read work on the server, or run with preflight='warn'.
+The preflight cannot check these statements:
+  DO $$ BEGIN ALTER TABLE orders ADD COLUMN c int; END $$ is not read, so the preflight cannot check the locks it takes
+Split them into statements the analysis reads, or run with preflight='warn'.
 ```
 
 Sustained ends no session. `sustained migrate` exits 5 on this error. See [Live preflight](/impact#live-preflight).
