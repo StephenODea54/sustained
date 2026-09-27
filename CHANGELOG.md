@@ -4,504 +4,292 @@
 
 ### Added
 
-- `sustained impact` prints, for each statement a run would apply on PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, or DuckDB, the tables it locks, the lock's name, whether other schema changes, writes, or reads and writes wait, the work it does (catalog, scan, rows, index build, or rewrite), and how long the lock is held. Findings name the safer form where one exists, such as `CREATE INDEX CONCURRENTLY` or `NOT VALID` followed by `VALIDATE CONSTRAINT`. A migration inside a transaction reports each table's locks held to commit, and flags a lock held across later heavy work, such as the diff's NOT NULL backfill. `--json` prints the report as one object. The command exits 0 when it prints and 1 on a failure. The guide is [Statement impact](https://sustained.tbmh.org/impact).
-- `Migrator.impact(models=None)` and `AsyncMigrator.impact(models=None)` return the report as an `ImpactReport`. `sustained.impact.analyze(statements, dialect)` analyzes any list of statements without a connection. Without a context, `analyze()` assumes PostgreSQL 12 and knows no table sizes, so blocking work on a table of unknown size is `warn`. A statement the analysis cannot read is reported as unknown, never as safe. Dialects the analysis does not cover raise `DialectError`. `impact()` and `preflight()` on either migrator take the diff options `up()` takes, `allow_drops`, `ignore_changed_columns`, `migration_id`, `renames`, `table_renames`, and `type_casts`, as keyword-only arguments. With pending migrations, `sustained impact` diffs the models on the scratch database of `get_rehearsal_connection()` after a rehearsal there applies them, and without one it leaves the models out and prints `models not diffed`. `impact --json` gains `models_diffed`.
-- `sustained plan` lists statements with a `warn` or `danger` finding, and statements the analysis could not read, in an `impact` section. In `plan --json`, every statement object gains an `impact` key, `null` on a dialect the analysis does not cover. Exit codes are unchanged.
-- `sustained impact`, `sustained plan`, and `Migrator.impact()` read the server's version, the `TimeZone` and `lock_timeout` settings, each table's estimated rows and bytes, and the schema before they analyze, so blocking work on a table past 1,000,000 rows or 1 GiB is `danger` and below both is `info`. A `lock_timeout` the connection already has covers the whole run. A read that fails leaves its facts out, and the report's new `read` key lists what came from the server. On PostgreSQL the read also takes, from the catalog and without a table lock, the partitions of each partitioned table and its DEFAULT partition, the columns each index uses with their collations, the type of each array column, and which types are domains with a constraint, under the read names `partitions`, `indexes`, `arrays`, and `types`. `sustained.impact.read_context(connection, dialect, exact_counts=False, statements=None)` and `async_read_context(adapter, dialect, exact_counts=False, statements=None)` return the facts as an `EngineContext` for `analyze()`; with `statements`, only the sizes of the tables they name are read. `EngineContext` gains `relations`, a map of table name to the new `Relation`, and `types`.
-- `sustained rehearse --trace` and `Migrator.rehearse(trace=True)` run each statement of the rehearsal on its own and read, before and after it, the table locks granted to the transaction from `pg_locks` and the files of the tables it names. The impact report on the result's new `impact` attribute, and under the new `impact` key of `rehearse --json`, then gives the lock each table was seen to take and whether a table was rewritten or an index built, with evidence `observed`. Each difference from the prediction is an `impact.mismatch` finding. A read that fails leaves its statement's facts as predicted. `AsyncMigrator.rehearse(trace=True)` does the same. A traced rehearsal analyzes each statement once, in run order, instead of analyzing every earlier statement again for each one. Dialects other than PostgreSQL, MySQL, MariaDB, and SQL Server raise `DialectError`.
-- The impact analysis reads the schema for facts a statement does not state. A `DROP INDEX` reports the table the index is on. A statement that drops a foreign key, which is `DROP TABLE`, `DROP CONSTRAINT`, or `DROP COLUMN` on the table the key is defined on, or the same with `CASCADE` on the table it points at, reports the `ACCESS EXCLUSIVE` lock PostgreSQL takes on the table at the key's other end, under the rule `pg.drop_foreign_key`. A type change of a column a key uses or points at reports the same lock, since it re-creates the key. `TRUNCATE ... CASCADE` reports every table it empties. `REFRESH MATERIALIZED VIEW CONCURRENTLY` reports `rows` as its work, where it reported `rewrite`. `EngineContext` gains `table()`, `index_table()`, `references()`, `referenced_by()`, and `foreign_key_target()`.
-- `MigrationStatement` gains an `intent` attribute: what a statement generated by the diff or a `DdlStep` is meant to do. It takes no part in equality or checksums.
-- Four guards in `sustained.guards` read each statement's impact instead of its text. `max_blocking(limit, over_rows=None, over_bytes=None)` blocks a statement that blocks more than `limit` (`nothing`, `ddl`, `writes`, or `reads_and_writes`) on a table past the thresholds. `no_rewrite(over_rows=None, over_bytes=None)` blocks a rewrite of a table past them. `lock_timeout_required()` blocks a lock that would queue reads or writes with no lock timeout in scope. Every one of the four blocks a statement the analysis cannot read, such as a `DO` block, a data-modifying CTE, or a string with two statements; `no_unknown_impact()` blocks nothing else. A table of unknown size counts as past a threshold unless the rule is given `assume_small=True`. The four are silent on a dialect the analysis does not cover.
-- On PostgreSQL, `Migrator.up()`, `AsyncMigrator.up()`, and `sustained migrate` read the server facts `impact` reads before the guards run, and put each statement's `StatementImpact` on its new `impact` attribute, so a custom guard can read it. The size read covers only the tables the run's statements name, including the table of an index a statement drops and the other end of a foreign key, as the new `sustained.impact.named_tables(statements, dialect, schema=None)` finds them. On PostgreSQL it runs under a `lock_timeout` of `1s`, set with `set_config()` and set back to the session's own value after, since `pg_total_relation_size()` waits behind a session that has an `ACCESS EXCLUSIVE` lock; when the read of the named tables times out, each is read on its own, and a table whose lock was not granted has an unknown size, which a guard counts as over its threshold. With `models`, the generated migration is read and analyzed again on its own after the registered migrations apply, so a table they created or renamed has a size. `sustained plan` does the same before its guards run. When no configured guard reads impact, `up()` prints each `danger` finding on stderr as `danger: <rule>  <statement>: <message>`, and the run goes on. `sustained.migrations` gains `check_statements()` and `report_danger()`, and `sustained.impact.attach_impact(statements, dialect, context=None)` returns the statements with their impact attached.
-- The impact analysis covers InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later. A table line names the `ALGORITHM` and `LOCK` clause the server runs the statement with, such as `INSTANT`, `INPLACE, LOCK=NONE`, or `COPY, LOCK=SHARED`, and the work that follows from it. The rules read the version, `foreign_key_checks`, `lock_wait_timeout`, each table's size and row format, its FULLTEXT indexes, and on MySQL 8.0.29 and later its instant row versions, and they tell MySQL from MariaDB by `VERSION()`. Rule ids start with `mysql.` or `mariadb.`. A statement the server can run instantly or in place with `LOCK=NONE` gets an `info` finding that offers it with that clause, so the server refuses the statement instead of falling back to a copy. A statement whose `ALGORITHM` or `LOCK` the change cannot run with gets a `refused` finding. MySQL's exclusive metadata lock on the parent table of a foreign key that a statement adds or drops is reported under `mysql.foreign_key_parent`. Every statement that takes the exclusive metadata lock draws a `mysql.lock_timeout` or `mariadb.lock_timeout` finding without a `lock_wait_timeout` below a day in scope, and `lock_timeout_required()` blocks it. Without a server read, `analyze()` assumes MySQL 8.0.19 and adds an `impact.assumed_profile` finding.
-- `MigrationImpact` gains `held_to_commit`, and each migration in the JSON report gains a `held_to_commit` key, which says whether the migration's locks last until it commits. On MySQL and MariaDB, where each DDL statement commits on its own, each DDL statement is a window of its own. In a transactional migration there, the row locks of consecutive `INSERT`, `UPDATE`, and `DELETE` statements last until the next DDL statement or the commit, so each run of them is one window, and its `window.held` finding says the table stays blocked until the implicit commit before the next DDL statement, or until the migration commits when none follows. `TableStats` gains `row_format`, `row_versions`, and `fulltext`. `sustained.impact.rules` gains `profiles_for()`, and `profile_for()` takes the profile name a context gives.
-- `Migrator.script(direction, annotate=True)`, `AsyncMigrator.script(direction, annotate=True)`, and `sustained script --annotate` print each migration statement's impact above it as `-- impact:` comments, each migration's windows after its last statement, and the report's summary on the first line. The analysis reads the server facts `impact` reads. Dialects the analysis does not cover raise `DialectError`.
-- On MySQL and MariaDB, `rehearse(scratch=True, trace=True)` and `sustained rehearse --trace` run each ALTER TABLE, CREATE INDEX, and DROP INDEX on the scratch database with `ALGORITHM=INSTANT`, then MariaDB's `NOCOPY`, then `INPLACE`, then `COPY`, each with `LOCK=NONE`, `SHARED`, and `EXCLUSIVE`, until the server accepts one. The accepted clause is the table's observed lock, with evidence `observed`. A different clause from the prediction is an `impact.mismatch` finding that quotes the server's reason for refusing the predicted one. A statement that spells its own `ALGORITHM` or `LOCK` runs as written. An error other than a refusal runs the statement as written, so the rehearsal reports the server's own error. `sustained.impact.rules.Trace` gains `attempts` and `refused`, and `sighting` becomes optional.
-- On MariaDB, a FULLTEXT index added to a table that already has one reports `NOCOPY, LOCK=SHARED`, where it reported `INPLACE, LOCK=SHARED`.
-- On MySQL and MariaDB, `assert_algorithm=True` on `plan()`, `up()`, `rehearse()`, and `impact()` of either migrator, and on `sustained.autogenerate.autogenerate()`, writes the `ALGORITHM` and `LOCK` clause the impact rules predict on each generated ALTER TABLE, CREATE INDEX, and DROP INDEX whose prediction is `INSTANT`, `NOCOPY, LOCK=NONE`, or `INPLACE, LOCK=NONE` with confidence `known`, on a table that existed before the migration. The server then refuses such a statement instead of running it with a slower algorithm or a stronger lock. The server facts are read after the diff, and no clause is written when the version could not be read. A config module's `assert_algorithm = True` does the same for `sustained plan`, `impact`, `migrate`, and `rehearse`. The clause changes the SQL text, so a rehearsal row recorded without it does not cover a run with it. Other dialects ignore the option. `sustained.impact.rules.mysql` gains `asserted_statements()`, and `sustained.migrations.planning` gains `asserted_migration()`.
-- The impact analysis covers SQLite 3.35 and later, on the `DEFAULT` dialect SQLite connections use. Every write takes the `database write lock` on the whole database file until the migration commits, so the report reads a migration inside a transaction as one window named `(database)`, and draws neither `window.held` nor a lock-timeout finding there. The lock blocks `writes` in WAL mode and `reads_and_writes` in any other journal mode, which is the case assumed without a read. `DROP COLUMN`, `VACUUM`, and the copy in the diff's table rebuild are rewrites, and so is `CREATE TABLE ... AS SELECT` or an `INSERT ... SELECT` into a table the run created, reported on each table the query reads under `sqlite.copy`, `CREATE INDEX` and `REINDEX` index builds, and `DROP TABLE`, `DROP INDEX`, `ANALYZE`, and an `ADD COLUMN` with a CHECK constraint scans. A `VACUUM` inside a transactional migration draws a `danger` finding. Rule ids start with `sqlite.`. The context read gives `sqlite_version()`, `PRAGMA journal_mode`, each table's rows from `sqlite_stat1`, the database file's size, and each table's bytes as the file's bytes times its share of the rows `sqlite_stat1` counts, and never counts rows or reads `dbstat`. `sustained impact`, `plan`, `script --annotate`, and `migrate` on SQLite now report impact, and the four impact guards now read it there. The recognizer reads SQLite's `REINDEX` with a name or with none.
-- `exact_counts=True` on `read_context()`, `async_read_context()`, and `impact()`, `up()`, and `script()` of either migrator makes the SQLite context read run `SELECT COUNT(*)` on each table `sqlite_stat1` has no row count for, such as a table created, or empty, when `ANALYZE` last ran, reads each table's bytes from `dbstat`, which reads every page of the table and its indexes, and adds `counts` to the report's `read`. `plan`, `impact`, `migrate`, and `script` take `--exact-counts`, and the config module's `exact_counts` attribute does the same. The other profiles ignore it.
-- The impact analysis covers DuckDB 1.0 and later. DuckDB takes no locks: a transaction whose change conflicts with another's uncommitted change aborts with a conflict error at once instead of waiting, so DuckDB draws no lock-timeout finding, and reads never conflict. Each table line names the conflict a statement opens until the migration commits. `altered table`, from `ADD COLUMN`, `DROP COLUMN`, `SET DATA TYPE`, and `SET NOT NULL`, blocks `writes`: other transactions' writes and schema changes on the table abort, and so does the commit of a transaction that wrote to the table before it. `changed rows`, from `UPDATE`, `DELETE`, and `TRUNCATE`, blocks `writes` to the same rows. `dropped table`, from `DROP TABLE`, blocks `writes`: other transactions' schema changes on the table abort, and so does the commit of a transaction that wrote to the table before it. `catalog entry`, from a rename, a default, `DROP NOT NULL`, a comment, `DROP INDEX`, and a new table's foreign key, blocks `ddl`. `CREATE INDEX` and `INSERT` block `nothing`. `SET DATA TYPE` and an `ADD COLUMN` with a volatile default are rewrites of the column, any other `ADD COLUMN` is `rows` work, `CREATE INDEX` an index build, and `SET NOT NULL` and `ANALYZE` scans. Rule ids start with `duckdb.`. The context read gives `version()` and each table's rows from `duckdb_tables()`. `sustained impact`, `plan`, `script --annotate`, and `migrate` on DuckDB now report impact, and the four impact guards now read it there.
-- The impact analysis covers SQL Server 2012 and later. Each table line names the table lock mode the statement has when it ends, as `sys.dm_tran_locks` reports it: `Sch-M` for every `ALTER TABLE`, `S` for a nonclustered `CREATE INDEX`, `IX` for a write, `X` for a write whose row locks escalate to the table, and `Sch-S` for `UPDATE STATISTICS`. A foreign key a statement adds, drops, checks, or disables also takes `Sch-M` on the table it points at. `X` blocks writes only when the database reads with `READ_COMMITTED_SNAPSHOT` on. The rules read the edition: on the Enterprise, Developer, and Azure SQL editions, adding a NOT NULL column with a constant default changes only the catalog and `ONLINE = ON` runs, and on the others the column add writes every row and a statement with `ONLINE = ON` draws a `danger` finding, since it fails there. An online operation reports the lock it takes when it ends, held to commit inside a transaction, and its finding is `info`. `ALTER COLUMN` changes only the catalog for a longer length of the same variable-length type or for dropping NOT NULL, scans for NOT NULL on a fixed-length column, and writes every row otherwise. A clustered index or key built on a heap, or dropped, copies the table. Remedies offer `ONLINE = ON`, `RESUMABLE = ON`, `WAIT_AT_LOW_PRIORITY`, and `WITH NOCHECK` followed by `WITH CHECK CHECK CONSTRAINT`, by version and edition. Every table lock of `S` or stronger draws an `mssql.lock_timeout` finding without a `LOCK_TIMEOUT` of 0 or more in scope, with `SET LOCK_TIMEOUT 5000` as the remedy. Rule ids start with `mssql.`. The context read gives the version, the edition, `@@LOCK_TIMEOUT`, `is_read_committed_snapshot_on`, and each table's rows, bytes, and clustered index, and the report names the version by release, such as `SQL Server 2022 (16.0.4135.4)`. `sustained impact`, `plan`, `script --annotate`, and `migrate` on SQL Server now report impact, and the four impact guards now read it there. Without a server read, `analyze()` assumes SQL Server 2012 and an unknown edition, so a NOT NULL column add with a default is a rewrite with confidence `likely`, and a statement with `ONLINE = ON` draws an `info` finding that it fails on the other editions.
-- On SQL Server, `rehearse(scratch=True, trace=True)` and `sustained rehearse --trace` run each statement between two reads of the table locks granted to the session, the partitions of the tables it names, and the log the transaction has written. A changed partition of the heap or clustered index is a copy, and so is log of at least twice the table's size, as an `ALTER COLUMN` that updates every row in place writes. A new or changed partition of another index is an index build. Each difference from the prediction is an `impact.mismatch` finding. `sustained.impact.rules.mssql.trace` has the read plans and `observe()`.
-- The recognizer reads SQL Server's `ALTER INDEX` with `REBUILD`, `REORGANIZE`, `DISABLE`, and the other operations, `ALTER TABLE ... REBUILD` and `SWITCH`, `UPDATE STATISTICS`, `CLUSTERED` and `NONCLUSTERED` on `CREATE INDEX` and keys, the `WITH` options of `CREATE INDEX`, `DROP INDEX`, and keys, computed columns, and `sp_rename` of an index.
-- A generated statement the recognizer cannot read, such as the batch the SQL Server diff runs to drop a column default whose constraint name it looks up at run time, is analyzed from its intent when the intent names one statement kind, with an `impact.from_intent` finding, where it was unknown. Its intent's details give what they can, such as whether an added column is nullable and has a default; a fact they leave out takes its worst case, the finding names it, and the statement's confidence is at most `likely`, so an unread generated `ADD COLUMN ... DEFAULT` reads as a rewrite.
-- `TableStats` gains `heap` and `clustered`. `sustained.impact.rules.Effect` gains `at_end`, for a lock a statement takes once its work is done, and `Profile` gains `release`, which names a version by release.
-- `sustained impact --live` prints, after the report, each session a statement of the run would wait behind on the server now: the first statement that would wait, the session's pid, connection id, or session id, its state, transaction age, user, application, and last statement, and the lock it was granted or is waiting for on the table. It also lists the other transactions open at least `--older-than` seconds, 60 by default, and names any read that failed. PostgreSQL reads `pg_locks`, `pg_stat_activity`, and `pg_prepared_xacts`, and lists every transaction with a snapshot as a blocker of `CREATE INDEX CONCURRENTLY` and `REINDEX CONCURRENTLY`. MySQL reads `performance_schema.metadata_locks`, and MariaDB reads it when the Performance Schema is on and `information_schema.METADATA_LOCK_INFO` otherwise; both read `INNODB_TRX`. SQL Server reads `sys.dm_tran_locks` and needs `VIEW SERVER STATE`. Sustained ends no session. `--live` exits 1 on SQLite and DuckDB. `impact --json` gains a `preflight` key, `null` without `--live`.
-- `Migrator.impact(live=True)` and `AsyncMigrator.impact(live=True)` put the read on the report's new `preflight` attribute. `Migrator.preflight(models=None, older_than=60.0)` and `AsyncMigrator.preflight()` return it alone as a `Preflight`, whose `blockers` are `Blocker` records and whose `transactions` are `LiveSession` records. `sustained.impact.preflight(connection, dialect, statements)` and `async_preflight(adapter, dialect, statements)` read it for any list of statements. `Profile` gains `preflight`, the read plan.
-- `up(preflight="warn")` on either migrator prints, after the guards pass and before any migration applies, each blocker and each transaction open 60 seconds or longer on stderr as `preflight: <line>`, and the run goes on. `up(preflight="refuse")` raises the new `PreflightBlocked` instead when there is a blocker, when a read the blockers come from failed, as the locks read does on MariaDB without the Performance Schema or `metadata_lock_info`, or when a statement is one the analysis cannot read, with the read on its `preflight` attribute. `up(preflight=PreflightCheck("warn", older_than=300))` sets another age; `PreflightCheck` lives in `sustained.migrations`. `sustained migrate --preflight warn|refuse` and the config module's `preflight` and `preflight_older_than` attributes do the same, and `migrate` exits 5 on `PreflightBlocked`. On SQLite and DuckDB, `up()` with a preflight raises `DialectError` before the run starts, as `impact(live=True)` does. `PreflightCheck` raises `ValueError` for an `older_than` that is negative, NaN, or not a number, and so do `impact(live=True)`, `preflight()`, `sustained.impact.preflight()`, and `preflight_plan()`. `Preflight` gains `needs`, `unread`, `missing`, and `clear`, and `sustained.impact.report.unread_line()` renders an unread statement.
-- On PostgreSQL, a `SET NOT NULL` on a column that a valid `CHECK (c IS NOT NULL)` proves reports catalog work under the new rule `pg.set_not_null.proven`, where it reported a scan with confidence `likely`. The check proves the column once the run adds it without `NOT VALID` or validates it with `VALIDATE CONSTRAINT`, until the run drops the check or the column, and a check the schema read reports proves it unless the run dropped it or PostgreSQL reports it `NOT VALID`. The proof follows `RENAME CONSTRAINT` and `RENAME COLUMN`. The recognizer sets `not_null` to the column on a check constraint of that form.
-- `sustained.autogenerate.autogenerate_migrations(..., online=False)` returns the migrations a diff generates as a list, empty when the schema is up to date. On PostgreSQL, `online=True` splits the work in two. The migration named with the generated id runs in one transaction and changes only the catalog: a new column goes in nullable and without its `UNIQUE` or `REFERENCES` clause, a new `NOT NULL` column whose backfill is a value goes in with that value as its default, which comes off in the same migration, and a new foreign key or check goes in `NOT VALID`. The migration named `<id>_online` has `transactional=False` and runs the backfills, `CREATE INDEX CONCURRENTLY IF NOT EXISTS` after `DROP INDEX CONCURRENTLY IF EXISTS` of the same name, a new column's `UNIQUE` as a unique index built concurrently and attached with `ADD CONSTRAINT ... USING INDEX`, `VALIDATE CONSTRAINT`, `SET NOT NULL` through a check added `NOT VALID` after the backfill, with the backfill run again and the check validated, the drops `allow_drops` generates with `IF EXISTS`, and last the drop of each check `SET NOT NULL` used, in that order, so a failed run runs again from its first statement. On a partitioned table an index is created `ON ONLY` the table, built concurrently on each partition, and attached with `ALTER INDEX ... ATTACH PARTITION`, and a foreign key goes in validated. Constraint and index names follow PostgreSQL's `makeObjectName()`, which shortens the table and column parts and keeps the suffix. Its down step undoes them in the reverse order. On MySQL and MariaDB, `online=True` does what `assert_algorithm=True` does, and other dialects ignore it. The tracking row of a generated migration without a transaction stores `"transactional": false` in its `steps` JSON, so `down()` in a later process reverts it outside a transaction. `validate_constraint` and `attach_index` join the intent kinds, and the Postgres recognizer reads `ALTER INDEX ... ATTACH PARTITION` under the new rule `pg.attach_index`. The `pg.create_index.concurrently` finding names the invalid index a failed build leaves.
-- `up()`, `rehearse()`, `impact()`, and `preflight()` on `Migrator` and `AsyncMigrator` take `online=True` with `models`, and the new `plan_migrations()` on both returns the migrations the models generate as a list. On PostgreSQL, `up()` applies `<id>` and then `<id>_online`, and the guards and the preflight read both first. `rehearse()` runs the statements of `<id>_online` inside its transaction with `CONCURRENTLY` removed, and its row covers the run `up()` makes. The CLI's `plan`, `impact`, `rehearse`, and `migrate` take `--online`, and the config module takes an `online` attribute. The check the online route to `SET NOT NULL` adds is named `<table>_<column>_not_null_check`, and its drop is not labelled by `destructive_statements()`, since its intent is `drop_constraint` with `transient=True`. `plan(online=True)` returns the one migration the split generates, and raises `ValueError` when it generates two. `AsyncMigrator.plan()` and `AsyncMigrator.plan_migrations()` take `snapshot`.
-- `rehearse(lock_timeout=seconds)` on either migrator sets the dialect's lock timeout for the rehearsal, so a statement that waits longer for a lock fails the rehearsal: `SET LOCAL lock_timeout` on PostgreSQL, `SET LOCK_TIMEOUT` on SQL Server, `lock_wait_timeout` and `innodb_lock_wait_timeout` on MySQL and MariaDB, and `PRAGMA busy_timeout` on SQLite, each set back after the rollback. The config module's `rehearsal_lock_timeout` sets it for `sustained rehearse` and the scratch rehearsal of `sustained impact`. `Rehearsal.generated` lists the migrations the diff against the models generated.
-- `plan`, `impact`, `migrate`, and `rehearse` take `--assert-algorithm`, which does what the config module's `assert_algorithm` does. `--older-than` without `--live`, `script --exact-counts` without `--annotate`, and an `--older-than` below 0 or `nan` are usage errors. `--online` on a dialect other than PostgreSQL, MySQL, and MariaDB, and `--assert-algorithm` on a dialect other than MySQL and MariaDB, exit 1. A `preflight_older_than` that is not a number fails with a message that names it, and only `impact --live` and `migrate` with a preflight read it. `plan`'s blocked footer reads "take the rule out of the guard list to run it anyway".
+- `sustained impact`, `Migrator.impact()`, and `AsyncMigrator.impact()` report, for each statement a run would apply, the tables it locks, what the lock blocks, the work it does (catalog change, scan, row writes, index build, or rewrite), and how long the lock lasts, with the safer form of the statement where one exists. `--json` prints the report as one object, and the guide is [Statement impact](https://sustained.tbmh.org/impact).
+- The impact analysis covers PostgreSQL, InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later, SQL Server 2012 and later, SQLite 3.35 and later, and DuckDB 1.0 and later, and reads the server's version, settings, table sizes, and schema so that blocking work on a large table is `danger`. `sustained.impact.analyze(statements, dialect)` analyzes statements without a connection, and a statement the analysis cannot read is reported as unknown, never as safe.
+- `sustained plan` lists the statements with a `warn` or `danger` finding in an `impact` section, and `sustained script --annotate` and `script(direction, annotate=True)` on either migrator print each statement's impact above it as SQL comments.
+- The guards `max_blocking()`, `no_rewrite()`, `lock_timeout_required()`, and `no_unknown_impact()` in `sustained.guards` block statements by their analyzed impact instead of their text. `up()` and `sustained migrate` put each statement's impact on `MigrationStatement.impact` for custom guards, and print each `danger` finding on stderr when no configured guard reads impact.
+- `sustained rehearse --trace` and `rehearse(trace=True)` on either migrator run each statement on its own on PostgreSQL, MySQL, MariaDB, and SQL Server, record the locks, rewrites, and index builds the server shows, and report each difference from the prediction as an `impact.mismatch` finding. On MySQL and MariaDB the scratch rehearsal also finds the `ALGORITHM` and `LOCK` clause the server accepts.
+- `sustained impact --live`, `impact(live=True)`, and `preflight()` on either migrator list the sessions a run's statements would wait behind on the server now, and the transactions open at least `--older-than` seconds, 60 by default. `up(preflight="warn")` prints them before any migration applies, `up(preflight="refuse")` raises `PreflightBlocked` instead, and `sustained migrate --preflight warn|refuse` does the same and exits 5 on `PreflightBlocked`.
+- `assert_algorithm=True` on MySQL and MariaDB, on `plan()`, `up()`, `rehearse()`, and `impact()` of either migrator and on `autogenerate()`, writes the predicted `ALGORITHM` and `LOCK` clause on each generated statement predicted to run `INSTANT` or with `LOCK=NONE`, so the server refuses them instead of running a slower algorithm or taking a stronger lock. The CLI takes `--assert-algorithm` and the config module's `assert_algorithm`.
+- `online=True` on `autogenerate_migrations()`, and with `models` on `up()`, `rehearse()`, `impact()`, and `preflight()`, splits a PostgreSQL diff into migration `<id>`, which changes only the catalog in one transaction, and `<id>_online`, which runs outside a transaction to build indexes concurrently, run backfills, and validate constraints, and runs again from its first statement after a failure. On MySQL and MariaDB it does what `assert_algorithm=True` does; the CLI takes `--online` and the config module's `online`, and `plan_migrations()` on either migrator returns the generated migrations as a list.
+- `rehearse(lock_timeout=seconds)` on either migrator, and the config module's `rehearsal_lock_timeout`, fail a rehearsal whose statement waits longer than that for a lock.
+- `impact()` and `preflight()` on either migrator take the diff options `up()` takes. On SQLite, `exact_counts=True` and `--exact-counts` count each table's rows and read its bytes from `dbstat` instead of estimating them.
 
 ### Changed
 
-- `index_must_be_concurrent()` passes `CREATE INDEX ... ON ONLY`, which it blocked before, and which is the only statement without `CONCURRENTLY` it passes. This changes a verdict of a textual guard. The statement creates an invalid index on a partitioned table alone and builds nothing, and Postgres refuses `CONCURRENTLY` in it, so the guard blocked every way to index a partitioned table without blocking writes, including the steps `online=True` generates. The guard does not check that the partitions' indexes are built and attached after it.
-- `render()` and `flagged_line()` print each statement on one line. The `window.held` finding names each level a table is blocked for and the first statement to block it that far. In a migration whose locks last until the commit, every lock that blocks something has the `hold` `transaction`, including the last statement's. `sustained.impact.report` gains `__all__`.
+- `index_must_be_concurrent()` passes `CREATE INDEX ... ON ONLY`, which builds no index and cannot take `CONCURRENTLY`, so a partitioned table can be indexed without blocking writes.
 - Error messages name the engine, such as "The live preflight does not cover SQLite.", where they named the `Dialects` member.
-- The finding for a `DELETE` on PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, and DuckDB advises to delete in batches, where it advised to backfill in batches.
-- The recognizer reads a `;` only inside the body of the trigger, function, or procedure a `CREATE` creates, so `CREATE TABLE t (trigger int); ALTER TABLE ...` is unknown. On SQL Server, a statement that another statement follows with no `;` is unknown. A MySQL multi-table `UPDATE` or `DELETE` is unknown, and a `DELETE` through an alias reports the aliased table. `where` and `limited` are read in their clause, so an alias named `limit` does not set `limited`. A quoted call such as `"gen_random_uuid"()` is volatile, and a call in a schema other than `pg_catalog`, such as `app.now()`, is an unknown function. MySQL `SERIAL DEFAULT VALUE` reads as a NOT NULL, unique, auto-increment column.
-- The run state reads a table created with `CREATE TABLE IF NOT EXISTS` as new only when the context reads no table of that name. A table filled by `CREATE TABLE ... AS SELECT` or `INSERT ... SELECT` has the size of the tables the query reads, and keeps it through a rename, so after a table swap a rewrite or `CREATE INDEX` of the live name is reported against the copied rows instead of `~0 rows, 0 B`. `RESET`, `RESET ALL`, `DISCARD ALL`, `set_config()`, and a `ROLLBACK` of a `SET` end the lock timeout's scope, and the recognizer reads them as `set` statements.
-- On PostgreSQL, a statement on a partitioned table reports each partition it locks: `CREATE INDEX` takes `SHARE` and builds the index on every partition, an `ALTER TABLE` action other than a rename of the table, `SET SCHEMA`, `OWNER TO`, row security, `SET TABLESPACE`, `SET LOGGED`, `SET UNLOGGED`, storage parameters, `ATTACH PARTITION`, and `DETACH PARTITION` takes its lock on every partition unless the statement says `ONLY`, and `DROP TABLE`, `TRUNCATE`, `DROP INDEX`, `REINDEX`, `VACUUM`, `ANALYZE`, `CREATE TRIGGER`, `DROP TRIGGER`, and `LOCK TABLE` without `ONLY` lock each partition. Dropping a partition locks its partitioned table and the DEFAULT partition `ACCESS EXCLUSIVE`, and `CREATE TABLE ... PARTITION OF` and `ATTACH PARTITION` lock and scan the DEFAULT partition. `ATTACH PARTITION` reports an index build on the new partition when the partitioned table has an index. `CREATE INDEX ... ON ONLY` a partitioned table is catalog work.
-- On PostgreSQL, a statement the server refuses is a `danger` finding: `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `REINDEX CONCURRENTLY`, `DETACH PARTITION CONCURRENTLY`, `VACUUM`, `REINDEX SCHEMA`, `DATABASE`, or `SYSTEM`, `REINDEX` of a partitioned table, and `CLUSTER` with no table in a transactional migration; `CREATE INDEX CONCURRENTLY` and `DROP INDEX CONCURRENTLY` on a partitioned table; `DETACH PARTITION CONCURRENTLY` from a table with a DEFAULT partition; a `NOT VALID` foreign key on a partitioned table before PostgreSQL 18; and an exclusion constraint on a partitioned table before 17. `CREATE INDEX CONCURRENTLY` in a transactional migration was an `info` finding.
-- On PostgreSQL, a change of an array column's element type, such as `varchar(10)[]` to `varchar(20)[]` or `text[]` to `varchar[]`, reports a rewrite, where it reported catalog work. `timestamptz` to `timestamp` under a UTC `TimeZone` reports catalog work, where it reported a rewrite. `timestamp` to `timestamptz` in either direction, and a collation change on an indexed column, including a change to `text`, `varchar`, or `char` without `COLLATE` from a column with another collation, rebuild each index on the column under the new rule `pg.alter_column_type.index_rebuild`.
-- On PostgreSQL, `ADD COLUMN` of a domain with a NOT NULL or CHECK constraint reports a rewrite, and so does a type the context read did not find, with confidence `likely`. `VALIDATE CONSTRAINT` of a foreign key reports `ROW SHARE` on the table the key points at, and confidence `likely` for a constraint the schema read does not list.
-- On PostgreSQL, a remedy keeps each name as the statement spells it and quotes reserved words, so the remedy for `"user"."select"` runs, and a quoted name with a dot in it stays one name. The traced rehearsal writes each table name as a literal with its backslashes doubled.
-- The MySQL and MariaDB impact rules read a column's `CHARACTER SET` and `COLLATE`, and the table's default collation from `information_schema.TABLES`. A new collation of the same character set, or `utf8mb3` to `utf8mb4`, changes only the data dictionary unless the column is in an index, where MySQL copies the table and MariaDB rebuilds the indexes; another character set copies the table. A `CHARACTER SET` named without `COLLATE` takes its default collation, which the rules know for `latin1` and `ascii`, and on MySQL for `utf8mb3` and `utf8mb4`. `TableStats.collation` is the table's default collation.
-- On MySQL and MariaDB, an explicit `ALGORITHM=COPY` is reported with the lock `COPY` takes, `LOCK=SHARED` on MySQL and on MariaDB before 11.2 or under `ALTER IGNORE TABLE`, and `ALGORITHM=COPY, LOCK=NONE` is reported refused there. An instant `ADD COLUMN` or `DROP COLUMN` run with `ALGORITHM=INPLACE` on MySQL, or in one `ALTER TABLE` with a change that is not instant, is reported as a table rebuild.
-- On MariaDB, widening a `VARCHAR` from 128 to 255 bytes to past 255 bytes is reported as a copy on `COMPACT`, `DYNAMIC`, and `COMPRESSED` rows, and a unique key `USING HASH` copies the table.
-- On MySQL and MariaDB, `ADD SPATIAL INDEX` and `CREATE SPATIAL INDEX` are an index build with `LOCK=SHARED`, under `mysql.add_spatial` and `mariadb.add_spatial`. `DROP COLUMN` on a table with a FULLTEXT index copies the table on MySQL and rebuilds it with `LOCK=SHARED` on MariaDB. The rules read `USING BTREE` and `USING HASH`, `ALTER INDEX ... VISIBLE` and `INVISIBLE` on MySQL and `ALTER INDEX ... IGNORED` and `NOT IGNORED` on MariaDB, under `mysql.index_visibility` and `mariadb.index_visibility`, and MariaDB's `ALTER ONLINE TABLE`, `ALTER IGNORE TABLE`, `WAIT n`, and `NOWAIT`. MySQL reads the MariaDB forms as unknown.
-- On MySQL and MariaDB, the run state keeps each InnoDB table's instant row versions, FULLTEXT index, and `ROW_FORMAT` across the statements of a run, so a later `ADD COLUMN` past the row-version limit, after `ADD FULLTEXT INDEX`, or after `ROW_FORMAT=COMPRESSED` is not asserted `INSTANT`. The row-version read decodes `@XXXX` names and partitions in `INNODB_TABLES.NAME`. `assert_algorithm` writes the clause before a trailing comment, and `asserted_migration()` keeps a migration's `repeatable` flag.
-- On SQL Server, an `ONLINE = ON` operation in a migration with `transactional=False` reports the `S` or `Sch-M` lock it waits for, draws the lock-timeout finding, and is checked by the live preflight. The finding offers `WAIT_AT_LOW_PRIORITY` for `REBUILD` on 2014 and later and `CREATE INDEX` on 2022 and later. A `WAIT_AT_LOW_PRIORITY` with `ABORT_AFTER_WAIT = SELF` or `BLOCKERS` draws no lock-timeout finding.
-- On SQL Server, `RESUMABLE = ON` inside a transaction, or without `ONLINE = ON`, is a `danger` finding under the new rule `mssql.resumable`.
-- On SQL Server, adding a `rowversion` or `timestamp` column, or a NOT NULL or `WITH VALUES` default of a large value type, `xml`, `text`, `ntext`, `image`, `hierarchyid`, a spatial type, `json`, or a CLR type, writes every row on every edition. An `INSERT ... SELECT` gets the lock-escalation note.
-- The SQL Server live preflight names a session whose transaction has work in the database even when the session's current database is another one.
-- On SQLite, an `ADD COLUMN` that SQLite refuses is a `danger` finding under the new rule `sqlite.add_column.refused`. A table whose name starts with `sqliteX` is no longer left out of the size and count reads.
 
 ### Fixed
 
-- The textual scan behind the destructive labels and the `no_drops()`, `no_table_rewrite()`, `index_must_be_concurrent()`, and `no_lock_without_timeout()` guards reads comments and whitespace by the dialect's rules: MySQL `#` comments, and MySQL `--` only before a space or a control character; the SQL inside MySQL `/*! ... */` and MariaDB `/*M! ... */` comments; nested block comments on PostgreSQL, SQL Server, and DuckDB, and the line ends each server uses; and each engine's whitespace, so `DROP` followed by a no-break space and `TABLE` blocks on SQL Server, and `CREATE INDEX CONCURRENTLY` followed by a no-break space and `idx` blocks on PostgreSQL. A comment between words reads as a space, so `DROP/**/TABLE t` is labelled. With no dialect, a drop that any engine's reading finds is labelled. `destructive_statements()`, `scannable_statement()`, and `scannable_forms()` take a `dialect`. Unclosed dollar quotes and backslash runs are read in linear time.
-- A new table's foreign key to a column or unique index the same diff adds to an existing table is added after that column and index, with and without `online=True`, and a new column that another new column references is added first. The generated migration used to fail on the missing column or key.
-- The Postgres schema read marks an index `pg_index` reports invalid, such as one a failed `CREATE INDEX CONCURRENTLY` left, and the foreign keys and checks `pg_constraint` reports not validated. The diff drops and builds an invalid index again, builds the key of a `UNIQUE` column again when its index is invalid, and emits `VALIDATE CONSTRAINT` for a declared constraint that is not validated, where it used to read them as present. A check's `NOT VALID` no longer reads as part of its expression, and the partitions of a partitioned table are no longer extra tables.
+- The destructive labels and the `no_drops()`, `no_table_rewrite()`, `index_must_be_concurrent()`, and `no_lock_without_timeout()` guards read comments and whitespace as each engine does, so a statement such as `DROP/**/TABLE t` is labelled. `destructive_statements()` takes a `dialect`.
+- A new table's foreign key to a column or unique index that the same diff adds to an existing table is added after them, where the generated migration used to fail.
+- The PostgreSQL schema read recognizes an invalid index, such as one a failed `CREATE INDEX CONCURRENTLY` leaves, and a constraint that is not validated, and the diff builds the index again or emits `VALIDATE CONSTRAINT`. The partitions of a partitioned table no longer read as extra tables.
 
 ## 2.25.0
 
-### Changed
-
-- A column or table name string is an identifier path, `*`, `table.*`, or a call on one column such as `COUNT(*)` or `SUM(tickets.price)`. Every identifier in it is quoted for the dialect. Any other string raises `ValueError`, so `orderBy(request.args["sort"])` can no longer put SQL into the statement. This covers `select()`, `where()`, `having()`, `orderBy()`, `groupBy()`, `distinctOn()`, `returning()`, `from_()`, and the columns inside aggregates and windows. A call such as `orderBy("LOWER(name)")` needs `QueryBuilder.raw()`. On the default dialect, `quote_identifier()` refuses a name that is not letters, digits, underscores, and dollar signs.
-- `whereIn()`, `havingIn()`, `whereExists()`, `havingExists()`, and their NOT and OR forms raise `ValueError` for a string argument. They rendered the string as a subquery, so `whereIn("id", "0) OR (1=1")` matched every row. A subquery written as SQL needs `QueryBuilder.raw()`. The `QueryResolvable` alias takes an `Expression` in place of `str`.
-- `ColumnExpr.in_()` and `not_in()` raise `ValueError` for a `str` or `bytes` argument. `col("status").in_("active")` rendered one value per character.
-- An INSERT, UPDATE, or DELETE raises `ValueError` when the builder has a clause the write does not render, such as `orderBy()`, `limit()`, a join, or a CTE. `where(...).orderBy("id").limit(1).delete()` deleted every matching row. Use `whereIn("id", query)` to pick a capped or ordered set of rows.
-- Every alias goes through `quote_alias()`: a `Subquery` alias, a CTE name, the `from_()` aliases, the `joinRelated()` aliases, and the `column AS alias` shorthand. A CTE name is now quoted, so raw SQL that names a mixed-case CTE bare no longer matches it on Postgres. A dotted alias raises `ValueError` on every dialect.
-- `Migrator.up()`, `down()`, `down_to()`, `baseline()`, `repair()`, and `record_rehearsal()` raise `ValueError` inside an open `transaction()` block. Their commits also committed the caller's statements, so a rollback of the block took nothing back. `AsyncMigrator` refuses the same calls inside an open `async_transaction()` block.
-- `down()` raises `MigrationError` while any failed attempt is on record. A down step that fails with nothing to roll it back marks the migration's row as failed, so validation reports it and the next `down()` does not run the half-reverted step again. `on_error` now fires when `down()` fails. The docs describe the recovery through `repair()`.
-- A tracking table read that fails for a reason other than a missing table raises the driver's error. A closed connection or a role without SELECT on the table read as a database with no history, so `status` showed every migration pending. The new `sustained.driver_errors.is_missing_table()` decides from the SQLSTATE, the driver's error code, and the message text.
-- The migration checksum frames each statement by kind and length, so splitting one statement into two, or joining two into one, counts as an edit. A tracking row or a rehearsal row written by an earlier release still matches. `repair()` rewrites a legacy row, a repeatable's row included, in the current format and reports `updated the checksum format of '<id>'`.
-- A type change from the diff that narrows the type, such as `numeric(18,6)` to `numeric(18,2)` or `double` to `int`, is labelled destructive, so `migrate` asks for a rehearsal first. The column-drop and DELETE patterns also match `ADD x int, DROP y`, `DROP COLUMN IF EXISTS`, `DELETE t WHERE`, and a DELETE after a CTE or in a MERGE branch. The diff refuses to remove a value from a MySQL enum column, a change of case included.
-- The default dialect quotes identifiers in DDL, so a table or column named `order` or `group` no longer breaks CREATE TABLE or the SQLite rebuild. Queries keep writing identifiers bare. The generated SQL text changes, so a rehearsal row recorded for a generated migration no longer matches.
-- The asyncpg adapter reads `%%` in a statement as one `%` sign, as psycopg does.
-
 ### Added
 
-- `Migrator.record_scratch_rehearsal(results)` and the async form write every row a passing `rehearse(scratch=True)` proved onto the real database, including the rows targeted runs read.
-- `Migrator.run_outcome(applied, run)` and the async form return the rehearsal outcome recorded for a run, the lookup `up()` makes.
-- `Migrator.read_schema(models)` reads the schema once, and `plan()` and `autogenerate()` take a `snapshot` argument in place of their own read. `sustained plan` reads the schema once instead of up to three times.
-- The `--json` commands print one object on stdout when the run fails, with every top-level key null and an `error` key. A successful run prints `"error": null`. A failed `migrate` prints the migrations it applied for any error, and `up()` tags every error after the first applied migration with them.
+- `record_scratch_rehearsal(results)` on either migrator writes every rehearsal row a passing `rehearse(scratch=True)` proved onto the real database, and `run_outcome(applied, run)` returns the rehearsal outcome recorded for a run.
+- `Migrator.read_schema(models)` reads the schema once for `plan()` and `autogenerate()`, which take it as `snapshot`, and `sustained plan` reads the schema once instead of up to three times.
+- The `--json` commands print one object with an `error` key when a run fails, and a failed `migrate` lists the migrations it applied.
 - A SQL migration file honours `DELIMITER <token>` lines, so a MySQL trigger or procedure body loads from a file.
-- `AsyncAdapter.session()` keeps every statement of a block on one database session, and `AsyncAdapter.autocommit_scope()` runs a non-transactional migration with the driver's transaction control off. A custom adapter that opens a new session per statement has to override `session()`, or its transactions commit their work. `aio.pinned_async_transaction()` registers an async rehearsal as an open transaction.
-- `MigrationStatement` gains a `destructive` attribute. `SchemaDiff` gains `changed_enum_checks` and `extra_enum_types`.
-- `sustained.types.ColumnReference` is `str` or `Expression`. The stubs accept `raw()` columns in `where()`, `having()`, `select()`, `orderBy()`, and `groupBy()`, and a nested `where()` group accepts a `Predicate` and a `None` value.
-- The schema read records more of the catalog: each object's own spelling, a table's schema, a foreign key's target schema, collations, `ON UPDATE`, MySQL defaults as SQL, `AUTO_INCREMENT`, the index behind a UNIQUE constraint, and SQLite's unnamed checks, triggers, and views.
+- `AsyncAdapter.session()` keeps a block's statements on one database session, and `AsyncAdapter.autocommit_scope()` runs a non-transactional migration with the driver's transaction control off. A custom adapter that opens a new session per statement has to override `session()`.
+- `MigrationStatement.destructive`, `sustained.types.ColumnReference`, and type stubs that accept `raw()` columns in `where()`, `having()`, `select()`, `orderBy()`, and `groupBy()`.
+- The schema read records more of the catalog, including each object's own spelling, schemas, collations, `ON UPDATE`, `AUTO_INCREMENT`, and SQLite's unnamed checks, triggers, and views.
+
+### Changed
+
+- A column or table name string must be an identifier path, `*`, `table.*`, or a call on one column such as `COUNT(*)`, and every identifier in it is quoted, so `orderBy(request.args["sort"])` can no longer put SQL into the statement. Any other string raises `ValueError`; write it with `QueryBuilder.raw()`.
+- `whereIn()`, `whereExists()`, `havingIn()`, `havingExists()`, and their NOT and OR forms raise `ValueError` for a string argument, and `in_()` and `not_in()` raise it for a `str` or `bytes` argument. A subquery written as SQL needs `QueryBuilder.raw()`.
+- An INSERT, UPDATE, or DELETE raises `ValueError` when the builder has a clause the write does not render, such as `orderBy()`, `limit()`, a join, or a CTE.
+- Every alias, CTE name included, is quoted through `quote_alias()`, and a dotted alias raises `ValueError`.
+- `up()`, `down()`, `down_to()`, `baseline()`, `repair()`, and `record_rehearsal()` raise `ValueError` inside an open `transaction()` or `async_transaction()` block, since their commits also committed the caller's statements.
+- `down()` raises `MigrationError` while a failed attempt is on record, a down step that fails without a rollback marks its row as failed, and `on_error` fires when `down()` fails.
+- A tracking table read that fails for a reason other than a missing table raises the driver's error, where it read as a database with no history.
+- The migration checksum counts splitting or joining statements as an edit, rows written by earlier releases still match, and `repair()` rewrites them in the current format.
+- A narrowing type change, such as `numeric(18,6)` to `numeric(18,2)`, is labelled destructive, and the destructive scan matches more forms of column drops and DELETE. The diff refuses to remove a value from a MySQL enum column.
+- The default dialect quotes identifiers in DDL, so a table or column named `order` no longer breaks CREATE TABLE or the SQLite rebuild. The generated SQL changes, so a rehearsal row recorded for a generated migration no longer matches.
+- The asyncpg adapter reads `%%` in a statement as one `%` sign, as psycopg does.
 
 ### Fixed
 
-- The package imports on Python 3.9 to 3.11. An f-string in `autogenerate.py` split a string across lines inside a replacement field, so `up(models=...)`, `plan`, `drift`, and the async migrator raised `SyntaxError` there.
-- An async transaction stays on one DuckDB session. Each cursor was its own session, so the work committed at once and an async rehearsal on DuckDB applied its migrations for real.
-- An async rehearsal counts as an open transaction, so a callable step's `arun()` skips its commit and a nested `async_transaction()` takes a savepoint. On SQLite the commit made earlier tables in the rehearsal permanent.
-- A failed commit in `async_transaction()` rolls the block back. A write that raises outside a transaction block rolls the connection back. `transaction()` drives the block with BEGIN, COMMIT, and ROLLBACK statements on a connection in autocommit, where the driver's `rollback()` did nothing.
-- `AsyncMigrator` runs a non-transactional migration with the driver's transaction control off, so the SQLite rebuild's `PRAGMA foreign_keys` takes effect.
-- The migration lock scope rolls the session back before it unlocks. A failed non-transactional migration on Postgres left the session aborted, the unlock was refused, and every other migrator blocked until the connection closed. A refused unlock now raises or prints on stderr.
-- `baseline()` refuses to record a migration with a failed row and rolls back a partial write.
-- `AsyncMigrator.status()`, `statuses()`, and `validate()` read the tracking table without creating it or adding columns.
-- A cancelled `AsyncConnectionPool.release()` or `acquire()` keeps the pool slot. `DbApiAsyncAdapter` keeps its lock until a cancelled call's thread ends, and undoes a cursor or autocommit switch that the cancelled call left behind. Both pools wake a waiter when a slot frees, so a waiter no longer times out beside a free slot. A release that races `close()` closes the connection. `AsyncConnectionPool` runs its factory outside any lock and wakes every waiter on `close()`.
-- `to_sql()` doubles literal `%` signs on Postgres and MySQL, so `whereRaw("price % ? = ?", [10, 0])` runs on psycopg and PyMySQL.
-- `joinRelated()` names the related table and a through model with their schema and database.
-- `where(column, "IS", True)` renders `IS TRUE`, `IS NOT DISTINCT FROM TRUE` on Presto and Athena, and a NULL-aware comparison with 1 on MSSQL.
-- `first()` caps the query with `TOP 1` on MSSQL when it has no ORDER BY.
-- A CTE inside a subquery given to `whereIn()`, `whereExists()`, a select-list `Subquery`, `in_()`, or a join condition moves into the top-level WITH clause, which MSSQL requires.
-- Dates, timestamps, decimals, and bytes render as SQL literals in each dialect's form. They raised `TypeError`.
-- MSSQL string literals take the `N` prefix, so characters outside the database's code page are kept.
-- `top()` and `offset()` refuse each other, since the pair has no form that runs.
-- `MOD(a, b)` renders as `(a % b)` on MSSQL.
-- A many-to-many `leftJoinRelated()` or full join uses LEFT JOIN at the link table, so a row with no link row stays in the result.
-- The SQLite rebuild quotes every name, fills NULLs from the default when it tightens a column, and keeps collations, unnamed checks, multi-column UNIQUE constraints, and triggers. A view or trigger that names the table no longer breaks the rename. A column that `ADD COLUMN` refuses, such as a UNIQUE column or one with a non-constant default, goes through the rebuild. A rebuilt table gets no separate index statements.
-- A removed UNIQUE constraint drops with DROP CONSTRAINT on Postgres and SQL Server and through the rebuild on SQLite.
-- An enum CHECK on SQLite and SQL Server is diffed, so an added or removed value generates a migration.
-- Foreign key targets and actions are read on MySQL, MariaDB, and SQL Server. A table or column rename hint also points child foreign keys at the new name, and a key to a table in another schema matches by its target's schema.
-- Postgres checks are read from `pg_constraint` by table, so two tables with a check of one name no longer read each other's expression.
-- Undeclared tables drop after the tables that point at them, and the keys in a cycle drop first.
-- Generated drops use the catalog's spelling of a name and name the schema of a table outside the connection's schema.
-- A column change lifts the indexes and defaults that DuckDB and SQL Server refuse to keep across it, and puts them back after.
-- A MySQL column change restates the catalog's default as SQL, `ON UPDATE`, the collation, and `AUTO_INCREMENT`. A comment change restates the column as the catalog reports it rather than as the model declares it. A SQL Server column change restates the collation.
-- DuckDB constraints pair with the models by content, and DuckDB reads TEXT as VARCHAR, so plans converge. A DuckDB index on a keyword column reads back.
-- SQL Server reads column lengths and precision, so a widened String or a changed Numeric generates a migration.
-- MySQL enum values compare with their case intact.
-- A generated migration drops a named enum type together with the last table or column that uses it.
-- The SQL file splitter keeps line-ending semicolons inside strings, quoted identifiers, block comments, and dollar-quoted bodies, and reads strings with and without backslash escapes.
-- A rehearsal records the key for an untargeted run that follows targeted runs, repeatables included. Its rows go in one transaction, so 400 destructive migrations record in 0.4 seconds where they took 25.
-- `script("down")` renders a generated migration from its tracking row, as `down()` reverts it.
-- A multi-row insert renders its template from a shallow copy, which halves the time of a 200,000-row insert on SQLite.
+- The package imports on Python 3.9 to 3.11, where `up(models=...)`, `plan`, `drift`, and the async migrator raised `SyntaxError`.
+- Async transactions: a DuckDB transaction stays on one session, an async rehearsal counts as an open transaction, a failed commit in `async_transaction()` rolls the block back, and `AsyncMigrator` runs a non-transactional migration with transaction control off. An async rehearsal on DuckDB or SQLite no longer applies its migrations for real.
+- The migration lock scope rolls the session back before it unlocks, so a failed non-transactional migration on Postgres no longer blocks every other migrator. `baseline()` refuses a migration with a failed row, and `AsyncMigrator.status()`, `statuses()`, and `validate()` no longer create the tracking table.
+- A cancelled `acquire()` or `release()` keeps the pool slot, and both pools wake a waiter when a slot frees.
+- Query rendering: `to_sql()` doubles literal `%` signs on Postgres and MySQL, dates, timestamps, decimals, and bytes render as SQL literals, and a many-to-many `leftJoinRelated()` keeps rows with no link row. On MSSQL, `first()` uses `TOP 1`, a nested CTE moves into the top-level WITH clause, string literals take the `N` prefix, and `MOD()` renders as `%`.
+- Schema diff: the SQLite rebuild quotes every name and keeps collations, checks, UNIQUE constraints, and triggers, enum CHECKs on SQLite and SQL Server are diffed, and foreign key targets and actions are read on MySQL, MariaDB, and SQL Server. Drops follow the tables that point at them, DuckDB and SQL Server lift indexes and defaults across a column change, DuckDB plans converge, and SQL Server reads column lengths and precision.
+- The SQL file splitter keeps semicolons inside strings, quoted identifiers, comments, and dollar-quoted bodies, a rehearsal records its rows in one transaction, `script("down")` renders a generated migration from its tracking row, and a 200,000-row insert on SQLite takes half the time.
 
 ## 2.24.2
 
 ### Fixed
 
-- A second join through the same many-to-many relation renders its link table as `<alias>_<link table>`, such as `support_show_artists`, and both of its `ON` conditions use that name. The link table rendered under its bare name in both joins, so `innerJoinRelated('artists', alias='headline').leftJoinRelated('artists', alias='support')` named `show_artists` twice and the database rejected the statement. The first join keeps the bare name, so a query with one many-to-many join renders the same SQL. A repeated join through a link table without an alias raises `ValueError`.
-- Every query builder method name matches without regard to case or underscores, as the documentation described. Only join names did: `WHERE` and `ORDERBY` passed the family pattern and then raised an `AttributeError` naming the clause builder, a defined method such as `select` matched only its exact spelling, and `where_ilike` and `WHERE_IN` did not resolve. The rule covers the `join`, `where`, and `having` families, `orderBy`, the defined methods, the `on` builder inside a join, and the builder a nested `where` group receives. `COUNT()` with no argument reaches the `count()` method, which renders `COUNT(*)`. The type stubs describe only the canonical spellings.
+- A second join through the same many-to-many relation names its link table `<alias>_<link table>`, so two aliased joins through one relation no longer render the same link table twice. A repeated join through a link table without an alias raises `ValueError`.
+- Every query builder method name matches without regard to case or underscores, as the documentation described, so `where_ilike`, `WHERE_IN`, and `COUNT()` resolve.
 
 ## 2.24.1
 
 ### Fixed
 
-- A sqlite3 connection opened with `connect(factory=...)` was not recognized, so a non-transactional migration kept the implicit transaction and SQLite ignored the foreign key pragmas a rebuild needs. Detection now tests the class, not the module name.
-- A schema read on Presto or Trino no longer raises when two schemas contain a table with the same name. Those catalogs read every schema they can see, and the API offers no way to narrow the read, so the refusal left those callers stuck. They keep the constraint join fallback instead. Dialects whose read is scoped to a schema, such as Postgres, still refuse the duplicate name.
-- A statement handed the pool inside `async_transaction(pool)` runs on the adapter the block checked out. It checked a second adapter out, so the write ran outside the transaction and committed on its own, and a pool of one adapter deadlocked into `PoolTimeout`. A nested `async_transaction(pool)` had the same defect and now opens a savepoint on that adapter, the way the blocking `transaction(pool)` nests.
-- `ConnectionPool.release()` attempts the rollback on every release. It stopped asking after one driver refusal, which duckdb produces whenever no transaction is open, so a connection released later with a transaction open went back to the idle queue still inside it and the next caller inherited its locks and its snapshot.
-- `AsyncConnectionPool.release()` probes an adapter whose rollback raised with `SELECT 1` and keeps the one that answers. It dropped the adapter for any rollback error, and duckdb raises whenever no transaction is open, so every release closed and reopened the connection and an in-memory duckdb database lost its contents after the first one.
-- A rehearsal leaves a migration with `transactional=False` out of the run. It ran the migration inside the rehearsal transaction, where `CREATE INDEX CONCURRENTLY` raises and SQLite ignores the rebuild pragmas, so the rehearsal failed a migration a real `up()` applies and a destructive run that contains one could never earn its rehearsal row. The result reports `up_ok` as `None` with the reason, and the run can still pass.
-- The model registry keeps the newest class when a module reload rebuilds one. The identity comparison read the rebuilt class as a second definition, so a dev-server autoreload or a re-run notebook cell marked the name ambiguous forever and every string reference to it raised, naming the same class twice.
-- `AsyncMigrator`'s schema read runs through the shared guarded loop, so on Postgres each catalog query takes a savepoint and one missing view no longer poisons the transaction for every statement after it. `async_introspect_schema()` gains a `recorder` argument that receives each plan statement and its rows, which is how the migrator keeps its recording; the savepoints stay out of it.
-- A type or nullability change on MySQL and SQL Server restates the column's current default and comment, read from the catalog, instead of the model's. The restated definition folded a default or comment drift in silently, and the down step wrote the model's default over the one the column had, so the round trip lost it. Such a drift stays a note on the diff.
-- The rehearsal prefix keys compute each migration's checksum once. The slice loops recomputed it per start and end pair, which on a run of fifty pending migrations hashed the statements over a thousand times.
+- A non-transactional migration on a sqlite3 connection opened with `connect(factory=...)` runs outside the implicit transaction, so the rebuild's foreign key pragmas take effect.
+- A schema read on Presto or Trino no longer raises when two schemas have a table of the same name.
+- A statement given the pool inside `async_transaction(pool)` runs on the block's adapter, where it ran outside the transaction, and a nested block opens a savepoint.
+- `ConnectionPool.release()` rolls back every connection it takes back, and `AsyncConnectionPool.release()` keeps an adapter whose rollback raised when it answers `SELECT 1`, so a DuckDB connection no longer keeps an open transaction or loses an in-memory database.
+- A rehearsal leaves a migration with `transactional=False` out of the run and reports `up_ok` as `None`, so a run that contains one can pass.
+- The model registry keeps the newest class after a module reload, the async Postgres schema read survives a missing view, a MySQL or SQL Server column change restates the column's current default and comment, and the rehearsal keys compute each checksum once.
 
 ## 2.24.0
 
 ### Added
 
-- A migration can run outside a transaction: `Migration(transactional=False)`, or a `-- sustained: no transaction` comment in a SQL file. `CREATE INDEX CONCURRENTLY` needs this. A failure leaves the earlier statements applied; clean up and run `repair()`.
-- `AsyncMigrator` runs the whole workflow. It gains `script()`, `plan()`, and `drift()`, and `up()` and `rehearse()` take `models` and the diff options. The async path records its schema read with `SchemaRead` and replays the recording into the diff.
-- `AsyncConnectionPool` opens adapters from an async factory up to `max_size` and works with `Model.bind_async()`. It refuses `fetch()`, `execute()`, and `commit()` on itself; use `pool.scope()`, which pins one connection for a statement and its commit.
-- Guards see migration boundaries: each statement arrives as `MigrationStatement`, a `str` subclass carrying the migration id and its transaction flag. `no_lock_without_timeout` now scopes a `SET LOCAL lock_timeout` to its own migration's transaction.
-- Check constraints are read on MySQL, MariaDB, SQL Server, and DuckDB, so a declared `Check` diffs there. Presto and Athena stay unread through the new `reads_checks` flag. Engine-written NOT NULL and `json_valid` checks are filtered out.
-- DuckDB enum types are read from `duckdb_types()`, so a type no column uses stops reading as absent and generation no longer emits a duplicate `CREATE TYPE`. A DuckDB too old for the view falls back to the old inference.
-- `crossJoin()` accepts the table on its own, since a cross join has no condition.
-
-### Fixed
-
-- A `Subquery` in a select list, function argument, or join condition renders with placeholders through the statement's parameters. It used to inline its values as literals, which defeats statement caching. `str()` on a builder still inlines.
-- A nested `CASE`, `Func`, aggregate, window, or `col()` used as a function argument or comparison value renders through the active compiler, via the new `Compiler.format_operand()`. It used to render for the wrong dialect or bind the object as a parameter.
-- `CaseExpression.__str__` escapes a string result through `compile_case`, so a result such as `O'Brien` no longer breaks the SQL.
-- Identifiers double the quote character inside a name on every dialect, so a name carrying the delimiter cannot end the quoted span early.
-- `on()`, `andOn()`, and `orOn()` validate the join operator against the set `where()` accepts, so outside input cannot append SQL to the ON clause.
-- Raw SQL fragments count `?` markers with a quote-aware scan; a question mark inside a string literal no longer miscounts or shifts values.
-- A multi-row insert whose values include a raw `Expression` runs as one statement rather than through `executemany()`. Batch inserts also report their row values to the statement listener.
-- An offset with no limit renders `LIMIT -1 OFFSET n` on the default dialect, which SQLite accepts. Postgres and DuckDB keep their bare `OFFSET` through the new `compile_offset_without_limit` hook.
-- Eager loading gives each parent its own list of children; two parents that share a join key no longer share one list object.
-- A query handed an explicit pool inside `transaction(pool)` runs on that block's pinned connection instead of checking out a second one and committing on its own.
-- Every cursor closes when its statement finishes, through `execution.cursor_scope()`, which stops pyodbc and MySQL "commands out of sync" errors. `close()` joins the `Cursor` protocol, so a test double needs it.
-- `Model.create_table()` and `Model.drop_table()` commit their DDL when no `transaction()` block owns the connection.
-- `ConnectionPool.release()` rolls back before re-queueing, probes with `SELECT 1` and drops a connection that fails, and raises `ValueError` for a double release or a foreign connection.
-- `transaction()` belongs to the thread that opened it; a second thread gets `RuntimeError`. A nested rollback releases its savepoint, and a failing rollback no longer replaces the caller's error.
-- `async_transaction()` picks driver or statement transaction control the way `transaction()` does, through the new `driver_transaction_control()`, so psycopg2 no longer refuses the explicit `BEGIN`. Autocommit and legacy sqlite3 keep the statements.
-- A rehearsal runs inside one pinned transaction via `execution.pinned_transaction`. On DuckDB each cursor is its own session, so rehearsed DDL used to commit as it ran and the closing rollback took nothing back.
-- A rehearsal records a row for every start point as well as every end point, so `up(target=A)` then `up(target=B)` no longer demands a rehearsal it already proved. Building the keys costs one pass instead of re-hashing every prefix.
-- The advisory lock result is checked before the run starts. MySQL `GET_LOCK` and MSSQL `sp_getapplock` signal refusal in their return value; both migrators now raise `MigrationError` through the new `migration_lock_problem()`.
-- `script()`, `status()`, `statuses()`, `pending()`, `validate()`, and `plan` no longer create or upgrade the tracking table. They read through the new `read_applied_records()`, and a database without the table reports every migration pending.
-- `down()` checks the whole revert window before reverting anything, so a run no longer stops half reverted on an edit or a missing down step it knew about at the start.
-- `AsyncMigrator.down()` reverts a migration generated from the models; it read the fetch result wrong and raised "not registered with this migrator".
-- A generated migration that failed no longer joins the registered list, so a long-lived migrator does not repeat its SQL on the next `up()`.
-- The migration's own error survives a failed switch back to transaction control. A refused switch leaves the connection in autocommit; open a new connection to get transaction control back.
-- The statement splitter takes a semicolon followed by a comment, so `...); -- note` no longer glues the next statement onto that one.
-- The migration file naming check reads every file in the directory, so a typo'd extension such as `.sq` raises instead of loading nothing. Subdirectories, dotfiles, and editor copies are passed over.
-- The destructive scan labels `DELETE FROM`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, and `DROP SCHEMA ... CASCADE`. A token pass keeps a `--` inside a string literal from hiding a drop, and a drop named inside quotes is no longer labelled.
-- The `plan` command keys its guard verdicts by the normalized statement, so a custom guard's verdicts reach `plan --json` instead of an empty list.
-- A result set that repeats a column name raises the new `AmbiguousColumns` error naming the columns, instead of the last value silently winning in every row dict. The check runs everywhere a row dict is built, sync and async.
-- Attribute access on a model instance raises for a column the row does not carry, instead of answering the column name string, so `hasattr()` tells whether a field was loaded. Class access is untouched.
-- The model registry no longer resolves a shared name to the wrong class. A string reference resolves through the module that declares the relation and raises `ValueError` naming every candidate when that fails.
-- Views stay out of the shared `information_schema` read on MySQL, MariaDB, SQL Server, DuckDB, Presto, and Athena, so a view no longer diffs as an undeclared table or draws a `DROP TABLE`.
-- MySQL `MODIFY` and SQL Server `ALTER COLUMN` restate the whole column through a new `ColumnState`, so an alter no longer drops NOT NULL, the default, the identity property, or the comment. Down steps carry the same fix.
-- Postgres foreign keys are read from `pg_constraint`, so two same-named keys on different tables in one schema no longer cross-multiply into a spurious drop and re-add.
-- Columns compare by their lowercased names, and the diff and the step generator share one type-change predicate, so a nullability-only drift no longer regenerates the type and truncates a MariaDB `datetime(6)`.
-- `normalize_check()` also strips identifier quoting and operator spacing, so a check the engine rewrote compares equal to its declaration. A call keeps its parentheses, so two different checks stay different.
-- `normalize_default()` reduces `nextval(...)` to `None`, strips outer parentheses only when they pair, and covers a cast with a length such as `::character varying(255)`.
-- New tables are created in dependency order. Where the engine takes `ALTER TABLE ADD CONSTRAINT`, every foreign key follows `CREATE TABLE` as its own statement, so tables may point at each other. The ordering walk survives thousand-table chains.
-- The table rebuild is kept to dialects that can run it. The new `rebuild_strategy()` makes Presto and Trino raise `DialectError` with a hand-written recipe instead of failing on the first statement.
-- A SQLite rebuild of a referenced table runs between `PRAGMA foreign_keys = OFF` and `ON` with `transactional=False`, since SQLite ignores the pragmas inside a transaction. A failed step leaves enforcement off on that connection; the docs say how to restore it.
-- The refusal of a new NOT NULL column with no default and no backfill runs before the rebuild path, refuses only while the table contains rows, and counts an unreadable row probe as rows.
-- SQLite pragmas quote the table and index name, so a name with a space or a double quote reads.
-- Each Postgres catalog query runs inside a savepoint, released after a rollback, so one missing view no longer aborts the whole read. The async read stops asking once the connection refuses savepoints.
-- Athena records a comment change as a diff note instead of stopping the run, since Athena refuses the change in place. A hand-written `set_column_comment` step still raises.
-- Athena `TBLPROPERTIES` keys and values escape their quotes.
-- SQL Server `sp_rename` parses the bracketed path into segments and passes only the final segment as the new name, so quoted and schema-qualified names work.
-- The live schema is read once per `autogenerate()` run instead of twice, and column comments are selected beside the other column data instead of in a second full read.
-- The CLI removes the `sys.path` entry it added by value, not by position, so a config module that prepends its own directory keeps that entry.
-- A compiler override written before the render context keeps working. The `Compiler` base class wraps the old signature at class creation, including `staticmethod` and `classmethod` overrides.
-- `GuardBlocked([])` builds its message instead of raising `ValueError` over an empty `max()`.
-- A capitalized join spelling such as `LeftJoin` resolves, and an unknown name that looks like a join raises `AttributeError` so `hasattr()` works.
-- The docs say a row count of `-1` from an async write means the driver reported no count; asyncpg does this for batched inserts. `returning()` gives an exact count.
-- The matrix runner runs the container-free targets when compose fails, instead of reporting sqlite, duckdb, and athena as not started.
-- The README links to the schema guide with the site URL, so the link works on GitHub and PyPI.
+- `Migration(transactional=False)`, or a `-- sustained: no transaction` comment in a SQL file, runs a migration outside a transaction, which `CREATE INDEX CONCURRENTLY` needs. A failure leaves the earlier statements applied; clean up and run `repair()`.
+- `AsyncMigrator` gains `script()`, `plan()`, and `drift()`, and its `up()` and `rehearse()` take `models` and the diff options.
+- `AsyncConnectionPool` opens adapters from an async factory up to `max_size` and works with `Model.bind_async()`. Statements run through `pool.scope()`.
+- Guards receive each statement as a `MigrationStatement`, which names its migration and whether it runs in a transaction, and `no_lock_without_timeout()` scopes a `SET LOCAL lock_timeout` to its own migration.
+- Check constraints are read on MySQL, MariaDB, SQL Server, and DuckDB, so a declared `Check` diffs there, and DuckDB enum types are read from `duckdb_types()`.
+- `crossJoin()` accepts a table on its own.
 
 ### Changed
 
-- Every parameter after `allow_out_of_order` on `Migrator.up()` and `AsyncMigrator.up()` is keyword-only, so a positional call written for an earlier release raises `TypeError` at once. `rehearse()` keeps its signature.
-- `Migration` raises `ValueError` when a checksum is given on SQL, statement-list, or ddl steps, which hash themselves; a pinned checksum hid edits from validation. Callable steps still take one. Run `repair()` if a stored row no longer matches.
-- `down()` refuses a migration whose checksum no longer matches its tracking row, as `up()` already did. `allow_changed`, and `sustained down --allow-changed`, revert with the down step as it stands.
-- `down()` refuses a revert count below 1. A negative `--steps` used to revert everything but the oldest and exit 0; a count of 0 still reverts nothing.
-- A run that includes `DELETE FROM`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, or `DROP SCHEMA ... CASCADE` needs a passing rehearsal row before `migrate` applies it, or `--unrehearsed`. A plain `DROP SCHEMA` still passes.
+- Every parameter after `allow_out_of_order` on `up()` of either migrator is keyword-only.
+- `Migration` raises `ValueError` for a checksum given on SQL, statement-list, or ddl steps, which hash themselves. Run `repair()` if a stored row no longer matches.
+- `down()` refuses a migration whose checksum no longer matches its tracking row unless given `allow_changed=True` or `sustained down --allow-changed`, and refuses a revert count below 1.
+- A run that includes `DELETE FROM`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, or `DROP SCHEMA ... CASCADE` needs a passing rehearsal row, or `--unrehearsed`, before `migrate` applies it.
 - `no_lock_without_timeout()` reads the run in order, so a `SET lock_timeout` written after an `ALTER TABLE` no longer excuses it.
-- An undeclared check read on MySQL, MariaDB, SQL Server, or DuckDB becomes a diff note rather than a refusal, since engine rewrites make the comparison unreliable. `allow_drops` still drops it.
-- Postgres, SQL Server, and DuckDB reads cover the connection's schema plus every schema the models declare, instead of every non-system schema, since the snapshot keys on bare table names. Presto and Trino stay unscoped. MySQL widens from `DATABASE()`.
+- An undeclared check on MySQL, MariaDB, SQL Server, or DuckDB is a diff note instead of a refusal, and the Postgres, SQL Server, and DuckDB schema reads cover the connection's schema and the schemas the models declare.
+
+### Fixed
+
+- Query rendering: a `Subquery` binds its values as parameters, nested expressions render for the query's dialect, identifiers escape their quote character, and `on()` validates its operator. Raw SQL no longer counts a `?` inside a string literal, and an offset with no limit runs on SQLite.
+- Every cursor closes when its statement finishes, which stops pyodbc and MySQL "commands out of sync" errors; `close()` joins the `Cursor` protocol, so a test double needs it.
+- Transactions and pools: `transaction()` belongs to the thread that opened it, a query given a pool inside `transaction(pool)` runs on the pinned connection, `ConnectionPool.release()` rolls back and drops a connection that fails a probe, and `async_transaction()` works on psycopg2. A rehearsal on DuckDB rolls back its DDL.
+- Migrations: both migrators raise `MigrationError` when the advisory lock is refused, `script()`, `status()`, `pending()`, `validate()`, and `plan` no longer create the tracking table, and `down()` checks the whole revert window before it reverts anything. `up(target=A)` followed by `up(target=B)` no longer asks for a rehearsal it already proved.
+- A result set that repeats a column name raises `AmbiguousColumns`, attribute access for a column the row does not have raises, and a string model reference resolves through the module that declares the relation.
+- Schema diff: views stay out of the schema read, a MySQL or SQL Server column change keeps NOT NULL, the default, the identity, and the comment, new tables are created in dependency order, and a nullability drift no longer regenerates the type. Presto and Trino raise `DialectError` for a table rebuild, and a SQLite rebuild of a referenced table runs with foreign keys off.
+- The destructive scan labels `DELETE FROM`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, and `DROP SCHEMA ... CASCADE`, the statement splitter handles a semicolon followed by a comment, and a misnamed migration file raises. `plan --json` includes a custom guard's verdicts.
 
 ## 2.23.1
 
 ### Fixed
 
-- Athena parameterized queries execute: the placeholder is now `?` instead of `%s`, which pyathena's pyformat style could not take as a tuple. Set `pyathena.paramstyle = "qmark"` (pyathena 3 or later) so the tuple travels as native execution parameters.
-- Athena DDL quotes identifiers with backticks for the Hive parser, through the new `quote_ddl_identifier` compiler hook. Queries and `MERGE` keep double quotes for the Trino engine.
-- Every Athena string column renders `STRING`, which Iceberg tables need. The new `normalize_diff_type` hook folds the reported `varchar` back, so the column never drifts against its own DDL.
-- Athena execution parameters travel as strings through the new `prepare_execution` hook: numbers via `str()`, booleans as `true`/`false`, `None` as a literal `NULL`; binary raises `DialectError`. Pass `to_sql()` output through it if you execute it yourself.
-- Athena introspection reads only the connection's schema. It read every Glue database in the account, which was slow and failed on any table with broken metadata.
+- Athena parameterized queries run, with `?` as the placeholder; set `pyathena.paramstyle = "qmark"` (pyathena 3 or later). Parameters are sent as strings through the new `prepare_execution` hook, which `to_sql()` output needs when you execute it yourself.
+- Athena DDL quotes identifiers with backticks, every string column renders `STRING` for Iceberg tables without drifting, and introspection reads only the connection's schema.
 
 ## 2.23.0
 
 ### Added
 
-- Column comments: every column definition takes a `comment`, stored where the engine has a place for one. Introspection reads them back, diffs report a change, and `set_column_comment` covers hand-written migrations. Athena refuses a change after `CREATE TABLE`.
+- Every column definition takes a `comment`, which introspection reads back and the diff compares, and `set_column_comment` sets one in a hand-written migration. Athena refuses a change after `CREATE TABLE`.
 
 ## 2.22.0
 
 ### Added
 
-- `Binary()` in `sustained.schema` declares a bytes column: `BLOB` by default, `BYTEA` on Postgres, `VARBINARY(MAX)` on SQL Server, `BINARY` on Athena. Introspection folds the variants back, so no drift. MySQL treats it off-row: no unique key, no literal default.
-- The **Covered** column on the [support page](https://sustained.tbmh.org/support) is proven: each cover maps to a module in `tests/integration`, and a contract test fails when `support.json` and the test classes disagree. Five covers: queries, writes, transactions, migrations, async.
-- `matrix.py` gains a `<name>-latest` target per container database, running the newest vendor-supported release pinned in `support.json`.
+- `Binary()` in `sustained.schema` declares a bytes column in each dialect's type, such as `BYTEA` on Postgres and `VARBINARY(MAX)` on SQL Server.
+- The **Covered** column on the [support page](https://sustained.tbmh.org/support) maps each claim to a module in `tests/integration`, and a contract test fails when they disagree.
+- `matrix.py` gains a `<name>-latest` target per container database, which runs the newest release the vendor supports.
 
 ### Fixed
 
-- `transaction()` spells nested-transaction savepoints per dialect: `SAVE TRANSACTION` on SQL Server, and nesting on DuckDB raises `DialectError` before any statement is sent.
-- `transaction()` works on the duckdb driver, which autocommits and gives each cursor its own session. A transaction now pins one cursor for every statement inside it, so a failed multi-statement migration rolls back.
-- `async_transaction()` renders its transaction control through the dialect compiler the same way.
-- sqlite3 connections in legacy transaction control get an explicit `BEGIN` from `transaction()`, so a rolled-back block no longer keeps its schema changes.
-- A NOT NULL change with a `backfill` on DuckDB compiles to `SET DATA TYPE ... USING coalesce(...)`, because DuckDB refuses `SET NOT NULL` after an `UPDATE` in the same transaction.
-- Plain indexes are read back on MySQL, MariaDB, SQL Server, and DuckDB, so a declared index no longer drifts on every plan. Indexes that back foreign keys never demand `allow_drops`.
-- Set-operation members render without parentheses on the default dialect, which SQLite rejects, so `union()` and its siblings run there. A bare member with its own ORDER BY or LIMIT raises `DialectError`.
+- `transaction()` nests with `SAVE TRANSACTION` on SQL Server and raises `DialectError` for nesting on DuckDB, and it works on the duckdb driver, so a failed multi-statement migration rolls back. sqlite3 connections in legacy transaction control get an explicit `BEGIN`.
+- A NOT NULL change with a `backfill` runs on DuckDB, plain indexes are read back on MySQL, MariaDB, SQL Server, and DuckDB, and `union()` and the other set operations run on SQLite.
 
 ## 2.21.0
 
 ### Added
 
-- `Enum(*values, name=...)` in `sustained.schema` declares a column over a named, ordered value list. Postgres and DuckDB create a named type, MySQL renders inline `ENUM(...)`, the default dialect and MSSQL render VARCHAR plus a CHECK. Presto and Athena refuse it.
-- Migration generation covers enum types: `ALTER TYPE ... ADD VALUE` on Postgres (irreversible; PostgreSQL 12 is the floor for rehearsing it), a restated `MODIFY COLUMN` on MySQL, a re-created CHECK elsewhere. Removing or reordering values refuses with a rebuild recipe.
-- `Check(name, expression)` and `ForeignKey(name, columns, references, on_delete=, on_update=)` declare named table constraints in the new `tableConstraints` attribute, with composite columns and the five referential actions.
-- Migration generation covers those constraints: a missing one generates `ADD CONSTRAINT` with a drop as its down step; changed and undeclared ones are gated by `allow_drops`. SQLite routes constraint changes through its table rebuild.
-- `sustained.ddl` provides typed steps for hand-written migrations, from `create_table` to a raw `sql()` escape hatch. A step renders through the dialect compiler at run time, so one migration serves every dialect, and its checksum hashes the operation rather than the rendered SQL.
-- A `Migration` whose up step is all reversible ddl steps derives its down step, newest first. Any drop, `add_enum_value`, or `sql()` refuses and asks for an explicit down step or `down=None`.
-- Postgres introspection gets a dedicated read: real foreign key targets, non-unique indexes, varchar lengths, precision and scale, CHECK expressions, and enum value lists. SQLite recovers constraint names from `sqlite_master`; MySQL parses inline enums.
+- `Enum(*values, name=...)` in `sustained.schema` declares a column over a named, ordered value list, and migration generation adds values to it. Removing or reordering values refuses with a rebuild recipe.
+- `Check(name, expression)` and `ForeignKey(name, columns, references, on_delete=, on_update=)` declare named table constraints in `tableConstraints`, and migration generation adds them, with changed and undeclared ones gated by `allow_drops`.
+- `sustained.ddl` provides typed steps for hand-written migrations that render for the dialect at run time, so one migration serves every dialect. A migration whose up step is all reversible ddl steps derives its down step.
+- The Postgres schema read covers foreign key targets, non-unique indexes, varchar lengths, precision and scale, CHECK expressions, and enum values.
 
 ### Changed
 
-- `DROP TYPE` and `DROP CONSTRAINT` (with `DROP CHECK` and `DROP FOREIGN KEY`) count as destructive: `plan` labels them, `no_drops()` blocks them, and the rehearsal gate covers them. Index and key drops still pass.
-- `supports_constraints()` is `False` on Presto, which enforces none. Declared table constraints raise `DialectError` there and on Athena, and the tracking table renders without constraints on both.
+- `DROP TYPE` and `DROP CONSTRAINT` count as destructive: `plan` labels them, `no_drops()` blocks them, and they need a rehearsal.
+- Declared table constraints raise `DialectError` on Presto and Athena.
 
 ## 2.20.0
 
 ### Changed
 
-- The row a rehearsal writes is called a rehearsal row throughout the documentation and the code, in place of the earlier word "receipt". `rehearsal_key()` replaces `receipt_key()` in `sustained.migrations`, and the outcome constants are `REHEARSAL_PASSED`, `REHEARSAL_FAILED`, and `REHEARSAL_OVERRIDE`. The stored table, its column names, and every key a database already holds are untouched, so a rehearsal recorded by an earlier version still opens the gate.
-- `sustained rehearse` prints `rehearsal row recorded`, and a scratch run that covered too little prints `rehearsal row not recorded`, where both lines said `receipt` before. A script matching that text needs updating.
-
-### Deprecated
-
-- `receipt_key()`, `RECEIPT_PASSED`, `RECEIPT_FAILED`, and `RECEIPT_OVERRIDE` in `sustained.migrations`. Each still imports and raises a `DeprecationWarning` naming its replacement, and goes away in 3.0.
+- The row a rehearsal writes is called a rehearsal row, where it was a receipt: `rehearsal_key()` replaces `receipt_key()`, and the outcome constants are `REHEARSAL_PASSED`, `REHEARSAL_FAILED`, and `REHEARSAL_OVERRIDE`. Stored rows are untouched, so a rehearsal recorded by an earlier version still opens the gate.
+- `sustained rehearse` prints `rehearsal row recorded` and `rehearsal row not recorded`, where it printed `receipt`.
+- `receipt_key()`, `RECEIPT_PASSED`, `RECEIPT_FAILED`, and `RECEIPT_OVERRIDE` are deprecated. Each raises a `DeprecationWarning` naming its replacement and goes away in 3.0.
 
 ## 2.19.0
 
 ### Added
 
-- A written [support policy](https://sustained.tbmh.org/support). `runs` means the integration suite applies migrations to a real server; `builds` means the SQL compiles under unit tests. The page also states the Python floor, the deprecation path, and what each version number promises.
-- That list lives once, in `support.json`. `sync_support.py` renders the page from it, and a pre-commit hook fails when they disagree or a claim has no test module or compose service behind it.
-- An integration suite in `tests/integration/`: one shared body applies the models, diffs, migrates, reverts, rehearses, validates, repairs, contends for the advisory lock, and round-trips a query on every server. `SUSTAINED_TEST_STRICT=1` turns skips into failures.
-- `matrix.py` runs that suite: it starts servers from `docker/compose.yaml`, runs each module, and prints one line per server. Exit 0 clean, 1 failure, 2 waiting. A set connection variable uses that server and starts no container. Athena runs in your own AWS account.
-- `Compiler.compile_create_table()` renders the whole CREATE TABLE statement, so a dialect that spells the if-missing check differently overrides one method.
+- A written [support policy](https://sustained.tbmh.org/support) that lists the supported databases and Python versions and states the deprecation path and what each version number promises. `sync_support.py` renders it from `support.json`.
+- An integration suite in `tests/integration/` that runs the migration lifecycle and a query on every supported server, and `matrix.py`, which starts the servers from `docker/compose.yaml` and prints one line per server.
+- `Compiler.compile_create_table()` renders the whole CREATE TABLE statement.
 
 ### Fixed
 
-- Tracking table columns quote through the dialect compiler. `generated` is reserved in MySQL, so the column probe read it as missing and every run tried to add it again.
-- The MySQL advisory lock waits with a one-year timeout rather than a negative one, which MariaDB answers with NULL, so the lock was silently absent.
-- SQL Server creates the tracking tables behind `IF OBJECT_ID(...) IS NULL`, since T-SQL has no `CREATE TABLE IF NOT EXISTS`.
+- The tracking table works on MySQL, where the `generated` column name is reserved, and on SQL Server, which has no `CREATE TABLE IF NOT EXISTS`. The MySQL advisory lock is taken on MariaDB.
 
 ## 2.18.0
 
 ### Added
 
-- `Dialects.MYSQL` compiles for MySQL and MariaDB: backtick quoting, `%s` placeholders, `ON DUPLICATE KEY UPDATE` upserts, `AUTO_INCREMENT`, `MODIFY COLUMN`, a `GET_LOCK` advisory lock, and `for_update()` with `SKIP LOCKED` and `NOWAIT` on MySQL 8.0.
-- Column types render in the spelling `information_schema` reports back, so no drift: `INT`, `TINYINT(1)` for `Boolean`, `DOUBLE`, `DECIMAL`, and `DATETIME` for `Timestamp`, whose `TIMESTAMP` alternative stops in 2038 and converts time zones.
-- MySQL introspection reads `column_type` rather than `data_type`, scopes every query to `DATABASE()`, and matches schemas as well as names in the constraint join.
-- MariaDB stores a `Json()` column as `longtext` with a `json_valid` CHECK; the read restores the JSON type so the column does not drift. MariaDB before 10.2.22 has no `check_constraints` view and does drift.
-- `Compiler.supports_transactional_ddl()` reports whether rolled-back DDL really goes away. MySQL is the first engine where it differs from `supports_transactions()`: rows roll back, DDL commits as it runs.
-- `Compiler.inline_references()` reports whether an inline `REFERENCES` clause creates a foreign key, with `compile_add_foreign_key()` and `compile_drop_foreign_key()` for the dialects that say no.
+- `Dialects.MYSQL` compiles for MySQL and MariaDB, with upserts, `AUTO_INCREMENT`, a `GET_LOCK` advisory lock, and `for_update()` with `SKIP LOCKED` and `NOWAIT` on MySQL 8.0. `rehearse()` needs a scratch database there, and `returning()`, `STRING_AGG`, and a unique key or literal default on a `Text()` or `Json()` column raise.
+- Column types render in the spelling `information_schema` reports back, so tables created from models do not drift on MySQL, and MariaDB `Json()` columns read back as JSON.
+- `Compiler.supports_transactional_ddl()` reports whether rolled-back DDL goes away, and `Compiler.inline_references()` reports whether an inline `REFERENCES` clause creates a foreign key.
 
 ### Changed
 
-- Schema reading moved from `sustained.autogenerate` to `sustained.introspect`. Every name re-exports from the old module, so imports keep working, and `type_params` is now public.
-- Default normalization drops an empty argument list, so `current_timestamp()` and `CURRENT_TIMESTAMP` compare equal. Type normalization gained the `*TEXT` variants; `TINYINT` stays out, since `TINYINT(1)` is MySQL's boolean.
-
-### Refused
-
-- `rehearse()` refuses MySQL against the real database, since its rollback takes nothing back. Pass `scratch=True`, or define `get_rehearsal_connection()` for the CLI. Recovery after a half-failed run is `repair()`.
-- `returning()` raises on MySQL, including against MariaDB, which supports it; SQL only one of the two servers accepts is worse than neither. Use a second query or `LAST_INSERT_ID()`.
-- `STRING_AGG` raises rather than translating to `GROUP_CONCAT`, whose separator is a keyword and not a second argument.
-- A `Text()` or `Json()` column takes neither a unique key, which MySQL wants a prefix length for, nor a literal `DEFAULT`, which it refuses.
-- An unsigned integer column has no `tableColumns` declaration, so one already in the database reports as drift no migration closes.
+- Schema reading moved from `sustained.autogenerate` to `sustained.introspect`, and every name still imports from the old module.
+- Default and type normalization treat `current_timestamp()` and `CURRENT_TIMESTAMP`, and the `*TEXT` variants, as equal.
 
 ## 2.17.0
 
 ### Added
 
-- The tracking table gains a `steps` column storing a generated migration's up and down statements as JSON, so `down()` can revert what a process never diffed. Older tables add the column on first use.
-- `up(unrehearsed=True)` records what it waived: a rehearsal row with the outcome `override`, which never opens the gate for a later run.
-- `migrate` exits 4 when a run that removes data has no passing rehearsal, which a pipeline can tell apart from a failure.
+- The tracking table stores a generated migration's up and down statements, so `down()` can revert a migration the process never diffed.
+- `up(unrehearsed=True)` records the waiver as a rehearsal row with the outcome `override`, which never opens the gate for a later run.
+- `migrate` exits 4 when a run that removes data has no passing rehearsal.
 - `Migrator.drift()` and `SchemaDiff.outstanding()` take `ignore_changed_columns`.
-- A block or missing rehearsal row on a generated migration names the registered migrations that already applied, on the exception's `applied` attribute.
 
 ### Fixed
 
-- A SQLite table rebuild no longer drops undeclared columns, their data, and hand-made indexes; they cross the rebuild with type, nullability, uniqueness, and default. `allow_drops=True` still drops them, and an expression index still cannot cross.
-- An index on an expression no longer crashes introspection; SQLite reports a null column name for one, so it is left out of the schema.
-- `up(models=[...])` runs the out-of-order validation check again for hand-written migrations.
-- A rehearsal with models and rename hints no longer raises while checking that the models landed; the check runs without the hints and honours `ignore_changed_columns`.
-- A rehearsal no longer blames its leftovers on the down steps that did reverse; the comparison runs only when every versioned migration in the run reversed.
-- A rehearsal applies the generated migration before the repeatables, matching `migrate`.
-- A scratch rehearsal records rows for the shorter target sets, so `migrate --target` is not refused for statements the scratch run proved.
-- The plan footer no longer says `run: sustained rehearse` after a rehearsal recorded its row, and no longer computes verdicts over drops `migrate` never generates.
-- `no_lock_without_timeout()` is Postgres only and anchored to a `SET` statement, so an update of a column named `lock_timeout` no longer fires it.
-- Filter and write values accept `datetime`, `date`, `Decimal`, and `bytes` under a strict type checker.
-- A sync savepoint that failed to open no longer leaves the nesting depth one too high, which reused a savepoint name.
+- A SQLite table rebuild keeps undeclared columns, their data, and hand-made indexes, and an index on an expression no longer crashes introspection.
+- Rehearsals with models and rename hints run, blame only the down steps that failed, apply the generated migration before the repeatables, and record rows that cover `migrate --target`.
+- `no_lock_without_timeout()` is Postgres only and fires only on a `SET` statement, and the `plan` footer no longer says `run: sustained rehearse` after a rehearsal recorded its row.
+- Filter and write values accept `datetime`, `date`, `Decimal`, and `bytes` under a strict type checker, and a failed savepoint no longer reuses a savepoint name.
 
 ## 2.16.1
 
 ### Added
 
-- `Connection` and `Cursor` in `sustained.types`, protocols listing the DB-API 2.0 methods Sustained calls, so any conforming driver connection matches.
-- `Binding`, the `Union[Connection, ConnectionPool]` that `Model.bind()` and every `connection=` argument take.
-- `SqlValue` and `RowValue` split database values by direction: a value going in is `object`, a value read back stays `Any`.
-- `ColumnDescription` and `RelationTree` in `sustained.types`, and `JsonValue` in `sustained.cli`.
-- Driver protocols in `sustained.aio`: `AsyncpgConnection`, `AsyncpgRecord`, `AiosqliteConnection`, and `AiosqliteCursor`.
+- `Connection`, `Cursor`, `Binding`, `SqlValue`, `RowValue`, `ColumnDescription`, and `RelationTree` in `sustained.types`, and driver protocols in `sustained.aio`, so any DB-API 2.0 driver connection type-checks.
 
 ### Changed
 
-- Roughly 180 `Any` annotations were replaced with the types above and with model, schema, and introspection types. The `Any` annotations that remain each carry a comment giving the reason.
-- Migration callbacks and callable steps are typed `Callable[[CallbackTarget], CallbackResult]`; a callable step on the async path may return an awaitable.
-- `in_()` and `not_in()` accept any sequence of values, not only a `list`.
-- `ConnectionPool` closes connections by calling `close()` directly; the DB-API requires the method.
-- The builder stubs declare `render()`, `has_clauses()`, the `compiler` argument, and the method maps `QueryBuilder` reaches for.
+- Roughly 180 `Any` annotations were replaced with specific types, and migration callbacks and callable steps are typed.
+- `in_()` and `not_in()` accept any sequence of values.
 
 ## 2.16.0
 
 ### Added
 
-- The query builder is generic over its model: `Show.query()` is a `QueryBuilder[Show]`, so `run()` is `List[Show]`, `first()` is `Optional[Show]`, and `arun()` and `afirst()` match. No cast needed.
-- `WriteBuilder[Model]`, returned by `insert()`, `insert_from()`, `create_table_as()`, `update()`, and `delete()`; its `run()` types as the row count or the RETURNING rows. At run time it is the same class as `QueryBuilder`.
-- `WriteResult` in `sustained.types`, the union a write returns.
-- `QueryBuilder[Show]` works in a run-time annotation.
+- The query builder is generic over its model: `Show.query()` is a `QueryBuilder[Show]`, so `run()` is `List[Show]` and `first()` is `Optional[Show]`. The select list does not narrow the result type.
+- `WriteBuilder[Model]` types the result of `insert()`, `update()`, `delete()`, and the other writes, as the row count or the RETURNING rows.
 
 ### Changed
 
-- Argument positions that take any query are declared `QueryBuilder[Any]`, since the builder is invariant in its model.
-- The generic types live in `builder.pyi` only; the running code is unchanged.
-
-### Not covered
-
-- The select list does not narrow the result: `select('id')` still types as the whole model, and `to_dicts()` values stay `Any`.
+- Argument positions that take any query are declared `QueryBuilder[Any]`.
 
 ## 2.15.0
 
 ### Added
 
-- Guards: rules over the statements a run would apply, returning a `Verdict(rule, verdict, statement)` of `block` or `warn` per objection. Both migrators take `guards=[...]`, and the CLI config module names them.
-- `sustained.guards` ships five factories: `no_drops()`, `index_must_be_concurrent()` (Postgres only), `no_table_rewrite()` (warns), `no_lock_without_timeout()`, and `max_statements(n)`, plus `run_guards()`, `blocking()`, and `warnings_only()`.
-- `up()` raises `GuardBlocked` on a blocking verdict before any statement runs and prints warnings on stderr. No flag waives a guard: fix the statement or take the rule out.
-- `sustained plan` runs the guards and prints a `guards` section, one line per verdict; in `--json` a verdict rides on its statement object.
-- Exit code 3 means a guard blocked a statement, from `plan` and `migrate`. Precedence is 1 (problems) over 3 (blocked) over 2 (pending).
-- Both migrators take `callbacks=Callbacks(...)`, so `before_migrate`, `after_migrate`, and `on_error` reach library callers, not only the CLI.
-- A `dialect` property on both migrators, and `run_statements()` and `check_guards()` in `sustained.migrations`.
+- Guards, rules over the statements a run would apply that return `block` or `warn` verdicts. Both migrators and the CLI config module take `guards=[...]`, and `up()` raises `GuardBlocked` before any statement runs.
+- `sustained.guards` provides `no_drops()`, `index_must_be_concurrent()`, `no_table_rewrite()`, `no_lock_without_timeout()`, and `max_statements(n)`.
+- `sustained plan` prints a `guards` section, and `plan` and `migrate` exit 3 when a guard blocks a statement.
+- Both migrators take `callbacks=Callbacks(...)`, so `before_migrate`, `after_migrate`, and `on_error` reach library callers.
 
 ### Changed
 
-- `sustained migrate` hands its config module callbacks to the migrator; `after_migrate` now fires before the post-run drift report.
-- `plan --json` statement objects gained a `guards` key, present and empty when unflagged.
-- Guards run twice on a run that includes the model diff, since the generated statements arrive late; a warning already printed is not repeated.
-- `rehearse` does not enforce guards, since it rolls back and blocking would stop an operator testing the statement they are fixing.
+- `after_migrate` fires before the post-run drift report, and `rehearse` does not enforce guards.
 
 ## 2.14.0
 
 ### Added
 
-- A passing rehearsal writes one row in the new `sustained_rehearsals` table, keyed by a SHA-256 over the applied and run checksums. A failing rehearsal records the failure under the same key.
-- `up()` refuses a statement that removes data — a DROP TABLE, a column drop, or a TRUNCATE — unless a passing rehearsal row covers that exact set. `up(unrehearsed=True)` and `sustained migrate --unrehearsed` apply anyway. An additive run is never gated.
-- A rehearsal records a row for each shorter `--target` run that removes data, so one rehearsal covers the whole run and every target within it.
-- `RehearsalRequired`, in `sustained.exceptions` and re-exported at the root, is what the refusal raises.
-- `record_rehearsal()`, `rehearsal_outcome()`, and `rehearsed()` on both migrators, and `rehearsal_key(applied, run)` in `sustained.migrations`.
-- `rehearse --json` gains `key` and `recorded`, and the plain report prints `rehearsal row recorded`.
-- Both constructors and the CLI config module take `rehearsal_table`.
+- A passing rehearsal writes a rehearsal row, and `up()` refuses a run that removes data, such as a DROP TABLE, a column drop, or a TRUNCATE, unless a passing rehearsal covers that exact run. `up(unrehearsed=True)` and `sustained migrate --unrehearsed` apply anyway, and the refusal raises `RehearsalRequired`.
+- `record_rehearsal()`, `rehearsal_outcome()`, and `rehearsed()` on both migrators, and a `rehearsal_table` option on both constructors and the CLI config module.
 
 ### Changed
 
-- `rehearse()` returns a `Rehearsal`, a `list` subclass carrying `key`, `recorded`, and `ok`.
-- `rehearse(scratch=True)` records nothing through the API. The CLI writes the row on the real database after a passing scratch run that applied everything pending there.
-- `sustained plan` prints `run: sustained rehearse` when a pending migration removes data, since migrate would refuse it.
-- Both Sustained tables are excluded from every diff against the models.
-- `rehearsal_failed(result)` moved from `sustained.cli` to `sustained.migrations`.
+- `rehearse()` returns a `Rehearsal`, a `list` that also has `key`, `recorded`, and `ok`, and `rehearse(scratch=True)` records nothing through the API.
+- `sustained plan` prints `run: sustained rehearse` when a pending migration removes data, and Sustained's own tables are left out of every diff.
 
 ## 2.13.0
 
 ### Added
 
-- `Migrator.up(models=[...])` diffs the models against the database, applies the generated migration after everything else pending, and takes the diff options `plan()` takes. It replaces `sync()`. A target cannot combine with models.
-- `sustained migrate` and `sustained rehearse` pass the config module's `models`, so the model diff reaches the shell. A targeted `migrate` applies registered migrations only.
-- `Migrator.rehearse(models=[...])` rehearses the generated migration alongside the pending ones without registering it.
-- A rehearsal reports what the schema said: `landed` says the models arrived, and `reversed` compares against a pre-run snapshot. `None` means unchecked, `[]` proved, a non-empty list names the trouble; either failure exits 1.
-- Tables and columns are compared for `reversed`; indexes, constraints, and column defaults are not yet.
-- `sustained rehearse --json`.
-- `sustained migrate` re-reads the schema after a run when the config module names models and reports the differences left. A report, never a gate.
-- `Migrator.drift(models)` returns what the models still ask for, one readable line each; objects the models do not declare are left out.
-- `diff_snapshots(before, after)` and `async_introspect_schema(adapter, dialect)` in `sustained.autogenerate`.
+- `Migrator.up(models=[...])` diffs the models against the database and applies the generated migration after everything else pending, and `sustained migrate` and `sustained rehearse` pass the config module's `models`.
+- `Migrator.rehearse(models=[...])` rehearses the generated migration and reports whether the models landed and the down steps reversed. `sustained rehearse --json` prints the result.
+- `Migrator.drift(models)` returns what the models still ask for, and `sustained migrate` reports it after a run.
 
 ### Changed
 
-- `plan --json` reports each pending migration's `statements` as objects carrying the SQL and a destructive flag, rather than a count. `PendingSummary.statements` became `PendingSummary.sql`.
-- The generated diff no longer refuses objects the models do not declare, since hand-written migrations create such objects. Drops still need `allow_drops=True`, and `ignore_undeclared=False` restores the refusal.
-- The tracking table gained a `generated` column marking rows a model diff wrote, added in place on first use.
-- `sustained plan` prints `run: sustained migrate` for both pending work and drift; a drops-only drift section says migrate does not generate drops.
-- Schema introspection is one query plan that the blocking cursor and the async adapter each drive, degrading to column-only data where constraint views are missing.
-
-### Deprecated
-
-- `Migrator.sync()` raises a `DeprecationWarning` and delegates to `up(models=[...])`. It goes away in 3.0.
+- `plan --json` reports each pending migration's statements with a destructive flag, and `PendingSummary.statements` became `PendingSummary.sql`.
+- The generated diff no longer refuses objects the models do not declare; `ignore_undeclared=False` restores the refusal.
+- `Migrator.sync()` is deprecated in favour of `up(models=[...])` and goes away in 3.0.
 
 ## 2.12.0
 
 ### Added
 
-- `withGraphFetched()` takes a dotted path such as `'shows.tickets'`, one batched query per level with `WHERE fk IN (...)`, so a deeper graph never becomes a query per row. Shared prefixes load once, and an unknown segment raises at build time naming it.
-- Async eager loading covers link-table relations and dotted paths beyond the first segment. The sync loader split into a planner and an attacher both paths call.
-- `async_transaction()` nests through ANSI savepoints, matching `transaction()`.
+- `withGraphFetched()` takes a dotted path such as `'shows.tickets'` and loads each level in one batched query.
+- Async eager loading covers link-table relations and dotted paths, and `async_transaction()` nests through savepoints.
 
 ### Fixed
 
-- The type stubs describe the join and clause methods the runtime accepts: `whereRaw`, `havingRaw`, `fullJoin`, `crossJoinRelated`, and the rest were missing, and `outerJoin` never existed. A test compares each stub against the runtime in both directions.
-- `LENGTH` is registered once; the second registration, carrying the T-SQL `LEN` spelling, overwrote the first.
-- `IntrospectedTable` and `FunctionMetadata` default their mapping fields to read-only empty mappings, so one instance's mapping cannot become another's.
+- The type stubs describe the join and clause methods the runtime accepts, `LENGTH` keeps its registration, and `IntrospectedTable` and `FunctionMetadata` instances no longer share mappings.
 
 ## 2.11.0
 
-### Fixed
-
-- `repair()` no longer rewrites the stored checksum of a changed repeatable, which cancelled the re-run the change had scheduled. Failed-attempt rows are still removed.
-- A malformed placeholder marker such as `${my-key}` or an unclosed `${key` raises `ValueError` naming the file, instead of passing through as raw SQL. Applies only when a placeholders mapping is given.
-- `rehearse()` reads validation state, pending migrations, and applied records inside the advisory lock, so a concurrent migrator cannot apply between the read and the rehearsal.
-- `AsyncMigrator.rehearse()` refuses a connection in autocommit mode, as `Migrator.rehearse()` already did.
-- Tagging an exception with its migration id no longer raises on exception types that reject new attributes.
-- `sustained plan` prints `run: Migrator.sync(models)` when it finds model drift, which `migrate` does not close.
-
 ### Changed
 
-- A targeted `up()` no longer runs the repeatables, which may depend on migrations past the target; the next full `up()` runs them.
-- The destructive scan labels a column drop written without the COLUMN keyword, as MySQL allows.
-- The refusal message for rehearsing a non-rehearsable dialect mentions `scratch=True` for library callers.
-- The docs cover the default dialect's place on the rehearsable list and scratch databases that keep objects between runs.
+- A targeted `up()` does not run the repeatables; the next full `up()` runs them.
+- The destructive scan labels a column drop written without the COLUMN keyword.
+
+### Fixed
+
+- `repair()` keeps the stored checksum of a changed repeatable, so the change still re-runs it.
+- A malformed placeholder such as `${my-key}` raises `ValueError` naming the file.
+- `rehearse()` reads the migration state inside the advisory lock, and `AsyncMigrator.rehearse()` refuses a connection in autocommit mode.
 
 ## 2.10.0
 
 ### Added
 
-- `sustained rehearse` and `Migrator.rehearse()`: apply every pending migration, run the down steps back down, and roll it all back, so the database ends where it started. Exits 1 when a step failed. `AsyncMigrator.rehearse()` is the same on an adapter.
-- Only databases whose schema changes roll back may rehearse: SQLite, Postgres, and DuckDB. Autocommit connections and open `transaction()` blocks refuse too. A config module's `get_rehearsal_connection()` sends the rehearsal to a scratch database instead.
-- `Compiler.begin_transaction_sql()` and `rollback_transaction_sql()`: explicit statements the rehearsal uses, since drivers disagree on when a transaction exists. Engines without transactions return `None`.
-- Config module callbacks around `sustained migrate`: `before_migrate(connection)`, `after_migrate(connection, applied)`, and `on_error(connection, migration_id, error)`. Only `migrate` calls them.
+- `sustained rehearse` and `Migrator.rehearse()` apply every pending migration, run the down steps, and roll it all back, on SQLite, Postgres, and DuckDB. A config module's `get_rehearsal_connection()` sends the rehearsal to a scratch database.
+- Config module callbacks `before_migrate`, `after_migrate`, and `on_error` around `sustained migrate`.
 - `Migrator.connection` and `AsyncMigrator.adapter` properties.
 
 ### Changed
@@ -512,169 +300,124 @@
 
 ### Added
 
-- `sustained plan`: one screen with the pending migrations, the problems `validate` would report, and the drift against the config module's `models`, drops included. Exits 0 current, 2 pending, 1 problems. Note argparse also exits 2 on a usage error.
-- Destructive labels: the new `sustained.analysis` module labels drops and truncates in the plan, via `destructive_statements(sql)` and `summarize(migration, state)`. The label informs the operator; nothing is blocked.
-- `--json` on `status`, `validate`, and `plan`: one JSON object on stdout, exit codes unchanged. `plan`'s `drift` is null rather than empty when no models were named, separating "not compared" from "no gap".
+- `sustained plan` shows the pending migrations, the problems `validate` would report, and the drift against the config module's `models`, and exits 0 when current, 2 when pending, and 1 on problems.
+- `sustained.analysis` labels drops and truncates in the plan as destructive.
+- `--json` on `status`, `validate`, and `plan` prints one JSON object.
 
 ## 2.8.0
 
 ### Added
 
-- Repeatable migrations: a `<id>.repeat.sql` file, or `Migration(id, up, repeatable=True)`, re-runs whenever its checksum changes, for views, functions, and seed data. `down()` never reverts them, and `baseline()` records them at their current checksum.
-- `statuses()` on both migrators: (id, state) pairs with `applied`, `pending`, and `changed`, which the CLI `status` command prints.
-- Placeholders in SQL migration files: `${key}` fills from `load_migrations(placeholders=...)` or the config module. A missing key raises `ValueError`, `$${` escapes, and with no mapping files load untouched. Substitution runs before checksums compute.
+- Repeatable migrations, a `<id>.repeat.sql` file or `Migration(id, up, repeatable=True)`, run again whenever their checksum changes.
+- `statuses()` on both migrators returns each migration's state, which `sustained status` prints.
+- `${key}` placeholders in SQL migration files, filled from `load_migrations(placeholders=...)` or the config module.
 
 ### Changed
 
-- `pending()` also returns repeatables whose checksum changed, since the next `up()` will run them.
-- `load_migrations()` rejects a `.sql` file only when it matches none of the three suffixes.
+- `pending()` also returns repeatables whose checksum changed.
 
 ## 2.7.0
 
 ### Added
 
-- Migrations as SQL files: `load_migrations(directory)` pairs `<id>.up.sql` files with optional `<id>.down.sql` files, splitting statements at line-ending semicolons. Empty files, orphaned down files, and misnamed `.sql` files raise `ValueError`.
-- `baseline(target)` on both migrators records migrations up to the target as applied without running them, for adopting a database whose schema already matches.
-- `Migrator.plan(models, ...)`: the migration `sync()` would generate, without registering or applying it, or `None` when the schema is current.
-- A command-line runner: the `sustained` console script and `python -m sustained` drive a `Migrator` from a config module, with `status`, `migrate`, `down`, `validate`, `repair`, `script`, and `baseline`.
+- `load_migrations(directory)` loads migrations from `<id>.up.sql` and `<id>.down.sql` files.
+- `baseline(target)` on both migrators records migrations up to the target as applied without running them.
+- `Migrator.plan(models, ...)` returns the migration `sync()` would generate without applying it.
+- The `sustained` command and `python -m sustained` drive a `Migrator` from a config module, with `status`, `migrate`, `down`, `validate`, `repair`, `script`, and `baseline`.
 
 ## 2.6.0
 
 ### Added
 
-- The tracking table records a sequence number, a SHA-256 checksum of the up statements, execution time, and a success flag; apply order reads from the sequence. Older tables upgrade in place on first use; on Athena the upgrade needs an Iceberg tracking table.
-- `validate()` on both migrators raises `MigrationError` on failed attempts, applied ids the migrator does not know, checksum mismatches, and pending migrations ordered before applied ones.
-- `repair()` deletes rows left by failed attempts and rewrites drifted or null checksums.
-- On engines without transactions, a failing step writes a failure row that blocks the next `up()` until repaired.
-- Migration runs take an exclusive advisory lock named after the tracking table: `pg_advisory_lock` on Postgres, `sp_getapplock` on MSSQL.
-- `Migration` accepts an explicit `checksum` for callable steps, and `migration_checksum()` exposes the value validation compares.
-- `applied_records()` returns the tracking rows with sequence, checksum, and success flag.
+- The tracking table records a sequence number, a checksum, the execution time, and a success flag, and older tables upgrade in place.
+- `validate()` on both migrators raises `MigrationError` on failed attempts, unknown applied ids, checksum mismatches, and out-of-order pending migrations, and `repair()` removes failed attempts and rewrites checksums.
+- Migration runs take an exclusive advisory lock on Postgres and MSSQL.
 
 ### Changed
 
-- `up()` validates before running. `validate=False` skips the checks; `allow_out_of_order=True` accepts a pending migration ordered before an applied one, which earlier versions applied silently.
+- `up()` validates before running. `validate=False` skips the checks, and `allow_out_of_order=True` accepts a pending migration ordered before an applied one.
 
 ### Fixed
 
-- The tracking table upgrade backfill touches only the columns the current run added and only rows where they are still null, so a recorded failed attempt survives an interrupted earlier upgrade.
+- The tracking table upgrade keeps a recorded failed attempt after an interrupted earlier upgrade.
 
 ## 2.5.0
 
 ### Added
 
-- AWS Athena dialect (`Dialects.ATHENA`): Presto's query behavior with `%s` placeholders matching pyathena, MERGE upserts on Iceberg tables, and Athena's type spellings (INT, STRING, DOUBLE, DECIMAL; JSON maps to STRING).
-- `TableOptions(location, partitioned_by, properties)`: storage clauses declared as a model's `tableOptions`, rendered as PARTITIONED BY, LOCATION, and TBLPROPERTIES on Athena. Other dialects raise when options are set.
-- Athena DDL: `ADD COLUMNS` for added columns, `CHANGE COLUMN` for Iceberg type widenings. Constraints, indexes, renames, nullability changes, RETURNING, and temporary CTAS raise `DialectError` with directions.
-- Migrations on engines without transactions: each step runs bare on Athena, never calling rollback. Both migrators accept `tracking_table_options` and create the tracking table without constraints on constraint-free engines.
-- The function registry recognizes Athena wherever it recognizes Presto, including `NOW()` and the `GETDATE()` translation.
-- Schema diffing normalizes Athena's STRING type, so tables created from models diff clean.
+- The AWS Athena dialect, `Dialects.ATHENA`, with MERGE upserts on Iceberg tables and Athena's type spellings.
+- `TableOptions(location, partitioned_by, properties)` declares a model's storage clauses on Athena.
+- Migrations on engines without transactions, and a tracking table created without constraints where the engine has none.
 
 ## 2.4.0
 
 ### Added
 
-- Constraint-aware introspection: primary keys, unique constraints, foreign keys, column defaults, and indexes read from SQLite PRAGMA tables or information_schema, with graceful degradation and system schemas filtered.
-- Type and nullability changes generate migrations: in-place reversible `ALTER COLUMN` on Postgres (with `type_casts` USING hints), MSSQL, and DuckDB; an automatic table rebuild with row copy on SQLite.
-- Rename hints: `renames={'table.old': 'new'}` and `table_renames` produce reversible RENAME statements (sp_rename on MSSQL) instead of destructive drop-plus-add.
-- Declared indexes on models via `Index`, created with the table and diffed for additions, definition changes, and opt-in drops, all reversible.
-- `backfill` on ColumnDef: NOT NULL adds and tightenings emit add-nullable, UPDATE, SET NOT NULL, or fold into the SQLite rebuild.
-- Length and precision changes detected when both sides report them.
-- Constraint notes: PK, FK, unique, and default drift reported in the diff, never auto-migrated.
-- Offline scripts: `migration_sql()` and `Migrator.script()` render the SQL a run would execute for DBA review.
-- `AsyncMigrator`: the migration runner on an AsyncAdapter with transactional application and awaited callable steps.
+- Introspection reads primary keys, unique constraints, foreign keys, column defaults, and indexes.
+- Type and nullability changes generate migrations, with a table rebuild on SQLite, and `renames` and `table_renames` hints generate renames instead of a drop and an add.
+- Declared indexes via `Index`, and a `backfill` on a column definition for NOT NULL adds.
+- `migration_sql()` and `Migrator.script()` render the SQL a run would execute.
+- `AsyncMigrator` runs migrations on an `AsyncAdapter`.
 
 ## 2.3.0
 
 ### Added
 
-- Schema autogeneration: `diff_schema()` introspects the live database and reports missing tables, new columns, extra objects, and changed columns with a readable `summary()`. Type comparison round-trips through each dialect's own mapping.
-- `autogenerate()` builds a `Migration` from the diff. Additive steps are reversible; drops need `allow_drops=True` and carry no down step; changed column types block unless ignored; NOT NULL adds without defaults and primary key adds are rejected.
-- `Migrator.sync(models)`: diff, generate, register, and apply in one idempotent call. `Migrator.down_to(id)` reverts newest-first until the target is the most recent applied migration.
-- Compilers render `ADD COLUMN` and `DROP COLUMN` statements, with the T-SQL `ADD` spelling on MSSQL.
+- `diff_schema()` compares the models with the live database, and `autogenerate()` builds a `Migration` from the difference.
+- `Migrator.sync(models)` diffs, generates, and applies in one call, and `Migrator.down_to(id)` reverts to a target.
 
 ## 2.2.0
 
 ### Added
 
-- Typed column definitions: models declare `tableColumns` with `Integer`, `BigInteger`, `String`, `Text`, `Boolean`, `Float`, `Numeric`, `Date`, `Timestamp`, and `Json`, including composite primary keys, defaults, unique constraints, references, and autoincrement.
-- Model-driven DDL: `create_table_sql()`, `create_table()`, and `drop_table()` with per-dialect type mapping and identity syntax. DuckDB and Presto raise for autoincrement.
-- Migration runner: ordered `Migration` objects with up/down steps (SQL, statement lists, or callables), a self-creating tracking table, transactional application, stop-after targets, and newest-first reverts. `create_table_migration()` derives create/drop pairs.
-- `ConnectionPool`: thread-safe, lazy, bounded pooling for DB-API connections. `Model.bind()` and all execution entry points accept a pool; transactions pin one checked-out connection to the thread.
-- Async execution: `arun()`, `afirst()`, and `ato_dicts()` through an adapter interface with `DbApiAsyncAdapter`, `AiosqliteAdapter`, and `AsyncpgAdapter`, plus `Model.bind_async()` and `async_transaction()` with ContextVar pinning.
+- Typed column definitions in `tableColumns`, and `create_table_sql()`, `create_table()`, and `drop_table()` on models.
+- A migration runner with ordered `Migration` objects, up and down steps, a tracking table, and targets.
+- `ConnectionPool`, a thread-safe pool of DB-API connections that `Model.bind()` and every execution entry point accept.
+- Async execution with `arun()`, `afirst()`, and `ato_dicts()` through `DbApiAsyncAdapter`, `AiosqliteAdapter`, and `AsyncpgAdapter`, with `Model.bind_async()` and `async_transaction()`.
 
 ## 2.1.0
 
 ### Added
 
-- Typed predicates: `Model.c.age > 21` and `col()` build composable `Predicate` objects combinable with `&`, `|`, `~`; accepted by `where()` and `having()`.
-- `whereRaw()` / `havingRaw()`: raw predicates with `?` value markers that parameterize like every other clause.
-- `Model.transaction()` context manager with savepoint nesting; `run()` defers commits inside a transaction.
-- `set_statement_listener()` observer with SQL, parameters, and duration for every executed statement.
-- Upserts: `insert().onConflict(cols).merge()` / `.ignore()`. ON CONFLICT on Postgres/SQLite/DuckDB, MERGE on MSSQL, DialectError on Presto.
-- `insert_from()` (INSERT ... SELECT) and `create_table_as()` (CTAS; MSSQL raises).
-- Multi-row inserts execute through the driver's `executemany()` when there is no RETURNING clause.
-- Result formats: `to_dicts()`, `to_df()` (pandas optional), `to_arrow()` (pyarrow optional).
-- DuckDB dialect: quoting, native ILIKE, qmark placeholders, upserts, RETURNING, CTAS, QUALIFY.
-- Recursive CTEs via `with_(..., recursive=True)`; MSSQL renders plain WITH.
-- Set operations: `intersect()` and `except_()`.
-- Analyst clauses: `distinctOn()`, `groupByRollup()`, `groupByCube()`, `groupByGroupingSets()`, `qualify()`.
-- `for_update(skip_locked, nowait)` row locking on Postgres.
-- `total()` count helper and `cursor_page()` keyset pagination.
-- `explain(analyze=False)` plan inspection.
-- Through-relation (`ManyToManyRelation`) eager loading in `withGraphFetched()`.
-- Per-dialect function name translation: `NOW()` renders as `GETDATE()` on MSSQL and the reverse; `LENGTH()` renders as `LEN()` on MSSQL.
+- Typed predicates such as `Model.c.age > 21` and `col()`, combined with `&`, `|`, and `~`, and `whereRaw()` and `havingRaw()` with `?` value markers.
+- `Model.transaction()` with savepoint nesting, and `set_statement_listener()` for the SQL, parameters, and duration of every statement.
+- Upserts with `insert().onConflict(cols).merge()` and `.ignore()`, `insert_from()`, and `create_table_as()`.
+- `to_dicts()`, `to_df()`, and `to_arrow()` result formats.
+- The DuckDB dialect.
+- Recursive CTEs, `intersect()` and `except_()`, `distinctOn()`, `groupByRollup()`, `groupByCube()`, `groupByGroupingSets()`, `qualify()`, `for_update()`, `total()`, `cursor_page()`, and `explain()`.
+- Eager loading of `ManyToManyRelation`, and per-dialect function names such as `NOW()` as `GETDATE()` on MSSQL.
 
 ## 2.0.0
 
-### Breaking changes
-
-- String arguments to `select_func()` and the dynamic function methods are now column references, not string literals. Wrap literal values in `Literal()`.
-- Operators passed to `where()` and `having()` are validated against an allowlist; unrecognized operators raise `ValueError`.
-- `top()` raises `DialectError` on dialects other than MSSQL. It previously disappeared from the query without warning.
-- On MSSQL, `limit()` and `offset()` raise `DialectError` when the query has no `ORDER BY`, because T-SQL rejects OFFSET/FETCH without one.
-- `whereILike()` compiles to `LOWER(col) LIKE LOWER(pattern)` on dialects without native ILIKE. Postgres keeps native `ILIKE`.
-- Booleans render as `TRUE`/`FALSE`, or `1`/`0` on MSSQL, instead of the Python words.
-- Duplicate CTE aliases with different definitions raise `ValueError` instead of silently keeping the last one.
-- `update()` and `delete()` refuse to render without a `where()` clause.
-- Empty `whereIn()` lists raise `ValueError`.
-- Column references in WHERE, HAVING, and GROUP BY clauses quote per dialect when they are plain identifier paths.
-- `with_()` requires a `QueryBuilder` and renders it lazily; later changes to the CTE subquery reach the output.
-- The declared Python floor is now 3.9.
-
 ### Added
 
-- `to_sql()` returns the statement as `(sql, params)` with dialect placeholders (`?` by default, `%s` for Postgres).
-- `insert()`, `update()`, `delete()`, and `returning()` statement builders.
-- Query execution: `Model.bind(connection)`, `run()`, and `first()` against any DB-API 2.0 connection, with rows hydrated into model instances.
+- `to_sql()` returns the statement and its parameters, and `insert()`, `update()`, `delete()`, and `returning()` build writes.
+- `Model.bind(connection)`, `run()`, and `first()` run queries on any DB-API 2.0 connection and return model instances.
 - `withGraphFetched()` eager loading for HasMany, HasOne, and BelongsToOne relations.
-- Class-level column access (`User.id`), an optional `columns` declaration that rejects typo'd column names, and a model registry that resolves string `modelClass` references across modules.
-- `clone()` for branching from a shared base query and `page()` for zero-based pagination.
-- snake_case aliases for every camelCase query method.
-- Window functions accept arguments, frame clauses, and ORDER BY directions.
-- Select lists accept the `'column AS alias'` shorthand.
-- Comparing a column to `None` with `=` or `!=` renders `IS NULL` / `IS NOT NULL`.
+- Class-level column access such as `User.id`, an optional `columns` declaration, and a model registry for string `modelClass` references.
+- `clone()`, `page()`, snake_case aliases for every camelCase method, window function arguments and frames, the `'column AS alias'` shorthand, and `IS NULL` for a comparison with `None`.
+
+### Changed
+
+- **Breaking:** String arguments to `select_func()` and the dynamic function methods are column references; wrap literal values in `Literal()`.
+- **Breaking:** `where()` and `having()` validate operators against an allowlist, `update()` and `delete()` require a `where()` clause, and an empty `whereIn()` list or two CTEs with one alias and different definitions raise `ValueError`.
+- **Breaking:** `top()` raises `DialectError` outside MSSQL, and on MSSQL `limit()` and `offset()` raise it without an `ORDER BY`.
+- **Breaking:** `whereILike()` compiles to `LOWER(col) LIKE LOWER(pattern)` without native ILIKE, booleans render as `TRUE` and `FALSE` (`1` and `0` on MSSQL), and column references in WHERE, HAVING, and GROUP BY are quoted per dialect.
+- **Breaking:** `with_()` requires a `QueryBuilder` and renders it when the query renders.
+- **Breaking:** The minimum Python version is 3.9.
 
 ### Fixed
 
-- `copy.copy`, `copy.deepcopy`, and `pickle` no longer recurse infinitely on builders and models.
-- Union members keep their own `ORDER BY` and `LIMIT` instead of dropping them.
-- CTEs on FROM subqueries and on other CTEs hoist into the top-level `WITH` clause instead of rendering invalid nested `WITH` statements.
-- `GROUP BY` no longer quotes a dotted path as a single identifier.
-- MSSQL quotes dotted identifier paths, and Presto renders `OFFSET` before `LIMIT`.
+- `copy.copy`, `copy.deepcopy`, and `pickle` work on builders and models.
+- Union members keep their `ORDER BY` and `LIMIT`, nested CTEs move into the top-level `WITH` clause, `GROUP BY` and MSSQL quote a dotted path as a path, and Presto renders `OFFSET` before `LIMIT`.
 - `limit()`, `offset()`, and `top()` reject booleans and negative numbers.
-- Aliased `joinRelated()` no longer crashes when the join's `to` reference has no table prefix.
-- The deploy script rolls back the version bump when the build fails and pushes the release commit along with its tag.
 
 ## 1.1.0
 
 ### Added
 
-- Dialect-specific query compilation: a query builds once and compiles for a chosen dialect, starting with the default, PostgreSQL, MSSQL, and Presto compilers.
-- A function registry with per-dialect validation: `select_func()` and the fluent function methods raise `DialectError` at build time when the dialect does not support the function.
-
-### Changed
-
-- Function rendering moved into the compiler, so every dialect renders function calls through one path.
+- A query builds once and compiles for a chosen dialect: the default, PostgreSQL, MSSQL, or Presto.
+- `select_func()` and the function methods raise `DialectError` at build time for a function the dialect does not support.
 
 ## 1.0.2
 
@@ -686,14 +429,13 @@
 
 ### Fixed
 
-- The package include path for the type stubs, so installs get them.
+- Installs include the type stubs.
 
 ## 1.0.0
 
 ### Added
 
 - Type stub files for the builders, packaged with the distribution.
-- The deploy script tags each release.
 
 ## 0.0.7
 
