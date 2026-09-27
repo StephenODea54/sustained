@@ -129,9 +129,13 @@ On PostgreSQL, a lock that blocks writes or more, with no lock timeout in scope,
 | Fact | Read from | Used for |
 | --- | --- | --- |
 | Version | `server_version_num` | Rules that depend on the version, such as `DETACH PARTITION ... CONCURRENTLY` on 14 and later |
-| `TimeZone` | `current_setting()` | Whether `timestamp` to `timestamptz` rewrites the table |
+| `TimeZone` | `current_setting()` | Whether a change between `timestamp` and `timestamptz` rewrites the table |
 | `lock_timeout` | `current_setting()` | Whether a lock timeout covers the run before any `SET` |
 | Table sizes | `pg_class.reltuples` and `pg_total_relation_size()` | The severity of blocking work |
+| Partitions (`partitions`) | `pg_inherits` and `pg_partitioned_table` | Which tables are partitioned, the partitions a statement on one also locks, and the DEFAULT partition an added, attached, detached, or dropped partition locks |
+| Indexed columns (`indexes`) | `pg_index`, `pg_depend`, and `pg_attribute` | Whether a type change rebuilds an index on the column, including an expression index, and the collation the column has before the change |
+| Array columns (`arrays`) | `format_type()` of each array column | The current type of an array column, which the schema read reports as `ARRAY` |
+| Types (`types`) | `pg_type` and `pg_constraint` | Whether a column added with a type outside the system schemas is a domain with a NOT NULL or a CHECK |
 | Schema | the schema read `plan()` uses | The current type of a column a hand-written type change names, the table an index to drop is on, and the tables at the other end of a foreign key a statement drops or re-creates |
 
 On MySQL and MariaDB the read is this:
@@ -180,6 +184,8 @@ On DuckDB the read is this:
 The row count is the planner's estimate, which `VACUUM` and `ANALYZE` keep current. On MySQL and MariaDB it is InnoDB's estimate, which `ANALYZE TABLE` refreshes, and which InnoDB also refreshes on its own after a tenth of the rows change. On SQL Server it is the approximate count `sys.partitions` keeps for the heap or clustered index, and the size is the table's used pages across all its indexes. On SQLite it is the count `ANALYZE` recorded, which nothing refreshes until `ANALYZE` runs again. `ANALYZE` records no count for a table that was empty when it ran, or created after it, and the read counts no rows itself unless `exact_counts=True` asks it to count those tables. Each count reads every page of the table. `exact_counts=True` also reads each table's bytes from `dbstat`, which reads every page of the table and its indexes; without it, a table's bytes are the database file's bytes in proportion to its share of the rows `sqlite_stat1` counts. `read_context()`, `async_read_context()`, `impact()`, `up()`, and `script()` on either migrator take `exact_counts`; on the command line, `plan`, `impact`, `migrate`, and `script` take `--exact-counts`, or the config module sets `exact_counts = True`. On DuckDB it is the row count DuckDB keeps for each table, and DuckDB reports no size in bytes for a single table. The other engines read the estimates the server keeps either way. A table that was never vacuumed or analyzed has no estimate, so only its size in bytes is known. The size in bytes includes the table's indexes and TOAST data. A partitioned table's figures are the sums over its leaf partitions.
 
 A statement that fails, for example for lack of a privilege, leaves its facts out, and the rules fall back to the support floor or the worst case for them. Each statement runs inside a savepoint, so a failure does not abort the connection's open transaction. The report's `read` lists the facts that came from the server, and the last line of the text report says `assumed` before the version when the version was not read.
+
+On PostgreSQL, without the partitions read every table reads as a table that is not partitioned, so a statement on a partitioned table reports that table alone, which is not the worst case. Without the types read, a column added with a type outside the built-in types reads as a rewrite with confidence `likely`. Without the indexes read, a type change with `COLLATE` reads as an index rebuild with confidence `likely`, and so does a change between `timestamp` and `timestamptz` on a column the schema read does not show in an index. The schema read leaves out expression indexes, so it cannot show that a column has no index. `ATTACH PARTITION` reads as an index build with confidence `likely` unless the indexes read shows the partitioned table has no index.
 
 `up()` reads the sizes of the tables its statements name, and of no other table. The names come from the analysis of the statements with the schema read, so a statement that drops an index or a foreign key also names the table the schema puts it on. `impact()`, `plan`, `script`, and `rehearse --trace` read the sizes of every table. On PostgreSQL, `pg_total_relation_size()` takes `ACCESS SHARE` on each table it sizes, which waits behind a session that holds `ACCESS EXCLUSIVE` on the table. So the size read sets `lock_timeout` to `1s` with `set_config()`, and afterwards sets the session's own value back. When the read of the named tables runs out of time, each table is read in a statement of its own, and only a table whose lock was not granted in time has an unknown size. An unknown size counts as over a guard's threshold.
 
@@ -503,6 +509,7 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 | `DROP COLUMN` | `ACCESS EXCLUSIVE` | catalog | `pg.drop_column` |
 | `ALTER COLUMN ... TYPE` | `ACCESS EXCLUSIVE` | rewrite | `pg.alter_column_type` |
 | `ALTER COLUMN ... TYPE`, binary coercible | `ACCESS EXCLUSIVE` | catalog | `pg.alter_column_type.binary_coercible` |
+| `ALTER COLUMN ... TYPE` between `timestamp` and `timestamptz` under a UTC `TimeZone`, or a change of the collation of an indexed column | `ACCESS EXCLUSIVE` | index build of each index on the column | `pg.alter_column_type.index_rebuild` |
 | `SET NOT NULL` | `ACCESS EXCLUSIVE` | scan | `pg.set_not_null` |
 | `SET NOT NULL` on a column a valid `CHECK (c IS NOT NULL)` proves | `ACCESS EXCLUSIVE` | catalog | `pg.set_not_null.proven` |
 | `DROP NOT NULL`, `SET DEFAULT`, `DROP DEFAULT`, `SET STORAGE` | `ACCESS EXCLUSIVE` | catalog | `pg.alter_column.catalog` |
@@ -516,21 +523,22 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 | `ADD EXCLUDE` | `ACCESS EXCLUSIVE` | index build | `pg.add_exclusion` |
 | `DROP CONSTRAINT` | `ACCESS EXCLUSIVE` | catalog | `pg.drop_constraint` |
 | A statement that drops a foreign key: `DROP TABLE`, `DROP CONSTRAINT`, or `DROP COLUMN` on the table that has the key, or with `CASCADE` on the table it points at. A type change of a column a key uses or points at re-creates the key. | `ACCESS EXCLUSIVE` on the table at the key's other end | catalog, or a scan of the table that has a re-created key | `pg.drop_foreign_key` |
-| `VALIDATE CONSTRAINT` | `SHARE UPDATE EXCLUSIVE` | scan | `pg.validate_constraint` |
+| `VALIDATE CONSTRAINT` | `SHARE UPDATE EXCLUSIVE`, plus `ROW SHARE` on the table a foreign key points at | scan | `pg.validate_constraint` |
 | `RENAME`, `RENAME COLUMN`, `RENAME CONSTRAINT` | `ACCESS EXCLUSIVE` | catalog | `pg.rename` |
-| `ATTACH PARTITION` | `SHARE UPDATE EXCLUSIVE` on the parent, `ACCESS EXCLUSIVE` on the partition | scan of the partition | `pg.attach_partition` |
-| `DETACH PARTITION` | `ACCESS EXCLUSIVE` on both | catalog | `pg.detach_partition` |
+| `ATTACH PARTITION` | `SHARE UPDATE EXCLUSIVE` on the parent, `ACCESS EXCLUSIVE` on the partition, its partitions, and the parent's DEFAULT partition | scan of the partition and the DEFAULT partition, and an index build on the partition when the parent has an index | `pg.attach_partition` |
+| `DETACH PARTITION` | `ACCESS EXCLUSIVE` on both, the partition's partitions, and the parent's DEFAULT partition | catalog | `pg.detach_partition` |
 | `DETACH PARTITION ... CONCURRENTLY` | `SHARE UPDATE EXCLUSIVE` on both | catalog | `pg.detach_partition.concurrently` |
-| `SET TABLESPACE`, `SET LOGGED`, `SET UNLOGGED` | `ACCESS EXCLUSIVE` | rewrite | `pg.table_rewrite` |
+| `SET TABLESPACE`, `SET LOGGED`, `SET UNLOGGED` | `ACCESS EXCLUSIVE` | rewrite, or catalog on a partitioned table, which has no file | `pg.table_rewrite` |
 | `SET SCHEMA`, `OWNER TO`, row level security, other storage parameters | `ACCESS EXCLUSIVE` | catalog | `pg.alter_table.catalog` |
 | `SET (fillfactor = ...)` and the other parameters that take the weaker lock | `SHARE UPDATE EXCLUSIVE` | catalog | `pg.set_parameters` |
 | `ENABLE TRIGGER`, `DISABLE TRIGGER` | `SHARE ROW EXCLUSIVE` | catalog | `pg.alter_trigger` |
 | `CREATE INDEX` | `SHARE` | index build | `pg.create_index` |
+| `CREATE INDEX ... ON ONLY` a partitioned table | `SHARE` on the partitioned table | catalog | `pg.create_index` |
 | `CREATE INDEX CONCURRENTLY` | `SHARE UPDATE EXCLUSIVE` | index build | `pg.create_index.concurrently` |
 | `DROP INDEX` | `ACCESS EXCLUSIVE` on the table | catalog | `pg.drop_index` |
 | `DROP INDEX CONCURRENTLY` | `SHARE UPDATE EXCLUSIVE` on the table | catalog | `pg.drop_index.concurrently` |
-| `CREATE TABLE ... REFERENCES`, `CREATE TABLE ... PARTITION OF` | `SHARE ROW EXCLUSIVE` on the referenced table, `ACCESS EXCLUSIVE` on the parent | catalog | `pg.create_table` |
-| `DROP TABLE`, `TRUNCATE` | `ACCESS EXCLUSIVE`, and with `TRUNCATE ... CASCADE` on every table it empties through a foreign key | catalog | `pg.drop_table` |
+| `CREATE TABLE ... REFERENCES`, `CREATE TABLE ... PARTITION OF` | `SHARE ROW EXCLUSIVE` on the referenced table, `ACCESS EXCLUSIVE` on the parent and its DEFAULT partition | catalog, and a scan of the DEFAULT partition | `pg.create_table` |
+| `DROP TABLE`, `TRUNCATE` | `ACCESS EXCLUSIVE`, with `TRUNCATE ... CASCADE` on every table it empties through a foreign key, and on the partitions of a partitioned table. Dropping a partition also locks its partitioned table and the DEFAULT partition. | catalog | `pg.drop_table` |
 | `UPDATE`, `DELETE` | `ROW EXCLUSIVE`, plus row locks on the rows changed | rows | `pg.write_rows` |
 | `INSERT` | `ROW EXCLUSIVE` | rows | `pg.insert` |
 | `REINDEX` | `SHARE` | index build | `pg.reindex` |
@@ -546,19 +554,44 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 | `LOCK TABLE` | the mode it names | catalog | `pg.lock_table` |
 | `DROP SCHEMA ... CASCADE` | `ACCESS EXCLUSIVE` on every table in the schema, which the statement does not name, so the report lists no tables | catalog | `pg.drop_schema` |
 
-A type change is binary coercible when PostgreSQL skips the rewrite: `varchar(n)` to a longer `varchar` or to `text`, `numeric(p,s)` to a wider precision at the same scale, and `timestamp` to `timestamptz` when the `TimeZone` setting is UTC. The rule needs the column's current type, which a generated statement's intent gives, and which the schema read gives for a hand-written statement. Without either, the change reads as a rewrite with confidence `likely`. Without the `TimeZone` setting, `timestamp` to `timestamptz` also reads as a rewrite with confidence `likely`.
+A type change is binary coercible when PostgreSQL skips the rewrite: `varchar(n)` to a longer `varchar` or to `text`, `numeric(p,s)` to a wider precision at the same scale, and an array such as `varchar(10)[]` to `varchar[]`, which drops the length of its elements. Any other change to or from an array type converts each element and rewrites the table, including `varchar(10)[]` to `varchar(20)[]` and `text[]` to `varchar[]`. The rule needs the column's current type, which a generated statement's intent gives, and which the schema read gives for a hand-written statement. The schema read reports an array column as `ARRAY`, so the current type of an array column comes from the `arrays` read. Without either, the change reads as a rewrite with confidence `likely`.
+
+`timestamp` to `timestamptz`, and `timestamptz` to `timestamp`, leave the rows as they are when the `TimeZone` setting is UTC, and rebuild each index on the column, because the two types sort by different operator classes. Under another time zone the change rewrites the table. Without the `TimeZone` setting, it reads as a rewrite with confidence `likely`. A type change that gives an indexed column another collation also rebuilds each index on it, expression indexes included. A `text`, `varchar`, or `char` type without `COLLATE` gives the column the default collation, so `varchar(200)` on a column with `COLLATE "C"` rebuilds its indexes. The `indexes` read gives the columns each index uses and their collations. Both cases are `pg.alter_column_type.index_rebuild`.
+
+`ADD COLUMN` of a domain with a NOT NULL or a CHECK, of its own or on the domain it is over, rewrites the table, because PostgreSQL checks the constraint against every row. The `types` read says which types are such domains. A type that read did not find, such as a domain an earlier statement of the same run creates, reads as a rewrite with confidence `likely`. A domain without a constraint, and an array of a domain, change only the catalog.
 
 A `SET NOT NULL` skips its scan when a valid check constraint already proves the column has no NULL. The remedy for a scan on a populated table is that route: add the check `NOT VALID`, validate it, set `NOT NULL`, and drop the check. The analysis reads the route as catalog work: a check whose expression is `c IS NOT NULL`, with or without parentheses around it, proves the column once the run adds it without `NOT VALID` or validates it, until the run drops the check or the column. A check the schema read finds proves it too, unless PostgreSQL reports it `NOT VALID`.
 
-The tables at the other end of a foreign key come from the schema read. Without it, a `DROP TABLE` or a `DROP CONSTRAINT` reports only the table it names, and a `DROP INDEX` reports its table as `(table of index ix)`.
+The tables at the other end of a foreign key come from the schema read. Without it, a `DROP TABLE` or a `DROP CONSTRAINT` reports only the table it names, and a `DROP INDEX` reports its table as `(table of index ix)`. `VALIDATE CONSTRAINT` of a foreign key takes `ROW SHARE` on the table the key points at. A constraint the schema read does not list as a foreign key or a check reads with confidence `likely`.
 
-The integration suite checks every rule against PostgreSQL 14 and 18. It creates the tables the rules' fixture statements name, runs each fixture alone in a transaction under the same reads as `rehearse --trace`, and fails on any `impact.mismatch`. A fixture that PostgreSQL refuses inside a transaction block, such as `CREATE INDEX CONCURRENTLY` or `VACUUM`, is not observed. Neither is `SET TABLESPACE`, because the test servers have no second tablespace to move a table to.
+### Partitioned tables
+
+A partitioned table stores no rows, and PostgreSQL applies a statement that reaches rows to each partition below it, partitions of partitions included. The `partitions` read names them, and the report lists each partition with the lock and work the statement takes there, and a blocking-work finding for each:
+
+- `CREATE INDEX` takes `SHARE` on every partition and builds the index on each. `CREATE INDEX ... ON ONLY` the partitioned table creates an invalid index on it alone, which is catalog work. The finding advises that route: create the index `ON ONLY` the partitioned table, build a matching index on each partition `CONCURRENTLY`, and attach each one with `ALTER INDEX ... ATTACH PARTITION`.
+- An `ALTER TABLE` action takes its lock on every partition unless the statement says `ONLY`. A rename of the table, `SET SCHEMA`, `OWNER TO`, row level security, `SET TABLESPACE`, `SET LOGGED`, `SET UNLOGGED`, and storage parameters lock the partitioned table alone.
+- `DROP TABLE`, `TRUNCATE`, `DROP INDEX` of a partitioned index, `REINDEX`, `VACUUM`, `ANALYZE`, `CREATE TRIGGER`, and `DROP TRIGGER` lock each partition. `LOCK TABLE` does too, unless it says `ONLY`.
+- `CREATE TABLE ... PARTITION OF`, `ATTACH PARTITION`, and `DETACH PARTITION` lock the partitioned table's DEFAULT partition `ACCESS EXCLUSIVE`, and the first two scan it, because PostgreSQL checks its rows against the new bound. `DROP TABLE` of a partition locks its partitioned table and the DEFAULT partition.
+- `ATTACH PARTITION` builds an index on the new partition for each index of the partitioned table the partition has no match for. The read does not compare indexes, so the report gives an index build with confidence `likely` whenever the partitioned table has an index.
+
+A table the run creates is not in the read, so a partition an earlier statement of the run adds is not locked by a later statement on its partitioned table. A statement-level `CREATE TRIGGER` on a partitioned table locks the partitioned table alone, and the report still lists each partition.
+
+### Statements the server refuses
+
+A statement PostgreSQL refuses to run is a `danger` finding under the statement's rule. These cannot run inside a transaction block, so they are `danger` in a migration that runs inside one: `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `REINDEX CONCURRENTLY`, `DETACH PARTITION ... CONCURRENTLY`, `VACUUM`, `REINDEX SCHEMA`, `DATABASE`, or `SYSTEM`, `REINDEX` of a partitioned table or index, and `CLUSTER` without a table. The finding advises a migration with `transactional=False`. These are refused wherever they run:
+
+- `CREATE INDEX CONCURRENTLY` and `DROP INDEX CONCURRENTLY` on a partitioned table or index
+- `DETACH PARTITION ... CONCURRENTLY` from a partitioned table with a DEFAULT partition
+- a `NOT VALID` foreign key on a partitioned table, before PostgreSQL 18
+- an exclusion constraint on a partitioned table, before PostgreSQL 17
+
+The integration suite checks every rule against PostgreSQL 14 and 18. It creates the tables the rules' fixture statements name, runs each fixture alone in a transaction under the same reads as `rehearse --trace`, and fails on any `impact.mismatch`. A fixture that PostgreSQL refuses inside a transaction block, such as `CREATE INDEX CONCURRENTLY` or `VACUUM`, is not observed. Neither is `SET TABLESPACE`, because the test servers have no second tablespace to move a table to. A fixture the server refuses on that version is run outside a transaction, and the suite checks that the server raises and that the report gives a `danger` finding under the fixture's rule. The suite also checks that each statement the rules call refused inside a transaction block raises there.
 
 ### Remedies
 
 | Statement | Remedy |
 | --- | --- |
-| `CREATE INDEX` | `CREATE INDEX CONCURRENTLY` in a migration with `transactional=False`. A failed concurrent build leaves an invalid index behind, which has to be dropped. |
+| `CREATE INDEX` | `CREATE INDEX CONCURRENTLY` in a migration with `transactional=False`. A failed concurrent build leaves an invalid index behind, which has to be dropped. On a partitioned table, which refuses `CONCURRENTLY`, the finding names the `ON ONLY` route and the report generates no statement. |
 | `DROP INDEX` | `DROP INDEX CONCURRENTLY` in a migration with `transactional=False` |
 | `ADD FOREIGN KEY` | `ADD ... NOT VALID`, then `VALIDATE CONSTRAINT` in a later migration |
 | `ADD CHECK` | `ADD ... NOT VALID`, then `VALIDATE CONSTRAINT` |
@@ -568,7 +601,7 @@ The integration suite checks every rule against PostgreSQL 14 and 18. It creates
 | A type change that rewrites | Add a new column, write to both, backfill, and swap. The finding names the steps and generates none of them. |
 | `REINDEX` | `REINDEX CONCURRENTLY` |
 | `REFRESH MATERIALIZED VIEW` | `REFRESH MATERIALIZED VIEW CONCURRENTLY`, which needs a unique index on the view |
-| `UPDATE`, `DELETE` over a large table | A batched backfill outside the DDL migration |
+| `UPDATE`, `DELETE` over a large table | A batched backfill, or for a `DELETE` a batched delete, outside the DDL migration |
 | A lock that blocks writes or more, with no timeout | `SET LOCAL lock_timeout = '5s'` before it |
 
 `CONCURRENTLY` needs a migration of its own with `transactional=False`, because PostgreSQL refuses that form inside a transaction block. See [Migrations without a transaction](/schema#migrations-without-a-transaction).

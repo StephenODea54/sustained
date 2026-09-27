@@ -85,16 +85,19 @@ def row_write_message(facts: Facts, table: str, detail: str = "") -> str:
     """
     The finding for an UPDATE or DELETE: writes to the rows it changes
     wait until it ends, or until the migration commits inside a
-    transaction. `detail` adds the engine's own reason after that.
+    transaction. `detail` adds the engine's own reason after that. A
+    DELETE is advised to delete in batches, and an UPDATE to backfill
+    in batches.
     """
     if facts.intent is not None and facts.intent.kind == "backfill":
         what = "the backfill"
     else:
         what = f"the {facts.parsed.kind.upper()}"
     until = "the migration commits" if facts.transactional else "it ends"
+    batches = "delete" if facts.parsed.kind == "delete" else "backfill"
     return (
         f"writes to the rows {what} changes on {table} wait until {until}"
-        f"{detail}; on a large table, backfill in batches outside the DDL "
+        f"{detail}; on a large table, {batches} in batches outside the DDL "
         "migration"
     )
 

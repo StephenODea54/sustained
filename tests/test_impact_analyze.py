@@ -153,7 +153,8 @@ class SeverityTestCase(unittest.TestCase):
         self.assertEqual(rules(statement), ["pg.lock_timeout"])
 
     def test_default_wording_for_blocking_work_without_a_message(self):
-        (statement,) = analyze(["VACUUM FULL orders"], PG).statements
+        vacuum = MigrationStatement("VACUUM FULL orders", "m1", transactional=False)
+        (statement,) = analyze([vacuum], PG).statements
         self.assertIn(
             "reads and writes on orders wait while the table and its indexes are "
             "rewritten",

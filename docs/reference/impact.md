@@ -295,13 +295,13 @@ The table size past which blocking work is `danger`. Work on a table with more e
 ## `EngineContext`
 
 ```python
-EngineContext(profile, version, edition=None, settings={}, tables={}, schema=None, read=frozenset())
+EngineContext(profile, version, edition=None, settings={}, tables={}, schema=None, read=frozenset(), relations={}, types={})
 ```
 {: .sig}
 
-The server facts the rules read: the profile, the version as a tuple of ints, the edition, settings such as `TimeZone` and `lock_timeout`, a mapping of lower case table name to `TableStats`, the schema `Snapshot`, and `read`, the names of the facts that came from a server: `version`, `settings`, `sizes`, and `schema`, on MySQL and MariaDB also `fulltext` and `row_versions`, on SQL Server also `edition` and `clustered`, and on SQLite `counts` when `exact_counts` read the table list. With `read` empty, the report's evidence is `static`, and `catalog` otherwise. `read_context()` builds one from a connection.
+The server facts the rules read: the profile, the version as a tuple of ints, the edition, settings such as `TimeZone` and `lock_timeout`, a mapping of lower case table name to `TableStats`, the schema `Snapshot`, `read`, the names of the facts that came from a server, `relations`, a mapping of lower case table name to `Relation`, and `types`, a mapping of lower case type name to whether the type is a domain with a NOT NULL or a CHECK, for the types outside the system schemas. The names in `read` are `version`, `settings`, `sizes`, and `schema`, on PostgreSQL also `partitions`, `indexes`, `arrays`, and `types`, on MySQL and MariaDB also `fulltext` and `row_versions`, on SQL Server also `edition` and `clustered`, and on SQLite `counts` when `exact_counts` read the table list. With `read` empty, the report's evidence is `static`, and `catalog` otherwise. `read_context()` builds one from a connection.
 
-`read_context()` keys each table as `schema.table`, and also by its bare name when the search path finds it under that name, or on MySQL and MariaDB when it is in the current database. `stats(table)` returns a table's `TableStats`, or unknown stats for a table the read did not see.
+`read_context()` keys each table as `schema.table`, and also by its bare name when the search path finds it under that name, or on MySQL and MariaDB when it is in the current database. `relations` and `types` use the same keys. `stats(table)` returns a table's `TableStats`, or unknown stats for a table the read did not see.
 
 These methods read the schema, and return `None` or an empty tuple when the schema was not read or does not have what they look for. A dotted name finds a table by its last part, since the read covers one schema.
 
@@ -315,6 +315,8 @@ These methods read the schema, and return `None` or an empty tuple when the sche
 | `foreign_key_target(table, name)` | The table the named foreign key points at |
 
 `TableStats(rows=None, bytes=None, row_format=None, row_versions=None, fulltext=None, heap=None, clustered=None)` gives one table's size estimates and the storage facts the InnoDB rules read, each `None` where it was not read. On PostgreSQL, `rows` is `None` for a table that was never vacuumed or analyzed. `row_format` is the InnoDB row format in upper case, such as `DYNAMIC` or `COMPRESSED`. `row_versions` counts the instant column changes MySQL has recorded since the table was last rebuilt. `fulltext` says whether the table has a FULLTEXT index. On SQL Server, `heap` says whether the table has no clustered index, and `clustered` names the one it has.
+
+`Relation(partitioned=False, parent=None, default=None, partitions=(), indexed={}, arrays={})` gives the PostgreSQL catalog facts about one table that its size does not give. `partitioned` says whether it is a partitioned table, `parent` names the partitioned table it is a partition of, `default` names its DEFAULT partition, and `partitions` names its partitions one level down. Each name is the bare name when the search path finds the table under it, and `schema.table` otherwise. `indexed` maps each column an index uses, as a key column or inside an expression or predicate, in lower case, to the name of the collation the column is declared with, or `None` for a column of a type without one. `arrays` maps each array column, in lower case, to its type as `format_type()` writes it, such as `character varying(10)[]`. The `partitions` read fills the first four, the `indexes` read `indexed`, and the `arrays` read `arrays`.
 
 ## Report forms
 

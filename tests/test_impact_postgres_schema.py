@@ -248,7 +248,8 @@ class IndexTableTestCase(unittest.TestCase):
 
 class PartitionTestCase(unittest.TestCase):
     def test_attach_scans_the_partition(self):
-        statement = impact("ALTER TABLE t ATTACH PARTITION p FOR VALUES IN (1)")
+        read = EngineContext("postgres", (18,), read=frozenset({"indexes"}))
+        statement = impact("ALTER TABLE t ATTACH PARTITION p FOR VALUES IN (1)", read)
         self.assertEqual(
             {(t.table, t.lock, t.work) for t in statement.tables},
             {
@@ -257,6 +258,9 @@ class PartitionTestCase(unittest.TestCase):
             },
         )
         self.assertEqual(statement.confidence, Confidence.LIKELY)
+        # Without the index read, the parent may have indexes to build.
+        statement = impact("ALTER TABLE t ATTACH PARTITION p FOR VALUES IN (1)")
+        self.assertEqual(table_named(statement, "p").work, Work.INDEX_BUILD)
 
     def test_detach(self):
         statement = impact("ALTER TABLE t DETACH PARTITION p")
@@ -276,10 +280,18 @@ class PartitionTestCase(unittest.TestCase):
             .message,
         )
         newer = impact(
-            "ALTER TABLE t DETACH PARTITION p CONCURRENTLY",
+            MigrationStatement(
+                "ALTER TABLE t DETACH PARTITION p CONCURRENTLY",
+                "m1",
+                transactional=False,
+            ),
             EngineContext("postgres", (14,)),
         )
         self.assertEqual(newer.findings, ())
+
+
+def table_named(statement, name):
+    return next(t for t in statement.tables if t.table == name)
 
 
 class ProvenNotNullTestCase(unittest.TestCase):

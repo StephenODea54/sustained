@@ -23,7 +23,13 @@ is unknown here.
 `context_plan()` reads the server facts the rules use: the version, the
 `TimeZone` and `lock_timeout` settings, and each table's size from
 `pg_class.reltuples` and `pg_total_relation_size()`. A partitioned
-table's size is the sum of its leaf partitions. `preflight_plan()` reads
+table's size is the sum of its leaf partitions. From the catalog, and
+without a lock on any table, it also reads the partitions of each
+partitioned table and its DEFAULT partition (`partitions`), the columns
+each index uses and their collations (`indexes`), the type of each
+array column (`arrays`), and which types are domains with a NOT NULL or
+a CHECK (`types`). `partitions.py` gives the partitions a statement on a
+partitioned table also locks. `preflight_plan()` reads
 the other backends' table locks and open transactions for the live
 preflight.
 """
@@ -35,7 +41,7 @@ from typing import (
     List,
 )
 
-from sustained.impact.model import Confidence, Finding, Work
+from sustained.impact.model import Action, Confidence, Finding, Work
 from sustained.impact.rules import Effect, Facts, Outcome, Profile, Trace, common
 from sustained.impact.rules.postgres.alter import (
     ActionHandler,
@@ -48,6 +54,7 @@ from sustained.impact.rules.postgres.alter import (
     _rename,
     _set_not_null,
     _set_parameters,
+    _validate,
     simple,
 )
 from sustained.impact.rules.postgres.catalog import (
@@ -58,7 +65,6 @@ from sustained.impact.rules.postgres.catalog import (
     TABLE_CATALOG,
     TABLE_REWRITE,
     TRIGGER_STATE,
-    VALIDATE,
     all_rules,
 )
 from sustained.impact.rules.postgres.column_types import (
@@ -69,12 +75,14 @@ from sustained.impact.rules.postgres.context import context_plan, server_version
 from sustained.impact.rules.postgres.locks import (
     ACCESS_EXCLUSIVE,
     LOCKS,
+    SHARE,
     SHARE_ROW_EXCLUSIVE,
     SHARE_UPDATE_EXCLUSIVE,
     blocks,
     lock_rank,
     timeout_statement,
 )
+from sustained.impact.rules.postgres.partitions import descendants, partitioned
 from sustained.impact.rules.postgres.preflight import preflight_plan
 from sustained.impact.rules.postgres.statements import (
     _cluster,
@@ -111,7 +119,7 @@ _ACTIONS: Dict[str, ActionHandler] = {
     "set_statistics": simple(SET_STATISTICS, SHARE_UPDATE_EXCLUSIVE, Work.CATALOG),
     "add_constraint": _add_constraint,
     "drop_constraint": _drop_constraint,
-    "validate_constraint": simple(VALIDATE, SHARE_UPDATE_EXCLUSIVE, Work.SCAN),
+    "validate_constraint": _validate,
     "rename_column": _rename,
     "rename_to": _rename,
     "rename_constraint": _rename,
@@ -129,16 +137,48 @@ _ACTIONS: Dict[str, ActionHandler] = {
 }
 
 
+# The ALTER TABLE actions PostgreSQL applies to a partitioned table
+# alone, without locking its partitions.
+_PARENT_ONLY = frozenset(
+    {
+        "rename_to",
+        "set_schema",
+        "owner_to",
+        "row_security",
+        "set_tablespace",
+        "set_logged",
+        "set_unlogged",
+        "set_parameters",
+        "attach_partition",
+        "detach_partition",
+    }
+)
+# The actions that copy a partitioned table's file, which it does not
+# have: they change its catalog entry, for the partitions added later.
+_NO_FILE = frozenset({"set_tablespace", "set_logged", "set_unlogged"})
+
+
 def _alter_table(facts: Facts) -> Outcome:
     effects: List[Effect] = []
     findings: List[Finding] = []
     confidence = Confidence.KNOWN
+    table = common.table(facts)
+    parent = partitioned(facts, table)
+    only = bool(facts.parsed.options.get("only"))
     for action in facts.parsed.actions:
         handler = _ACTIONS.get(action.kind)
         if handler is None:
             return common.unknown(facts, f"the ALTER TABLE action {action.kind}")
         outcome = handler(facts, action)
-        effects.extend(outcome.effects)
+        found = list(outcome.effects)
+        if parent and action.kind in _NO_FILE:
+            found = [
+                e._replace(work=Work.CATALOG) if e.table.lower() == table.lower() else e
+                for e in found
+            ]
+        if parent and not only and action.kind not in _PARENT_ONLY:
+            found.extend(_on_partitions(facts, action, table, found))
+        effects.extend(found)
         findings.extend(outcome.findings)
         confidence = min(confidence, outcome.confidence)
     if len(facts.parsed.actions) > 1:
@@ -146,6 +186,36 @@ def _alter_table(facts: Facts) -> Outcome:
         # statement that holds others.
         effects = [e._replace(remedy=()) for e in effects]
     return Outcome(tuple(effects), tuple(findings), confidence)
+
+
+def _on_partitions(
+    facts: Facts, action: Action, table: str, effects: List[Effect]
+) -> List[Effect]:
+    """
+    The effects an action on a partitioned table has on the table, on
+    each partition below it, with the same lock and work. A unique key
+    or an exclusion constraint takes SHARE on each partition before 18,
+    while each partition's index is built.
+    """
+    lock = None
+    if action.kind == "add_constraint" and action.options.get("constraint") in (
+        "unique",
+        "exclude",
+    ):
+        lock = SHARE if facts.context.version < (18,) else ACCESS_EXCLUSIVE
+    own = [e for e in effects if e.table.lower() == table.lower()]
+    return [
+        Effect(
+            e.rule,
+            name,
+            lock or e.lock,
+            e.work,
+            e.confidence,
+            blocks=e.blocks,
+        )
+        for name in descendants(facts, table)
+        for e in own
+    ]
 
 
 _STATEMENTS: Dict[str, common.Handler] = {

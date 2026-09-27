@@ -58,11 +58,11 @@ class RemedyTestCase(unittest.TestCase):
                 "pg.set_not_null",
             ),
             (
-                'ALTER TABLE app."Orders" ADD CONSTRAINT "Orders_Paid_not_null" '
+                'ALTER TABLE "app"."Orders" ADD CONSTRAINT "Orders_Paid_not_null" '
                 'CHECK ("Paid" IS NOT NULL) NOT VALID',
-                'ALTER TABLE app."Orders" VALIDATE CONSTRAINT "Orders_Paid_not_null"',
-                'ALTER TABLE app."Orders" ALTER COLUMN "Paid" SET NOT NULL',
-                'ALTER TABLE app."Orders" DROP CONSTRAINT "Orders_Paid_not_null"',
+                'ALTER TABLE "app"."Orders" VALIDATE CONSTRAINT "Orders_Paid_not_null"',
+                'ALTER TABLE "app"."Orders" ALTER COLUMN "Paid" SET NOT NULL',
+                'ALTER TABLE "app"."Orders" DROP CONSTRAINT "Orders_Paid_not_null"',
             ),
         )
 
@@ -226,7 +226,12 @@ class TypeChangeTestCase(unittest.TestCase):
         self.assertEqual(table(sql, context=FIXTURE_CONTEXT).work, Work.REWRITE)
 
     def test_the_context_time_zone_reaches_the_rule(self):
-        context = EngineContext("postgres", (16,), settings={"TimeZone": "UTC"})
+        context = EngineContext(
+            "postgres",
+            (16,),
+            settings={"TimeZone": "UTC"},
+            read=frozenset({"settings", "indexes"}),
+        )
         found = table(self.generated("timestamp", "timestamptz"), context=context)
         self.assertEqual(found.work, Work.CATALOG)
 
@@ -253,10 +258,12 @@ class NoTableTestCase(unittest.TestCase):
     def test_statements_on_every_table(self):
         for sql in ["VACUUM", "CLUSTER", "DROP SCHEMA s CASCADE"]:
             with self.subTest(sql=sql):
-                statement = impact(sql)
+                statement = impact(MigrationStatement(sql, "m1", transactional=False))
                 self.assertEqual(statement.tables, ())
                 self.assertEqual(statement.confidence, Confidence.LIKELY)
-                self.assertEqual(statement.findings[0].severity, Severity.INFO)
+                self.assertEqual(
+                    [f.severity for f in statement.findings], [Severity.INFO]
+                )
 
 
 class UnknownTestCase(unittest.TestCase):
@@ -288,7 +295,11 @@ class NotesTestCase(unittest.TestCase):
         self.assertIn("table t", statement.findings[0].message)
 
     def test_create_index_concurrently_notes_the_invalid_index(self):
-        statement = impact("CREATE INDEX CONCURRENTLY ix ON t (c)")
+        statement = impact(
+            MigrationStatement(
+                "CREATE INDEX CONCURRENTLY ix ON t (c)", "m1", transactional=False
+            )
+        )
         self.assertEqual(rules(statement), ["pg.create_index.concurrently"])
         self.assertIn("invalid index", statement.findings[0].message)
 

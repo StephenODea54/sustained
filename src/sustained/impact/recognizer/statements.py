@@ -366,7 +366,7 @@ class Statements(Cursor):
         if self.is_word("TABLES"):
             raise Unrecognized("no rule reads LOCK TABLES")
         self.accept("TABLE")
-        self.accept("ONLY")
+        only = self.accept("ONLY")
         tables = self.names()
         self.table = tables[0]
         mode = "ACCESS EXCLUSIVE"
@@ -379,7 +379,12 @@ class Statements(Cursor):
                 raise Unrecognized(f"expected a lock mode {self.where()}")
             self.expect("MODE")
         nowait = self.accept("NOWAIT")
-        options: Options = {"tables": tuple(tables), "mode": mode, "nowait": nowait}
+        options: Options = {
+            "tables": tuple(tables),
+            "mode": mode,
+            "nowait": nowait,
+            "only": only,
+        }
         return ParsedStatement("lock_table", tables[0], options=frozen(options))
 
     def execute(self) -> ParsedStatement:

@@ -1,6 +1,8 @@
 """
 The PostgreSQL context read: the version, the `TimeZone` and
-`lock_timeout` settings, and each table's size.
+`lock_timeout` settings, each table's size, the partitions of each
+partitioned table, the columns each table's indexes use, the type of
+each array column, and the types that are domains with a constraint.
 
 `pg_total_relation_size()` takes ACCESS SHARE on each table it sizes,
 which waits behind a session with ACCESS EXCLUSIVE on it. The size read
@@ -11,12 +13,23 @@ back after it.
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import Collection, Dict, Generator, Optional, Sequence, Set, Tuple
+from typing import (
+    Collection,
+    Dict,
+    Generator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 from sustained.impact.context import (
     FLOORS,
     ContextPlan,
     EngineContext,
+    Relation,
     Rows,
     TableStats,
     attempt,
@@ -61,6 +74,73 @@ WHERE c.relkind IN ('r', 'p', 'm')
 # How long the size read waits for each lock it takes.
 SIZE_LOCK_TIMEOUT = "1s"
 
+_SYSTEM_SCHEMAS = (
+    "n.nspname NOT IN ('pg_catalog', 'information_schema') "
+    "AND n.nspname !~ '^pg_(toast|temp_)'"
+)
+
+# One row per partitioned table and per partition: its oid, schema, and
+# name, whether an unqualified name finds it, whether it is partitioned,
+# the oid of the table it is a partition of, and the oid of its DEFAULT
+# partition. The read takes no lock on any table.
+_PARTITIONS_SQL = f"""SELECT c.oid, n.nspname, c.relname,
+  pg_catalog.pg_table_is_visible(c.oid), c.relkind = 'p', i.inhparent,
+  nullif(p.partdefid, 0)
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_catalog.pg_inherits i ON i.inhrelid = c.oid AND c.relispartition
+LEFT JOIN pg_catalog.pg_partitioned_table p ON p.partrelid = c.oid
+WHERE (c.relkind = 'p' OR c.relispartition) AND {_SYSTEM_SCHEMAS}"""
+
+# One row per column an index uses, as a key column or inside an
+# expression or predicate, with the collation the column is declared
+# with: its table's schema and name, whether an unqualified name finds
+# the table, the column, and the collation's name.
+_INDEXED_SQL = f"""SELECT n.nspname, c.relname, pg_catalog.pg_table_is_visible(c.oid),
+  a.attname, co.collname
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_catalog.pg_attribute a
+  ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+LEFT JOIN pg_catalog.pg_collation co ON co.oid = a.attcollation
+WHERE c.relkind IN ('r', 'p', 'm') AND {_SYSTEM_SCHEMAS}
+  AND EXISTS (
+    SELECT 1 FROM pg_catalog.pg_index x
+    WHERE x.indrelid = c.oid AND (
+      a.attnum = ANY (x.indkey)
+      OR EXISTS (
+        SELECT 1 FROM pg_catalog.pg_depend d
+        WHERE d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass
+          AND d.objid = x.indexrelid
+          AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+          AND d.refobjid = c.oid AND d.refobjsubid = a.attnum)))"""
+
+# One row per array column: its table's schema and name, whether an
+# unqualified name finds the table, the column, and its type with the
+# length of its elements.
+_ARRAYS_SQL = f"""SELECT n.nspname, c.relname, pg_catalog.pg_table_is_visible(c.oid),
+  a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod)
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_catalog.pg_attribute a
+  ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+JOIN pg_catalog.pg_type y ON y.oid = a.atttypid
+WHERE c.relkind IN ('r', 'p', 'm') AND {_SYSTEM_SCHEMAS} AND y.typcategory = 'A'"""
+
+# One row per type outside the system schemas, other than an array type
+# and the row type of a table: its oid, schema, and name, whether an
+# unqualified name finds it, the oid of the type a domain is over, and
+# whether it is a domain with a NOT NULL or a CHECK of its own.
+_TYPES_SQL = f"""SELECT t.oid, n.nspname, t.typname, pg_catalog.pg_type_is_visible(t.oid),
+  nullif(t.typbasetype, 0),
+  t.typtype = 'd' AND (t.typnotnull OR EXISTS (
+    SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.contypid = t.oid))
+FROM pg_catalog.pg_type t
+JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+WHERE {_SYSTEM_SCHEMAS} AND t.typcategory <> 'A'
+  AND (t.typtype <> 'c' OR EXISTS (
+    SELECT 1 FROM pg_catalog.pg_class r WHERE r.oid = t.typrelid AND r.relkind = 'c'))"""
+
 
 def server_version(number: str) -> Tuple[int, ...]:
     """A `server_version_num` value as a version, such as (16, 4)."""
@@ -72,7 +152,8 @@ def context_plan(
     exact_counts: bool = False, tables: Optional[Collection[str]] = None
 ) -> ContextPlan:
     """
-    Reads the version, the settings, and the table sizes. A statement
+    Reads the version, the settings, the table sizes, the partitions,
+    the indexed columns, the array columns, and the types. A statement
     that fails leaves its facts out of `read`, and the rules assume the
     floor or the worst case for them. The sizes are the estimates the
     server keeps, so `exact_counts` changes nothing here.
@@ -95,12 +176,32 @@ def context_plan(
     names = None if tables is None else sorted(set(tables))
     if names != []:
         found = yield from _read_sizes(names, read)
+    relations: Dict[str, Relation] = {}
+    partitions = yield from attempt(_PARTITIONS_SQL)
+    if partitions is not None:
+        _partitions(relations, partitions)
+        read.add("partitions")
+    indexed = yield from attempt(_INDEXED_SQL)
+    if indexed is not None:
+        _columns(relations, indexed, "indexed")
+        read.add("indexes")
+    arrays = yield from attempt(_ARRAYS_SQL)
+    if arrays is not None:
+        _columns(relations, arrays, "arrays")
+        read.add("arrays")
+    types: Mapping[str, bool] = {}
+    rows = yield from attempt(_TYPES_SQL)
+    if rows is not None:
+        types = _types(rows)
+        read.add("types")
     return EngineContext(
         "postgres",
         version,
         settings=MappingProxyType(settings),
         tables=MappingProxyType(found),
         read=frozenset(read),
+        relations=MappingProxyType(relations),
+        types=MappingProxyType(types),
     )
 
 
@@ -171,3 +272,91 @@ def _sizes(rows: Sequence[Sequence[object]]) -> Dict[str, TableStats]:
         stats = TableStats(None if unread else int(str(count)), int(str(size)))
         common.add_stats(tables, str(schema), str(name), bool(visible), stats)
     return tables
+
+
+def _keys(schema: str, name: str, visible: bool) -> Tuple[str, ...]:
+    """The lower case keys a table or type is found under."""
+    full = f"{schema}.{name}".lower()
+    return (full, name.lower()) if visible else (full,)
+
+
+def _spelled(schema: str, name: str, visible: bool) -> str:
+    """A table's name as a statement would write it."""
+    return name if visible else f"{schema}.{name}"
+
+
+def _partitions(
+    relations: Dict[str, Relation], rows: Sequence[Sequence[object]]
+) -> None:
+    """Each partitioned table and partition, with its parent and partitions."""
+    names: Dict[int, str] = {}
+    for oid, schema, name, visible, *_ in rows:
+        names[int(str(oid))] = _spelled(str(schema), str(name), bool(visible))
+    children: Dict[int, List[str]] = {}
+    for oid, _, _, _, _, parent, _ in rows:
+        if parent is not None:
+            children.setdefault(int(str(parent)), []).append(names[int(str(oid))])
+    for oid, schema, name, visible, partitioned, parent, default in rows:
+        key = int(str(oid))
+        relation = Relation(
+            partitioned=bool(partitioned),
+            parent=None if parent is None else names.get(int(str(parent))),
+            default=None if default is None else names.get(int(str(default))),
+            partitions=tuple(sorted(children.get(key, ()))),
+        )
+        for found in _keys(str(schema), str(name), bool(visible)):
+            relations[found] = relation
+
+
+def _columns(
+    relations: Dict[str, Relation], rows: Sequence[Sequence[object]], field: str
+) -> None:
+    """
+    Adds a fact about each column to its table's facts, under `field`:
+    `indexed` for the collation of each indexed column, and `arrays`
+    for the type of each array column.
+    """
+    columns: Dict[Tuple[str, ...], Dict[str, Optional[str]]] = {}
+    for schema, name, visible, column, value in rows:
+        keys = _keys(str(schema), str(name), bool(visible))
+        found = columns.setdefault(keys, {})
+        found[str(column).lower()] = None if value is None else str(value)
+    for keys, values in columns.items():
+        relation = relations.get(keys[0], Relation())
+        facts = MappingProxyType(values)
+        if field == "indexed":
+            relation = relation._replace(indexed=facts)
+        else:
+            relation = relation._replace(
+                arrays=MappingProxyType({k: str(v) for k, v in values.items()})
+            )
+        for key in keys:
+            relations[key] = relation
+
+
+def _types(rows: Sequence[Sequence[object]]) -> Mapping[str, bool]:
+    """
+    Each type's name, mapped to whether it is a domain with a constraint
+    of its own or on a domain it is over.
+    """
+    own: Dict[int, bool] = {}
+    bases: Dict[int, Optional[int]] = {}
+    for oid, _, _, _, base, checked in rows:
+        own[int(str(oid))] = bool(checked)
+        bases[int(str(oid))] = None if base is None else int(str(base))
+
+    def constrained(oid: int) -> bool:
+        seen: Set[int] = set()
+        current: Optional[int] = oid
+        while current is not None and current in own and current not in seen:
+            if own[current]:
+                return True
+            seen.add(current)
+            current = bases[current]
+        return False
+
+    types: Dict[str, bool] = {}
+    for oid, schema, name, visible, _, _ in rows:
+        for key in _keys(str(schema), str(name), bool(visible)):
+            types[key] = constrained(int(str(oid)))
+    return types

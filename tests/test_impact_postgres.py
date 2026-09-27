@@ -53,11 +53,31 @@ FIXTURE_SCHEMA = Snapshot(
             check_names={"ck": "ck", "name_present": "name_present"},
             name="t",
         ),
+        "d": IntrospectedTable(
+            {
+                "id": IntrospectedColumn("integer", True, False),
+                "at": IntrospectedColumn("timestamp without time zone", True, False),
+                "atz": IntrospectedColumn("timestamp with time zone", True, False),
+                "label": IntrospectedColumn("text", True, False),
+                "tags": IntrospectedColumn("character varying(10)[]", True, False),
+            },
+            indexes={
+                name: IntrospectedIndex((column,), False, name=name)
+                for name, column in (
+                    ("d_at", "at"),
+                    ("d_atz", "atz"),
+                    ("d_label", "label"),
+                )
+            },
+            name="d",
+        ),
     }
 )
 
-# The newest server, with the fixture schema read.
-FIXTURE_CONTEXT = EngineContext("postgres", (18,), schema=FIXTURE_SCHEMA)
+# The newest server under UTC, with the fixture schema read.
+FIXTURE_CONTEXT = EngineContext(
+    "postgres", (18,), settings={"TimeZone": "UTC"}, schema=FIXTURE_SCHEMA
+)
 
 
 def impact(sql, context=None):

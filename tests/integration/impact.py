@@ -14,6 +14,7 @@ import unittest
 from contextlib import redirect_stderr
 
 from sustained.aio_migrations import AsyncMigrator
+from sustained.analysis import MigrationStatement
 from sustained.dialects import Dialects
 from sustained.exceptions import GuardBlocked, PreflightBlocked
 from sustained.guards import max_blocking
@@ -64,7 +65,27 @@ UNOBSERVED = {
     "REINDEX TABLE CONCURRENTLY t": "no transaction block",
     "VACUUM t": "no transaction block",
     "VACUUM FULL t": "no transaction block",
+    "ALTER TABLE pi DETACH PARTITION pi1 CONCURRENTLY": "no transaction block",
 }
+
+# Fixtures the server refuses on some versions, with the versions. The
+# rules predict a `danger` finding for each, which a test checks.
+REFUSED = {
+    "CREATE INDEX CONCURRENTLY ix2 ON pt (id)": lambda version: True,
+    "DROP INDEX CONCURRENTLY pi_c": lambda version: True,
+    "ALTER TABLE pt DETACH PARTITION pt1 CONCURRENTLY": lambda version: True,
+    "ALTER TABLE pt ADD CONSTRAINT fk FOREIGN KEY (id) REFERENCES r (id) "
+    "NOT VALID": lambda version: version < (18,),
+}
+
+# Statements the server refuses inside a transaction block, beside the
+# fixtures UNOBSERVED lists for that reason.
+IN_TRANSACTION = (
+    "REINDEX TABLE pt",
+    "REINDEX INDEX pi_c",
+    f"REINDEX SCHEMA {FIXTURE_SCHEMA}",
+    "CLUSTER",
+)
 
 
 class ImpactCase(unittest.TestCase):
@@ -649,8 +670,14 @@ class ImpactCase(unittest.TestCase):
         dangers = {f.rule for f in report.findings if f.severity is Severity.DANGER}
         self.assertLessEqual(dangers, {"pg.write_rows"})
 
-    def test_each_rule_fixture_does_what_its_rule_predicts(self):
+    def fixture_context(self):
+        """
+        The fixture schema, created under the UTC TimeZone the fixtures
+        of a timestamp change need, and the context read of it.
+        """
         profile = profile_for(self.DIALECT)
+        self.execute("SET TimeZone TO 'UTC'")
+        self.addCleanup(self.execute, "RESET TimeZone")
         self.execute(
             f"CREATE SCHEMA {FIXTURE_SCHEMA}",
             f"SET search_path TO {FIXTURE_SCHEMA}",
@@ -659,10 +686,16 @@ class ImpactCase(unittest.TestCase):
         )
         context = read_context(self.connection, self.DIALECT)
         self.connection.rollback()
+        return profile, context
+
+    def test_each_rule_fixture_does_what_its_rule_predicts(self):
+        profile, context = self.fixture_context()
         fixtures = [(rule, f) for rule in profile.rules for f in rule.fixtures]
-        self.assertLessEqual(set(UNOBSERVED), {f for _, f in fixtures})
+        self.assertLessEqual(set(UNOBSERVED) | set(REFUSED), {f for _, f in fixtures})
         for rule, fixture in fixtures:
             if fixture in UNOBSERVED:
+                continue
+            if fixture in REFUSED and REFUSED[fixture](context.version):
                 continue
             with self.subTest(rule=rule.id, fixture=fixture):
                 statement = self.observe_fixture(fixture, context, profile)
@@ -674,6 +707,68 @@ class ImpactCase(unittest.TestCase):
                     f.message for f in statement.findings if f.rule == "impact.mismatch"
                 ]
                 self.assertEqual(mismatches, [])
+
+    def dangers(self, statement, context, transactional):
+        """The rule and message of each danger finding the statement draws."""
+        (found,) = analyze(
+            [MigrationStatement(statement, "m1", transactional=transactional)],
+            self.DIALECT,
+            context,
+        ).statements
+        return {
+            (f.rule, f.message) for f in found.findings if f.severity is Severity.DANGER
+        }
+
+    def test_each_refused_fixture_is_refused_and_predicted_danger(self):
+        profile, context = self.fixture_context()
+        rules = {f: rule.id for rule in profile.rules for f in rule.fixtures}
+        self.connection.autocommit = True
+        self.addCleanup(setattr, self.connection, "autocommit", False)
+        for fixture, refused in REFUSED.items():
+            if not refused(context.version):
+                continue
+            with self.subTest(fixture=fixture):
+                with self.assertRaises(Exception):
+                    self.connection.cursor().execute(fixture)
+                found = self.dangers(fixture, context, False)
+                self.assertIn(rules[fixture], {rule for rule, _ in found})
+
+    def test_a_statement_refused_in_a_transaction_block_is_danger(self):
+        profile, context = self.fixture_context()
+        blocked = [f for f, why in UNOBSERVED.items() if why == "no transaction block"]
+        for statement in [*blocked, *IN_TRANSACTION]:
+            with self.subTest(statement=statement):
+                try:
+                    with self.assertRaisesRegex(Exception, "transaction block"):
+                        self.connection.cursor().execute(statement)
+                finally:
+                    self.connection.rollback()
+                found = self.dangers(statement, context, True)
+                self.assertTrue(any("transaction block" in m for _, m in found))
+                found = self.dangers(statement, context, False)
+                self.assertFalse(any("transaction block" in m for _, m in found))
+
+    def test_the_read_finds_partitions_indexes_and_domains(self):
+        profile, context = self.fixture_context()
+        pt = context.relations["pt"]
+        self.assertTrue(pt.partitioned)
+        self.assertEqual(pt.partitions, ("pt1", "ptd"))
+        self.assertEqual(pt.default, "ptd")
+        self.assertEqual(context.relations[f"{FIXTURE_SCHEMA}.pt1"].parent, "pt")
+        self.assertFalse(context.relations["pt1"].partitioned)
+        self.assertEqual(dict(context.relations["pi"].indexed), {"c": None})
+        self.assertEqual(
+            dict(context.relations["d"].indexed),
+            {"at": None, "atz": None, "label": "default"},
+        )
+        self.assertNotIn("r", context.relations["t"].indexed)
+        self.assertIn("id", context.relations["t"].indexed)
+        self.assertIs(context.types["positive"], True)
+        self.assertIs(context.types[f"{FIXTURE_SCHEMA}.positive"], True)
+        self.assertEqual(
+            dict(context.relations["d"].arrays), {"tags": "character varying(10)[]"}
+        )
+        self.assertLessEqual({"partitions", "indexes", "arrays", "types"}, context.read)
 
     def observe_fixture(self, fixture, context, profile):
         """

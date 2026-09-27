@@ -4,7 +4,7 @@ The handlers for each PostgreSQL statement kind other than ALTER TABLE.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional, Set
 
 from sustained.impact.model import (
     Blocks,
@@ -13,7 +13,7 @@ from sustained.impact.model import (
     Severity,
     Work,
 )
-from sustained.impact.rules import Effect, Facts, Outcome, common
+from sustained.impact.rules import Effect, Facts, Outcome, Rule, common
 from sustained.impact.rules.postgres.catalog import (
     COMMENT,
     CREATE_INDEX,
@@ -44,6 +44,13 @@ from sustained.impact.rules.postgres.locks import (
     SHARE_ROW_EXCLUSIVE,
     SHARE_UPDATE_EXCLUSIVE,
 )
+from sustained.impact.rules.postgres.partitions import (
+    cascade,
+    default_partition,
+    descendants,
+    parent_of,
+    partitioned,
+)
 from sustained.impact.rules.postgres.remedies import (
     TRANSACTION_NOTE,
     insert_after,
@@ -55,10 +62,64 @@ def _table_label(index: str, table: Optional[str]) -> str:
     return table if table else f"(table of index {index})"
 
 
+def refused(rule: Rule, message: str) -> Finding:
+    """The finding for a statement the server refuses to run."""
+    return Finding(rule.id, Severity.DANGER, message, source=rule.source)
+
+
+def refused_in_transaction(facts: Facts, rule: Rule, what: str) -> List[Finding]:
+    """
+    The finding for a statement that cannot run inside a transaction
+    block, when its migration runs inside one, or no finding.
+    """
+    if not facts.transactional:
+        return []
+    return [
+        refused(
+            rule,
+            f"{what} cannot run inside a transaction block, and this migration "
+            "runs inside one, so the server refuses it; run it in a migration "
+            "with transactional=False",
+        )
+    ]
+
+
+# How to index a partitioned table without blocking writes, since the
+# server refuses CREATE INDEX CONCURRENTLY on one.
+_PARTITIONED_INDEX = (
+    "create the index ON ONLY the partitioned table, build a matching index "
+    f"on each partition CONCURRENTLY {TRANSACTION_NOTE}, and attach each one "
+    "with ALTER INDEX ... ATTACH PARTITION"
+)
+
+
 def _create_index(facts: Facts) -> Outcome:
     parsed = facts.parsed
     table = common.table(facts)
+    parent = partitioned(facts, table)
     if parsed.options.get("concurrently"):
+        findings = refused_in_transaction(
+            facts, CREATE_INDEX_CONCURRENTLY, "CREATE INDEX CONCURRENTLY"
+        )
+        if parent:
+            findings.append(
+                refused(
+                    CREATE_INDEX_CONCURRENTLY,
+                    f"the server refuses CREATE INDEX CONCURRENTLY on {table}, "
+                    f"a partitioned table; {_PARTITIONED_INDEX}",
+                )
+            )
+        if not findings:
+            findings.append(
+                Finding(
+                    CREATE_INDEX_CONCURRENTLY.id,
+                    Severity.INFO,
+                    "the build scans the table twice and waits for every "
+                    "older transaction; a failed build leaves an invalid "
+                    "index behind, which must be dropped before a retry",
+                    source=CREATE_INDEX_CONCURRENTLY.source,
+                )
+            )
         return Outcome(
             (
                 Effect(
@@ -68,16 +129,26 @@ def _create_index(facts: Facts) -> Outcome:
                     Work.INDEX_BUILD,
                 ),
             ),
+            tuple(findings),
+        )
+    if parent and parsed.options.get("only"):
+        # ON ONLY creates an invalid index on the partitioned table
+        # alone, which is valid once each partition's index is attached.
+        return Outcome((Effect(CREATE_INDEX, table, SHARE, Work.CATALOG),))
+    if parent:
+        return Outcome(
             (
-                Finding(
-                    CREATE_INDEX_CONCURRENTLY.id,
-                    Severity.INFO,
-                    "the build scans the table twice and waits for every "
-                    "older transaction; a failed build leaves an invalid "
-                    "index behind, which must be dropped before a retry",
-                    source=CREATE_INDEX_CONCURRENTLY.source,
+                Effect(
+                    CREATE_INDEX,
+                    table,
+                    SHARE,
+                    Work.INDEX_BUILD,
+                    message=f"writes to {table} and each of its partitions wait "
+                    f"while the index is built on every partition; "
+                    f"{_PARTITIONED_INDEX}",
                 ),
-            ),
+                *cascade(facts, CREATE_INDEX, table, SHARE, Work.INDEX_BUILD),
+            )
         )
     concurrent = insert_after(facts.statement, "INDEX", "CONCURRENTLY")
     remedy = (trimmed(concurrent),) if concurrent else ()
@@ -100,12 +171,20 @@ def _drop_index(facts: Facts) -> Outcome:
     options = facts.parsed.options
     names = [str(n) for n in facts.parsed.items("names")]
     concurrently = bool(options.get("concurrently"))
-    effects = []
+    effects: List[Effect] = []
+    findings: List[Finding] = []
+    if concurrently:
+        findings.extend(
+            refused_in_transaction(
+                facts, DROP_INDEX_CONCURRENTLY, "DROP INDEX CONCURRENTLY"
+            )
+        )
     for name in names:
         table = facts.state.index_table(name) or facts.context.index_table(name)
         if table is None and facts.intent is not None and len(names) == 1:
             table = facts.intent.table
         label = _table_label(name, table)
+        parent = table is not None and partitioned(facts, table)
         if concurrently:
             effects.append(
                 Effect(
@@ -114,6 +193,30 @@ def _drop_index(facts: Facts) -> Outcome:
                     SHARE_UPDATE_EXCLUSIVE,
                     Work.CATALOG,
                 )
+            )
+            if parent:
+                findings.append(
+                    refused(
+                        DROP_INDEX_CONCURRENTLY,
+                        f"the server refuses DROP INDEX CONCURRENTLY of {name}, "
+                        f"an index on {label}, which is a partitioned table",
+                    )
+                )
+            continue
+        if parent:
+            effects.append(
+                Effect(
+                    DROP_INDEX,
+                    label,
+                    ACCESS_EXCLUSIVE,
+                    Work.CATALOG,
+                    message=f"reads and writes on {label} and each of its "
+                    "partitions wait until the drop commits; the server refuses "
+                    "DROP INDEX CONCURRENTLY on a partitioned table",
+                )
+            )
+            effects.extend(
+                cascade(facts, DROP_INDEX, label, ACCESS_EXCLUSIVE, Work.CATALOG)
             )
             continue
         concurrent = (
@@ -132,7 +235,7 @@ def _drop_index(facts: Facts) -> Outcome:
                 remedy=(trimmed(concurrent),) if concurrent else (),
             )
         )
-    return Outcome(tuple(effects))
+    return Outcome(tuple(effects), tuple(findings))
 
 
 def _create_table(facts: Facts) -> Outcome:
@@ -160,7 +263,27 @@ def _create_table(facts: Facts) -> Outcome:
                 "is created",
             )
         )
+        default = default_partition(facts, str(parent))
+        if default is not None:
+            effects.append(default_scan(CREATE_TABLE, default, "the new partition"))
     return Outcome(tuple(effects))
+
+
+def default_scan(rule: Rule, default: str, partition: str) -> Effect:
+    """
+    The lock on a DEFAULT partition when a partition is added beside it:
+    PostgreSQL checks that none of its rows belongs in the new one,
+    unless a valid CHECK constraint on it proves that.
+    """
+    return Effect(
+        rule,
+        default,
+        ACCESS_EXCLUSIVE,
+        Work.SCAN,
+        Confidence.LIKELY,
+        message=f"reads and writes on {default}, the DEFAULT partition, wait "
+        f"while each of its rows is checked against the bound of {partition}",
+    )
 
 
 def _drop_table(facts: Facts) -> Outcome:
@@ -176,6 +299,13 @@ def _drop_table(facts: Facts) -> Outcome:
         Effect(DROP_TABLE, table, ACCESS_EXCLUSIVE, Work.CATALOG) for table in named
     ]
     seen = {table.lower() for table in named}
+    for table in named:
+        for other in descendants(facts, table):
+            if other.lower() not in seen:
+                seen.add(other.lower())
+                effects.append(
+                    Effect(DROP_TABLE, other, ACCESS_EXCLUSIVE, Work.CATALOG)
+                )
     context = facts.context
     cascade = bool(facts.parsed.options.get("cascade"))
     if facts.parsed.kind == "truncate":
@@ -200,6 +330,7 @@ def _drop_table(facts: Facts) -> Outcome:
                 )
         return Outcome(tuple(effects))
     for table in named:
+        effects.extend(_parent_locks(facts, table, seen))
         live = facts.state.original(table)
         for other in context.references(live):
             if other.lower() not in seen:
@@ -211,6 +342,33 @@ def _drop_table(facts: Facts) -> Outcome:
                     seen.add(other.lower())
                     effects.append(foreign_key_effect(other, table, "dropped", other))
     return Outcome(tuple(effects))
+
+
+def _parent_locks(facts: Facts, table: str, seen: Set[str]) -> List[Effect]:
+    """
+    Dropping a partition locks the partitioned table it belongs to, and
+    that table's DEFAULT partition, ACCESS EXCLUSIVE.
+    """
+    parent = parent_of(facts, table)
+    if parent is None:
+        return []
+    effects: List[Effect] = []
+    for other in (parent, default_partition(facts, parent)):
+        if other is None or other.lower() in seen:
+            continue
+        seen.add(other.lower())
+        effects.append(
+            Effect(
+                DROP_TABLE,
+                other,
+                ACCESS_EXCLUSIVE,
+                Work.CATALOG,
+                message=f"dropping {table}, a partition of {parent}, locks "
+                f"{other} ACCESS EXCLUSIVE: reads and writes on {other} wait "
+                "until the statement commits",
+            )
+        )
+    return effects
 
 
 def foreign_key_effect(
@@ -275,27 +433,36 @@ def _reindex(facts: Facts) -> Outcome:
     options = facts.parsed.options
     target = str(options.get("target"))
     name = str(options.get("name"))
+    findings: List[Finding] = []
+    parent = False
     if target == "table":
         label = name
+        parent = partitioned(facts, name)
     elif target == "index":
         table = facts.state.index_table(name) or facts.context.index_table(name)
         label = _table_label(name, table)
+        parent = table is not None and partitioned(facts, table)
     else:
         label = f"(every table in {target} {name})"
-    if options.get("concurrently"):
-        return Outcome(
-            (
-                Effect(
-                    REINDEX_CONCURRENTLY,
-                    label,
-                    SHARE_UPDATE_EXCLUSIVE,
-                    Work.INDEX_BUILD,
-                ),
-            )
+        findings.extend(
+            refused_in_transaction(facts, REINDEX, f"REINDEX {target.upper()}")
         )
-    concurrent = insert_after(facts.statement, target.upper(), "CONCURRENTLY")
-    return Outcome(
-        (
+    if options.get("concurrently"):
+        findings.extend(
+            refused_in_transaction(facts, REINDEX_CONCURRENTLY, "REINDEX CONCURRENTLY")
+        )
+        rule, lock = REINDEX_CONCURRENTLY, SHARE_UPDATE_EXCLUSIVE
+        effects = [Effect(rule, label, lock, Work.INDEX_BUILD)]
+    else:
+        if parent:
+            findings.extend(
+                refused_in_transaction(
+                    facts, REINDEX, f"REINDEX of {label}, a partitioned table,"
+                )
+            )
+        concurrent = insert_after(facts.statement, target.upper(), "CONCURRENTLY")
+        rule, lock = REINDEX, SHARE
+        effects = [
             Effect(
                 REINDEX,
                 label,
@@ -306,38 +473,45 @@ def _reindex(facts: Facts) -> Outcome:
                 f"EXCLUSIVE; rebuild it CONCURRENTLY {TRANSACTION_NOTE}",
                 remedy=(trimmed(concurrent),) if concurrent else (),
                 blocks=Blocks.READS_AND_WRITES,
-            ),
-        )
-    )
+            )
+        ]
+    if parent:
+        effects.extend(cascade(facts, rule, label, lock, Work.INDEX_BUILD))
+    return Outcome(tuple(effects), tuple(findings))
 
 
 def _vacuum(facts: Facts) -> Outcome:
     tables = common.tables(facts)
-    if not tables:
-        return Outcome(
-            findings=(
-                Finding(
-                    VACUUM.id,
-                    Severity.INFO,
-                    f"{facts.parsed.kind.upper()} with no table reads every table "
-                    "in the database",
-                    source=VACUUM.source,
-                ),
-            ),
-            confidence=Confidence.LIKELY,
+    findings: List[Finding] = []
+    full = bool(facts.parsed.options.get("full"))
+    if facts.parsed.kind == "vacuum":
+        findings.extend(
+            refused_in_transaction(facts, VACUUM_FULL if full else VACUUM, "VACUUM")
         )
-    if facts.parsed.options.get("full"):
-        return Outcome(
-            tuple(
-                Effect(VACUUM_FULL, table, ACCESS_EXCLUSIVE, Work.REWRITE)
-                for table in tables
+    elif facts.parsed.kind == "cluster":
+        findings.extend(
+            refused_in_transaction(facts, VACUUM_FULL, "CLUSTER with no table")
+        )
+    if not tables:
+        findings.append(
+            Finding(
+                VACUUM.id,
+                Severity.INFO,
+                f"{facts.parsed.kind.upper()} with no table reads every table "
+                "in the database",
+                source=VACUUM.source,
             )
         )
-    return Outcome(
-        tuple(
-            Effect(VACUUM, table, SHARE_UPDATE_EXCLUSIVE, Work.SCAN) for table in tables
-        )
-    )
+        return Outcome(findings=tuple(findings), confidence=Confidence.LIKELY)
+    if full:
+        rule, lock, work = VACUUM_FULL, ACCESS_EXCLUSIVE, Work.REWRITE
+    else:
+        rule, lock, work = VACUUM, SHARE_UPDATE_EXCLUSIVE, Work.SCAN
+    effects: List[Effect] = []
+    for table in tables:
+        effects.append(Effect(rule, table, lock, work))
+        effects.extend(cascade(facts, rule, table, lock, work))
+    return Outcome(tuple(effects), tuple(findings))
 
 
 def _cluster(facts: Facts) -> Outcome:
@@ -379,7 +553,12 @@ def _trigger(facts: Facts) -> Outcome:
         if facts.parsed.kind == "create_trigger"
         else ACCESS_EXCLUSIVE
     )
-    return Outcome((Effect(TRIGGER, table, lock, Work.CATALOG),))
+    return Outcome(
+        (
+            Effect(TRIGGER, table, lock, Work.CATALOG),
+            *cascade(facts, TRIGGER, table, lock, Work.CATALOG),
+        )
+    )
 
 
 def _comment(facts: Facts) -> Outcome:
@@ -393,12 +572,15 @@ def _lock_table(facts: Facts) -> Outcome:
     options = facts.parsed.options
     mode = str(options.get("mode"))
     waits = not options.get("nowait")
-    return Outcome(
-        tuple(
-            Effect(LOCK_TABLE, table, mode, Work.CATALOG, waits=waits)
-            for table in common.tables(facts)
-        )
-    )
+    effects: List[Effect] = []
+    for table in common.tables(facts):
+        effects.append(Effect(LOCK_TABLE, table, mode, Work.CATALOG, waits=waits))
+        if not options.get("only"):
+            effects.extend(
+                e._replace(waits=waits)
+                for e in cascade(facts, LOCK_TABLE, table, mode, Work.CATALOG)
+            )
+    return Outcome(tuple(effects))
 
 
 def _drop_object(facts: Facts) -> Outcome:

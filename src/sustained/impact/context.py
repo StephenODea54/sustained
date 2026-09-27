@@ -80,11 +80,38 @@ class TableStats(NamedTuple):
     clustered: Optional[str] = None
 
 
+class Relation(NamedTuple):
+    """
+    The PostgreSQL catalog facts about one table that its size does not
+    give. `partitioned` says whether it is a partitioned table, `parent`
+    names the partitioned table it is a partition of, `default` names
+    its DEFAULT partition, and `partitions` names its partitions, one
+    level down. Each name is the bare name when the search path finds
+    the table under it, and `schema.table` otherwise. `indexed` maps
+    each column an index uses, in lower case, to the collation the
+    column is declared with, or None for a column that has none.
+    `arrays` maps each array column, in lower case, to its type as
+    format_type() writes it, such as `character varying(10)[]`, which
+    the schema read reports as `ARRAY`.
+    """
+
+    partitioned: bool = False
+    parent: Optional[str] = None
+    default: Optional[str] = None
+    partitions: Tuple[str, ...] = ()
+    indexed: Mapping[str, Optional[str]] = MappingProxyType({})
+    arrays: Mapping[str, str] = MappingProxyType({})
+
+
 class EngineContext(NamedTuple):
     """
     The server facts the rules read. `tables` maps a lower case table
     name to its stats. `read` names what came from the server, such as
     `version` or `sizes`; an empty set means everything was assumed.
+    `relations` maps a lower case table name to its PostgreSQL catalog
+    facts, and `types` maps a lower case type name to whether the type
+    is a domain with a constraint, for the types outside the system
+    schemas.
     """
 
     profile: str
@@ -94,6 +121,8 @@ class EngineContext(NamedTuple):
     tables: Mapping[str, TableStats] = MappingProxyType({})
     schema: Optional["Snapshot"] = None
     read: FrozenSet[str] = frozenset()
+    relations: Mapping[str, Relation] = MappingProxyType({})
+    types: Mapping[str, bool] = MappingProxyType({})
 
     def stats(self, table: str) -> TableStats:
         """The table's stats, or unknown stats when none were read."""

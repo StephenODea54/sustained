@@ -47,21 +47,35 @@ from sustained.impact.rules.postgres.catalog import (
     SET_NOT_NULL_PROVEN,
     TABLE_CATALOG,
     TABLE_PARAMETERS,
+    VALIDATE,
 )
+from sustained.impact.rules.postgres.column_types import domain_check
 from sustained.impact.rules.postgres.locks import (
     ACCESS_EXCLUSIVE,
+    ROW_SHARE,
     SHARE_ROW_EXCLUSIVE,
     SHARE_UPDATE_EXCLUSIVE,
 )
+from sustained.impact.rules.postgres.partitions import (
+    cascade,
+    default_partition,
+    descendants,
+    partitioned,
+    relation,
+)
 from sustained.impact.rules.postgres.remedies import (
     TRANSACTION_NOTE,
-    ident,
     key_columns,
     last_part,
+    quoted,
+    spelled,
     trimmed,
 )
 from sustained.impact.rules.postgres.statements import (
+    default_scan,
     foreign_key_effect,
+    refused,
+    refused_in_transaction,
 )
 from sustained.impact.tokens import tokenize
 
@@ -102,16 +116,19 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
                 else "the default was not read, so it counts as volatile: a new "
                 "value for each row"
             )
+    else:
+        checked = domain_check(facts, str(options.get("type") or ""))
+        if checked is not None:
+            rewrite_reason, confidence = checked
     effects: List[Effect] = []
     if rewrite_reason is not None:
         remedy: Tuple[str, ...] = ()
         default = options.get("default")
         if volatility == "volatile" and default and function and options.get("type"):
+            t, c = spelled(facts.statement, table), spelled(facts.statement, column)
             remedy = (
-                f"ALTER TABLE {ident(table)} ADD COLUMN {ident(column)} "
-                f"{options.get('type')}",
-                f"ALTER TABLE {ident(table)} ALTER COLUMN {ident(column)} "
-                f"SET DEFAULT {default}",
+                f"ALTER TABLE {t} ADD COLUMN {c} {options.get('type')}",
+                f"ALTER TABLE {t} ALTER COLUMN {c} SET DEFAULT {default}",
             )
         effects.append(
             Effect(
@@ -244,8 +261,9 @@ def _set_not_null(facts: Facts, action: Action) -> Outcome:
         return Outcome(
             (Effect(SET_NOT_NULL_PROVEN, table, ACCESS_EXCLUSIVE, Work.CATALOG),)
         )
-    check = f"{last_part(table)}_{column}_not_null"[:63]
-    t, c, k = ident(table), ident(column), ident(check)
+    check = f"{last_part(table, facts.statement)}_{column}_not_null"[:63]
+    t, c = spelled(facts.statement, table), spelled(facts.statement, column)
+    k = quoted(check)
     remedy = (
         f"ALTER TABLE {t} ADD CONSTRAINT {k} CHECK ({c} IS NOT NULL) NOT VALID",
         f"ALTER TABLE {t} VALIDATE CONSTRAINT {k}",
@@ -279,12 +297,19 @@ def _add_constraint(facts: Facts, action: Action) -> Outcome:
         return _add_foreign_key(facts, action)
     if constraint in ("primary_key", "unique"):
         return _add_key(facts, action)
-    return Outcome(
-        (
-            Effect(
-                ADD_EXCLUSION, common.table(facts), ACCESS_EXCLUSIVE, Work.INDEX_BUILD
+    table = common.table(facts)
+    findings: Tuple[Finding, ...] = ()
+    if partitioned(facts, table) and facts.context.version < (17,):
+        findings = (
+            refused(
+                ADD_EXCLUSION,
+                f"PostgreSQL before 17 refuses an exclusion constraint on {table}, "
+                "a partitioned table",
             ),
         )
+    return Outcome(
+        (Effect(ADD_EXCLUSION, table, ACCESS_EXCLUSIVE, Work.INDEX_BUILD),),
+        findings,
     )
 
 
@@ -294,7 +319,8 @@ def _validate_later(facts: Facts, action: Action) -> Tuple[str, ...]:
         return ()
     return (
         trimmed(facts.statement) + " NOT VALID",
-        f"ALTER TABLE {ident(common.table(facts))} VALIDATE CONSTRAINT {ident(str(name))}",
+        f"ALTER TABLE {spelled(facts.statement, common.table(facts))} "
+        f"VALIDATE CONSTRAINT {spelled(facts.statement, str(name))}",
     )
 
 
@@ -324,13 +350,24 @@ def _add_foreign_key(facts: Facts, action: Action) -> Outcome:
     table = common.table(facts)
     referenced = str(action.options.get("references"))
     if action.options.get("not_valid"):
+        findings: Tuple[Finding, ...] = ()
+        if partitioned(facts, table) and facts.context.version < (18,):
+            findings = (
+                refused(
+                    ADD_FOREIGN_KEY_NOT_VALID,
+                    f"PostgreSQL before 18 refuses a NOT VALID foreign key on "
+                    f"{table}, a partitioned table; add the key to each partition "
+                    "NOT VALID instead",
+                ),
+            )
         return Outcome(
             tuple(
                 Effect(
                     ADD_FOREIGN_KEY_NOT_VALID, name, SHARE_ROW_EXCLUSIVE, Work.CATALOG
                 )
                 for name in (table, referenced)
-            )
+            ),
+            findings,
         )
     return Outcome(
         (
@@ -360,16 +397,16 @@ def _add_key(facts: Facts, action: Action) -> Outcome:
     columns = key_columns(facts.statement)
     remedy: Tuple[str, ...] = ()
     if columns is not None:
-        name = str(
-            options.get("name") or f"{last_part(table)}_{'pkey' if primary else 'key'}"
-        )
+        given = options.get("name")
+        suffix = "pkey" if primary else "key"
+        name = str(given or f"{last_part(table, facts.statement)}_{suffix}")
         index = f"{name}_idx"[:63]
         kind = "PRIMARY KEY" if primary else "UNIQUE"
+        t = spelled(facts.statement, table)
+        k = spelled(facts.statement, name) if given else quoted(name)
         remedy = (
-            f"CREATE UNIQUE INDEX CONCURRENTLY {ident(index)} ON {ident(table)} "
-            f"{columns}",
-            f"ALTER TABLE {ident(table)} ADD CONSTRAINT {ident(name)} {kind} "
-            f"USING INDEX {ident(index)}",
+            f"CREATE UNIQUE INDEX CONCURRENTLY {quoted(index)} ON {t} {columns}",
+            f"ALTER TABLE {t} ADD CONSTRAINT {k} {kind} USING INDEX {quoted(index)}",
         )
     return Outcome(
         (
@@ -384,6 +421,34 @@ def _add_key(facts: Facts, action: Action) -> Outcome:
                 remedy=remedy,
             ),
         )
+    )
+
+
+def _validate(facts: Facts, action: Action) -> Outcome:
+    """
+    VALIDATE CONSTRAINT scans the table under SHARE UPDATE EXCLUSIVE.
+    A foreign key's rows are looked up in the table it points at, which
+    takes ROW SHARE there. Without the schema read, or with a constraint
+    it does not list, whether the constraint is a foreign key is not
+    known.
+    """
+    table = common.table(facts)
+    live = facts.state.original(table)
+    name = str(action.options.get("name") or "")
+    effects = [Effect(VALIDATE, table, SHARE_UPDATE_EXCLUSIVE, Work.SCAN)]
+    target = facts.context.foreign_key_target(live, name) if name else None
+    if target is not None:
+        if target.lower() != table.lower():
+            effects.append(Effect(VALIDATE, target, ROW_SHARE, Work.CATALOG))
+        return Outcome(tuple(effects))
+    found = facts.context.table(live)
+    known = found is not None and (
+        name.lower() in found.check_names or name.lower() in found.checks
+    )
+    confidence = Confidence.KNOWN if known else Confidence.LIKELY
+    return Outcome(
+        tuple(e._replace(confidence=confidence) for e in effects),
+        confidence=confidence,
     )
 
 
@@ -406,39 +471,95 @@ def _rename(facts: Facts, action: Action) -> Outcome:
 
 
 def _attach_partition(facts: Facts, action: Action) -> Outcome:
+    """
+    ATTACH PARTITION checks each row of the new partition, and of the
+    partitions below it, against the bound, and checks that no row of
+    the DEFAULT partition belongs in it. Each index on the partitioned
+    table needs a matching index on the new partition, which is built
+    when the partition has none.
+    """
+    table = common.table(facts)
     partition = str(action.options.get("partition"))
-    return Outcome(
-        (
-            Effect(
-                ATTACH_PARTITION,
-                common.table(facts),
-                SHARE_UPDATE_EXCLUSIVE,
-                Work.CATALOG,
-            ),
+    effects = [
+        Effect(ATTACH_PARTITION, table, SHARE_UPDATE_EXCLUSIVE, Work.CATALOG),
+        Effect(
+            ATTACH_PARTITION,
+            partition,
+            ACCESS_EXCLUSIVE,
+            Work.SCAN,
+            Confidence.LIKELY,
+            message=f"reads and writes on {partition} wait while every row is "
+            "checked against the partition bound, unless a valid CHECK "
+            "constraint already proves it; add one NOT VALID and validate "
+            "it first",
+        ),
+    ]
+    effects.extend(
+        cascade(
+            facts,
+            ATTACH_PARTITION,
+            partition,
+            ACCESS_EXCLUSIVE,
+            Work.SCAN,
+            Confidence.LIKELY,
+        )
+    )
+    default = default_partition(facts, table)
+    if default is not None and default.lower() != partition.lower():
+        effects.append(default_scan(ATTACH_PARTITION, default, partition))
+    if _has_indexes(facts, table) is not False:
+        effects.append(
             Effect(
                 ATTACH_PARTITION,
                 partition,
                 ACCESS_EXCLUSIVE,
-                Work.SCAN,
+                Work.INDEX_BUILD,
                 Confidence.LIKELY,
-                message=f"reads and writes on {partition} wait while every row is "
-                "checked against the partition bound, unless a valid CHECK "
-                "constraint already proves it; add one NOT VALID and validate "
-                "it first",
-            ),
-        ),
-        confidence=Confidence.LIKELY,
-    )
+                message=f"each index on {table} that {partition} has no matching "
+                f"index for is built on {partition} while reads and writes on it "
+                "wait; build those indexes on it CONCURRENTLY before attaching it",
+            )
+        )
+    return Outcome(tuple(effects), confidence=Confidence.LIKELY)
+
+
+def _has_indexes(facts: Facts, table: str) -> Optional[bool]:
+    """
+    Whether the table has an index, or None when no read says. The
+    schema read leaves out expression indexes, so it only proves the
+    table has one.
+    """
+    if "indexes" in facts.context.read:
+        found = relation(facts, table)
+        return found is not None and bool(found.indexed)
+    schema = facts.context.table(facts.state.original(table))
+    if schema is not None and (schema.primary_key or schema.indexes):
+        return True
+    return None
 
 
 def _detach_partition(facts: Facts, action: Action) -> Outcome:
     table = common.table(facts)
     partition = str(action.options.get("partition"))
+    default = default_partition(facts, table)
     if action.options.get("concurrently"):
-        findings: Tuple[Finding, ...] = ()
+        findings: List[Finding] = []
         if not DETACH_PARTITION_CONCURRENTLY.versions(facts.context.version):
-            findings = (
-                _needs_version(facts.context, DETACH_PARTITION_CONCURRENTLY, (14,)),
+            findings.append(
+                _needs_version(facts.context, DETACH_PARTITION_CONCURRENTLY, (14,))
+            )
+        findings.extend(
+            refused_in_transaction(
+                facts, DETACH_PARTITION_CONCURRENTLY, "DETACH PARTITION CONCURRENTLY"
+            )
+        )
+        if default is not None:
+            findings.append(
+                refused(
+                    DETACH_PARTITION_CONCURRENTLY,
+                    f"the server refuses DETACH PARTITION CONCURRENTLY while {table} "
+                    f"has a DEFAULT partition, {default}",
+                )
             )
         return Outcome(
             (
@@ -455,14 +576,20 @@ def _detach_partition(facts: Facts, action: Action) -> Outcome:
                     Work.CATALOG,
                 ),
             ),
-            findings,
+            tuple(findings),
         )
-    return Outcome(
-        (
-            Effect(DETACH_PARTITION, table, ACCESS_EXCLUSIVE, Work.CATALOG),
-            Effect(DETACH_PARTITION, partition, ACCESS_EXCLUSIVE, Work.CATALOG),
-        )
+    effects = [
+        Effect(DETACH_PARTITION, table, ACCESS_EXCLUSIVE, Work.CATALOG),
+        Effect(DETACH_PARTITION, partition, ACCESS_EXCLUSIVE, Work.CATALOG),
+    ]
+    locked = descendants(facts, partition)
+    if default is not None and default.lower() != partition.lower():
+        locked.append(default)
+    effects.extend(
+        Effect(DETACH_PARTITION, name, ACCESS_EXCLUSIVE, Work.CATALOG)
+        for name in locked
     )
+    return Outcome(tuple(effects))
 
 
 def _needs_version(

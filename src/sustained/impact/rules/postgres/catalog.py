@@ -19,6 +19,7 @@ ADD_COLUMN = Rule(
         "ALTER TABLE t ADD COLUMN d integer",
         "ALTER TABLE t ADD COLUMN d integer NOT NULL DEFAULT 0",
         "ALTER TABLE t ADD COLUMN d timestamptz DEFAULT now()",
+        "ALTER TABLE pt ADD COLUMN d integer",
     ),
 )
 ADD_COLUMN_REWRITE = Rule(
@@ -28,6 +29,7 @@ ADD_COLUMN_REWRITE = Rule(
         "ALTER TABLE t ADD COLUMN d uuid DEFAULT gen_random_uuid()",
         "ALTER TABLE t ADD COLUMN d serial",
         "ALTER TABLE t ADD COLUMN d integer GENERATED ALWAYS AS (id * 2) STORED",
+        "ALTER TABLE t ADD COLUMN d positive",
     ),
 )
 ADD_COLUMN_KEY = Rule(
@@ -47,12 +49,28 @@ DROP_COLUMN = Rule("pg.drop_column", _ALTER_TABLE, ("ALTER TABLE t DROP COLUMN c
 ALTER_TYPE = Rule(
     "pg.alter_column_type",
     _ALTER_TABLE,
-    ("ALTER TABLE t ALTER COLUMN c TYPE bigint",),
+    (
+        "ALTER TABLE t ALTER COLUMN c TYPE bigint",
+        "ALTER TABLE d ALTER COLUMN tags TYPE varchar(20)[]",
+        "ALTER TABLE d ALTER COLUMN tags TYPE text[]",
+    ),
 )
 ALTER_TYPE_COERCIBLE = Rule(
     "pg.alter_column_type.binary_coercible",
     _ALTER_TABLE,
-    ("ALTER TABLE t ALTER COLUMN name TYPE varchar(200)",),
+    (
+        "ALTER TABLE t ALTER COLUMN name TYPE varchar(200)",
+        "ALTER TABLE d ALTER COLUMN tags TYPE varchar[]",
+    ),
+)
+ALTER_TYPE_INDEXES = Rule(
+    "pg.alter_column_type.index_rebuild",
+    _ALTER_TABLE,
+    (
+        "ALTER TABLE d ALTER COLUMN at TYPE timestamptz",
+        "ALTER TABLE d ALTER COLUMN atz TYPE timestamp",
+        'ALTER TABLE d ALTER COLUMN label TYPE text COLLATE "C"',
+    ),
 )
 SET_NOT_NULL = Rule(
     "pg.set_not_null",
@@ -82,7 +100,10 @@ SET_STATISTICS = Rule(
 ADD_CHECK = Rule(
     "pg.add_check",
     _ALTER_TABLE,
-    ("ALTER TABLE t ADD CONSTRAINT ck2 CHECK (c > 0)",),
+    (
+        "ALTER TABLE t ADD CONSTRAINT ck2 CHECK (c > 0)",
+        "ALTER TABLE pt ADD CONSTRAINT ck2 CHECK (id > 0)",
+    ),
 )
 ADD_CHECK_NOT_VALID = Rule(
     "pg.add_check.not_valid",
@@ -100,6 +121,8 @@ ADD_FOREIGN_KEY_NOT_VALID = Rule(
     (
         "ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (r_id) REFERENCES r (id) "
         "NOT VALID",
+        "ALTER TABLE pt ADD CONSTRAINT fk FOREIGN KEY (id) REFERENCES r (id) "
+        "NOT VALID",
     ),
 )
 ADD_KEY = Rule(
@@ -108,6 +131,7 @@ ADD_KEY = Rule(
     (
         "ALTER TABLE t ADD CONSTRAINT uq UNIQUE (c)",
         "ALTER TABLE p ADD PRIMARY KEY (id)",
+        "ALTER TABLE pi ADD CONSTRAINT pi_key UNIQUE (id)",
     ),
 )
 ADD_KEY_USING_INDEX = Rule(
@@ -139,7 +163,10 @@ DROP_FOREIGN_KEY = Rule(
 VALIDATE = Rule(
     "pg.validate_constraint",
     _ALTER_TABLE,
-    ("ALTER TABLE t VALIDATE CONSTRAINT ck",),
+    (
+        "ALTER TABLE t VALIDATE CONSTRAINT ck",
+        "ALTER TABLE f VALIDATE CONSTRAINT f_r",
+    ),
 )
 RENAME = Rule(
     "pg.rename",
@@ -163,7 +190,10 @@ DETACH_PARTITION = Rule(
 DETACH_PARTITION_CONCURRENTLY = Rule(
     "pg.detach_partition.concurrently",
     _ALTER_TABLE,
-    ("ALTER TABLE pt DETACH PARTITION pt1 CONCURRENTLY",),
+    (
+        "ALTER TABLE pt DETACH PARTITION pt1 CONCURRENTLY",
+        "ALTER TABLE pi DETACH PARTITION pi1 CONCURRENTLY",
+    ),
     lambda version: version >= (14,),
 )
 TABLE_REWRITE = Rule(
@@ -198,18 +228,28 @@ TRIGGER_STATE = Rule(
 CREATE_INDEX = Rule(
     "pg.create_index",
     DOCS + "sql-createindex.html",
-    ("CREATE INDEX ix2 ON t (c)", "CREATE UNIQUE INDEX ix2 ON t (c)"),
+    (
+        "CREATE INDEX ix2 ON t (c)",
+        "CREATE UNIQUE INDEX ix2 ON t (c)",
+        "CREATE INDEX ix2 ON pt (id)",
+        "CREATE INDEX ix2 ON ONLY pt (id)",
+    ),
 )
 CREATE_INDEX_CONCURRENTLY = Rule(
     "pg.create_index.concurrently",
     DOCS + "sql-createindex.html#SQL-CREATEINDEX-CONCURRENTLY",
-    ("CREATE INDEX CONCURRENTLY ix2 ON t (c)",),
+    (
+        "CREATE INDEX CONCURRENTLY ix2 ON t (c)",
+        "CREATE INDEX CONCURRENTLY ix2 ON pt (id)",
+    ),
 )
-DROP_INDEX = Rule("pg.drop_index", DOCS + "sql-dropindex.html", ("DROP INDEX ix",))
+DROP_INDEX = Rule(
+    "pg.drop_index", DOCS + "sql-dropindex.html", ("DROP INDEX ix", "DROP INDEX pi_c")
+)
 DROP_INDEX_CONCURRENTLY = Rule(
     "pg.drop_index.concurrently",
     DOCS + "sql-dropindex.html",
-    ("DROP INDEX CONCURRENTLY ix",),
+    ("DROP INDEX CONCURRENTLY ix", "DROP INDEX CONCURRENTLY pi_c"),
 )
 CREATE_TABLE = Rule(
     "pg.create_table",
@@ -222,7 +262,14 @@ CREATE_TABLE = Rule(
 DROP_TABLE = Rule(
     "pg.drop_table",
     DOCS + "sql-droptable.html",
-    ("DROP TABLE t", "TRUNCATE t", "TRUNCATE r CASCADE"),
+    (
+        "DROP TABLE t",
+        "TRUNCATE t",
+        "TRUNCATE r CASCADE",
+        "DROP TABLE pt1",
+        "DROP TABLE pt",
+        "TRUNCATE pt",
+    ),
 )
 WRITE_ROWS = Rule(
     "pg.write_rows",
@@ -240,7 +287,9 @@ REINDEX_CONCURRENTLY = Rule(
     DOCS + "sql-reindex.html#SQL-REINDEX-CONCURRENTLY",
     ("REINDEX TABLE CONCURRENTLY t",),
 )
-VACUUM = Rule("pg.vacuum", DOCS + "sql-vacuum.html", ("VACUUM t", "ANALYZE t"))
+VACUUM = Rule(
+    "pg.vacuum", DOCS + "sql-vacuum.html", ("VACUUM t", "ANALYZE t", "ANALYZE pt")
+)
 VACUUM_FULL = Rule(
     "pg.vacuum_full",
     DOCS + "sql-vacuum.html",
@@ -262,6 +311,7 @@ TRIGGER = Rule(
     (
         "CREATE TRIGGER tr2 BEFORE UPDATE ON t FOR EACH ROW EXECUTE FUNCTION f()",
         "DROP TRIGGER tr ON t",
+        "CREATE TRIGGER tr2 BEFORE UPDATE ON pt FOR EACH ROW EXECUTE FUNCTION f()",
     ),
 )
 COMMENT = Rule(
@@ -271,7 +321,12 @@ DROP_VIEW = Rule("pg.drop_view", DOCS + "sql-dropview.html", ("DROP VIEW v",))
 LOCK_TABLE = Rule(
     "pg.lock_table",
     DOCS + "sql-lock.html",
-    ("LOCK TABLE t IN SHARE MODE", "LOCK TABLE t IN ACCESS EXCLUSIVE MODE NOWAIT"),
+    (
+        "LOCK TABLE t IN SHARE MODE",
+        "LOCK TABLE t IN ACCESS EXCLUSIVE MODE NOWAIT",
+        "LOCK TABLE pt IN SHARE MODE",
+        "LOCK TABLE ONLY pt IN SHARE MODE",
+    ),
 )
 DROP_SCHEMA = Rule(
     "pg.drop_schema", DOCS + "sql-dropschema.html", ("DROP SCHEMA s CASCADE",)
@@ -281,6 +336,8 @@ DROP_SCHEMA = Rule(
 # The ground-truth tests create them, then run each fixture alone inside
 # a transaction that is rolled back. The views read `w`, so a fixture
 # that drops `t` or changes a column of `r` does not fail on a view.
+# `pt` has a DEFAULT partition, and `pi` a partitioned index. `pt` has
+# no index, so attaching `p` to it builds none.
 FIXTURE_SCHEMA = (
     "CREATE TABLE r (id integer PRIMARY KEY)",
     "INSERT INTO r VALUES (1), (2), (3)",
@@ -295,7 +352,22 @@ FIXTURE_SCHEMA = (
     "CREATE TRIGGER tr BEFORE UPDATE ON t FOR EACH ROW EXECUTE FUNCTION f()",
     "CREATE TABLE pt (id integer) PARTITION BY LIST (id)",
     "CREATE TABLE pt1 PARTITION OF pt FOR VALUES IN (1)",
-    "INSERT INTO pt VALUES (1)",
+    "CREATE TABLE ptd PARTITION OF pt DEFAULT",
+    "INSERT INTO pt VALUES (1), (9)",
+    "CREATE TABLE pi (id integer, c integer) PARTITION BY RANGE (id)",
+    "CREATE TABLE pi1 PARTITION OF pi FOR VALUES FROM (0) TO (100)",
+    "CREATE INDEX pi_c ON pi (c)",
+    "INSERT INTO pi VALUES (1, 1)",
+    "CREATE TABLE f (id integer, r_id integer)",
+    "INSERT INTO f VALUES (1, 1)",
+    "ALTER TABLE f ADD CONSTRAINT f_r FOREIGN KEY (r_id) REFERENCES r (id) NOT VALID",
+    "CREATE TABLE d (id integer, at timestamp, atz timestamptz, label text, "
+    "tags varchar(10)[])",
+    "INSERT INTO d VALUES (1, now(), now(), 'a', ARRAY['x'])",
+    "CREATE INDEX d_at ON d (at)",
+    "CREATE INDEX d_atz ON d (atz)",
+    "CREATE INDEX d_label ON d (label)",
+    "CREATE DOMAIN positive AS integer CHECK (VALUE > 0)",
     "CREATE TABLE p (id integer)",
     "INSERT INTO p VALUES (2)",
     "CREATE UNLOGGED TABLE ul (id integer)",

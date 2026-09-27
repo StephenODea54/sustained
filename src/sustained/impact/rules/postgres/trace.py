@@ -148,7 +148,14 @@ def _key(name: str) -> str:
 
 
 def _literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+    """
+    A string literal of the value, as quote_literal() writes it: quotes
+    and backslashes doubled, and an E prefix when the value contains a
+    backslash, so the literal reads the same whatever
+    `standard_conforming_strings` is set to.
+    """
+    text = "'" + value.replace("'", "''").replace("\\", "\\\\") + "'"
+    return "E" + text if "\\" in value else text
 
 
 def tables_plan() -> Generator[str, Rows, Optional[FrozenSet[int]]]:

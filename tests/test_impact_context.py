@@ -48,11 +48,16 @@ SIZE_ROWS = [
 ]
 
 
+# The catalog reads beside the version, the settings, and the sizes.
+CATALOG = ("partitions", "indexes", "arrays", "types")
+
+
 def drive(plan, answers):
     """
     Runs a plan to its end. Each answer is the rows for the next
-    statement, or an exception to throw in. Returns the statements the
-    plan asked and the context it returned.
+    statement, or an exception to throw in; once the answers run out,
+    each statement gets no rows. Returns the statements the plan asked
+    and the context it returned.
     """
     asked = []
     answers = list(answers)
@@ -60,7 +65,7 @@ def drive(plan, answers):
         sql = next(plan)
         while True:
             asked.append(sql)
-            answer = answers.pop(0)
+            answer = answers.pop(0) if answers else []
             if isinstance(answer, Exception):
                 sql = plan.throw(answer)
             else:
@@ -155,14 +160,14 @@ class PostgresPlanTestCase(unittest.TestCase):
         asked, context = drive(
             context_plan(), [[SETTINGS_ROW], [TIMED], SIZE_ROWS, [("0",)]]
         )
-        self.assertEqual(len(asked), 4)
+        self.assertEqual(len(asked), 8)
         self.assertEqual(asked[1], TIMEOUT_SQL)
         self.assertEqual(asked[3], RESTORE_SQL)
         self.assertEqual(context.profile, "postgres")
         self.assertEqual(context.version, (16, 4))
         self.assertEqual(context.settings["TimeZone"], "UTC")
         self.assertEqual(context.settings["lock_timeout"], "0")
-        self.assertEqual(context.read, {"version", "settings", "sizes"})
+        self.assertEqual(context.read, {"version", "settings", "sizes", *CATALOG})
 
     def test_keys_each_table_by_schema_and_by_its_visible_name(self):
         _, context = drive(
@@ -185,13 +190,13 @@ class PostgresPlanTestCase(unittest.TestCase):
         )
         self.assertEqual(context.version, FLOORS["postgres"])
         self.assertEqual(dict(context.settings), {})
-        self.assertEqual(context.read, {"sizes"})
+        self.assertEqual(context.read, {"sizes", *CATALOG})
 
     def test_a_failed_size_read_leaves_the_sizes_unknown(self):
         _, context = drive(
             context_plan(), [[SETTINGS_ROW], [TIMED], RuntimeError("denied"), [("0",)]]
         )
-        self.assertEqual(context.read, {"version", "settings"})
+        self.assertEqual(context.read, {"version", "settings", *CATALOG})
         self.assertEqual(context.stats("orders"), TableStats())
 
     def test_server_version(self):
@@ -208,7 +213,9 @@ class ReadContextTestCase(unittest.TestCase):
         connection = ScriptedConnection()
         context = read_context(connection, PG)
         self.assertEqual(context.version, (16, 4))
-        self.assertEqual(context.read, {"version", "settings", "sizes", "schema"})
+        self.assertEqual(
+            context.read, {"version", "settings", "sizes", "schema", *CATALOG}
+        )
         self.assertIsNotNone(context.schema)
 
     def test_each_statement_runs_inside_a_savepoint(self):
@@ -235,7 +242,7 @@ class ReadContextTestCase(unittest.TestCase):
         adapter = ScriptedAdapter(refuse="pg_total_relation_size")
         context = asyncio.run(async_read_context(adapter, PG))
         self.assertEqual(context.version, (16, 4))
-        self.assertEqual(context.read, {"version", "settings", "schema"})
+        self.assertEqual(context.read, {"version", "settings", "schema", *CATALOG})
 
 
 class ContextReportTestCase(unittest.TestCase):
@@ -325,7 +332,7 @@ class ScopedReadTestCase(unittest.TestCase):
             context_plan(False, {"orders", "Items"}),
             [[SETTINGS_ROW], [TIMED], SIZE_ROWS, [("0",)]],
         )
-        self.assertEqual(len(asked), 4)
+        self.assertEqual(len(asked), 8)
         self.assertIn(
             "AND lower(c.relname) IN "
             f"(convert_from(decode('{b'Items'.hex()}', 'hex'), 'UTF8'), "
@@ -345,7 +352,7 @@ class ScopedReadTestCase(unittest.TestCase):
         timeout = RuntimeError("canceling statement due to lock timeout")
         answers = [[SETTINGS_ROW], [TIMED], timeout, timeout, [SIZE_ROWS[0]], [("0",)]]
         asked, context = drive(context_plan(False, {"items", "orders"}), answers)
-        self.assertEqual(len(asked), 6)
+        self.assertEqual(len(asked), 10)
         self.assertIn(f"'{b'items'.hex()}'", asked[3])
         self.assertNotIn(f"'{b'orders'.hex()}'", asked[3])
         self.assertIn(f"'{b'orders'.hex()}'", asked[4])
@@ -360,12 +367,12 @@ class ScopedReadTestCase(unittest.TestCase):
             context_plan(False, {"orders"}),
             [[SETTINGS_ROW], [TIMED], timeout, [("0",)]],
         )
-        self.assertEqual(len(asked), 4)
+        self.assertEqual(len(asked), 8)
         self.assertNotIn("sizes", context.read)
 
     def test_no_named_table_reads_no_size(self):
         asked, context = drive(context_plan(False, set()), [[SETTINGS_ROW]])
-        self.assertEqual(len(asked), 1)
+        self.assertEqual(len(asked), 5)
         self.assertEqual(dict(context.tables), {})
 
     def test_the_timeout_put_back_is_the_one_the_session_had(self):
@@ -378,7 +385,7 @@ class ScopedReadTestCase(unittest.TestCase):
     def test_a_refused_timeout_is_not_put_back(self):
         denied = RuntimeError("denied")
         asked, context = drive(context_plan(), [[SETTINGS_ROW], denied, SIZE_ROWS])
-        self.assertEqual(len(asked), 3)
+        self.assertEqual(len(asked), 7)
         self.assertIn("sizes", context.read)
 
     def test_mysql_names_the_tables_in_hex(self):

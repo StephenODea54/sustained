@@ -28,6 +28,7 @@ statements would wait behind.
 from sustained.impact.analyzer import analyze, attach_impact
 from sustained.impact.context import (
     EngineContext,
+    Relation,
     TableStats,
     async_read_context,
     named_tables,
@@ -79,6 +80,7 @@ __all__ = [
     "Lock",
     "MigrationImpact",
     "Preflight",
+    "Relation",
     "Severity",
     "StatementImpact",
     "TableImpact",
