@@ -69,6 +69,9 @@ class TableStats(NamedTuple):
     since the table was last rebuilt, and `fulltext` says whether the
     table has a FULLTEXT index. On SQL Server, `heap` says whether the
     table has no clustered index, and `clustered` names the one it has.
+    `collation` is the table's default collation on MySQL and MariaDB,
+    in lower case, which a restated text column takes unless the
+    statement names another.
     """
 
     rows: Optional[int] = None
@@ -78,6 +81,7 @@ class TableStats(NamedTuple):
     fulltext: Optional[bool] = None
     heap: Optional[bool] = None
     clustered: Optional[str] = None
+    collation: Optional[str] = None
 
 
 class Relation(NamedTuple):

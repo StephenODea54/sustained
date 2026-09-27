@@ -15,6 +15,7 @@ from sustained.impact import (
 from sustained.impact.context import FLOORS, assumed
 from sustained.impact.recognizer import recognize
 from sustained.impact.rules import mysql, profile_for, profiles_for
+from sustained.impact.rules.mysql import context as mysql_context
 from sustained.introspect.model import (
     IntrospectedColumn,
     IntrospectedForeignKey,
@@ -67,15 +68,43 @@ FIXTURE_SCHEMA = Snapshot(
             },
             name="p",
         ),
+        "ci": IntrospectedTable(
+            {
+                "id": IntrospectedColumn("int", False, True),
+                "name": IntrospectedColumn(
+                    "varchar(100)", True, False, collation="utf8mb4_0900_ai_ci"
+                ),
+                "code": IntrospectedColumn(
+                    "varchar(50)", True, False, collation="utf8mb4_0900_ai_ci"
+                ),
+                "mid": IntrospectedColumn(
+                    "varchar(40)", True, False, collation="utf8mb4_0900_ai_ci"
+                ),
+                "l": IntrospectedColumn(
+                    "varchar(100)", True, False, collation="latin1_swedish_ci"
+                ),
+                "s3": IntrospectedColumn(
+                    "varchar(30)", True, False, collation="utf8mb3_general_ci"
+                ),
+                "m3": IntrospectedColumn(
+                    "varchar(80)", True, False, collation="utf8mb3_general_ci"
+                ),
+            },
+            primary_key=("id",),
+            indexes={"code_ix": IntrospectedIndex(("code",), False, name="code_ix")},
+            name="ci",
+        ),
     }
 )
 
 _STATS = {
-    "t": TableStats(20, 49152, "DYNAMIC", 0, False),
+    "t": TableStats(20, 49152, "DYNAMIC", 0, False, collation="utf8mb4_0900_ai_ci"),
     "r": TableStats(3, 16384, "DYNAMIC", 0, False),
     "p": TableStats(2, 16384, "DYNAMIC", 0, False),
     "ft": TableStats(1, 32768, "DYNAMIC", 0, True),
     "cz": TableStats(1, 8192, "COMPRESSED", 0, False),
+    "ci": TableStats(2, 16384, "DYNAMIC", 0, False, collation="utf8mb4_0900_ai_ci"),
+    "g": TableStats(1, 16384, "DYNAMIC", 0, False),
 }
 _READ = frozenset({"version", "settings", "sizes", "fulltext", "schema"})
 
@@ -191,8 +220,8 @@ class RuleCatalogTestCase(unittest.TestCase):
                 for fixture in rule.fixtures:
                     statement = impact(fixture, ctx)
                     found = {t.rule for t in statement.tables} | set(rules(statement))
-                    if rule.id in found:
-                        reached.add(rule.id)
+                    self.assertIn(rule.id, found, fixture)
+                    reached.add(rule.id)
                     self.assertNotEqual(
                         statement.confidence, Confidence.UNKNOWN, fixture
                     )
@@ -241,9 +270,9 @@ class RecognizerTestCase(unittest.TestCase):
 SETTINGS_ROW = ("8.4.11", 1, 31536000)
 MARIADB_ROW = ("11.4.13-MariaDB-ubu2404", 1, 86400)
 SIZE_ROWS = [
-    ("app", "orders", 1, 2_000_000, 3 << 30, "DYNAMIC"),
-    ("audit", "orders", 0, 10, 8192, "COMPACT"),
-    ("app", "fresh", 1, None, 16384, "DYNAMIC"),
+    ("app", "orders", 1, 2_000_000, 3 << 30, "DYNAMIC", "utf8mb4_0900_ai_ci"),
+    ("audit", "orders", 0, 10, 8192, "COMPACT", "latin1_swedish_ci"),
+    ("app", "fresh", 1, None, 16384, "DYNAMIC", None),
 ]
 FULLTEXT_ROWS = [("app", "orders")]
 VERSION_ROWS = [("app/orders", 12)]
@@ -278,12 +307,16 @@ class ContextPlanTestCase(unittest.TestCase):
         self.assertEqual(
             ctx.read, {"version", "settings", "sizes", "fulltext", "row_versions"}
         )
-        orders = TableStats(2_000_000, 3 << 30, "DYNAMIC", 12, True)
+        orders = TableStats(
+            2_000_000, 3 << 30, "DYNAMIC", 12, True, collation="utf8mb4_0900_ai_ci"
+        )
         self.assertEqual(ctx.stats("orders"), orders)
         self.assertEqual(ctx.stats("app.orders"), orders)
         self.assertEqual(
-            ctx.stats("audit.orders"), TableStats(10, 8192, "COMPACT", 0, False)
+            ctx.stats("audit.orders"),
+            TableStats(10, 8192, "COMPACT", 0, False, collation="latin1_swedish_ci"),
         )
+        self.assertIsNone(ctx.stats("fresh").collation)
         self.assertEqual(ctx.stats("fresh").rows, None)
         self.assertTrue(all("%" not in sql for sql in asked))
 
@@ -315,6 +348,30 @@ class ContextPlanTestCase(unittest.TestCase):
         self.assertIsNone(ctx.stats("orders").fulltext)
         _, ctx = drive(mysql.context_plan(), [[SETTINGS_ROW], RuntimeError("denied")])
         self.assertEqual(ctx.read, {"version", "settings"})
+
+    def test_row_versions_follow_the_file_name_encoding_and_partitions(self):
+        sizes = [
+            ("app", "a-b", 1, 2, 16384, "DYNAMIC", None),
+            ("app", "pt", 1, 2, 16384, "DYNAMIC", None),
+            ("app", "Größe", 1, 2, 16384, "DYNAMIC", None),
+        ]
+        versions = [
+            ("app/a@002db", 3),
+            ("app/pt#p#p0", 1),
+            ("app/pt#P#p1#SP#s0", 4),
+            ("app/Gr@1i@1je", 2),
+        ]
+        _, ctx = drive(mysql.context_plan(), [[SETTINGS_ROW], sizes, [], versions])
+        self.assertEqual(ctx.stats("a-b").row_versions, 3)
+        self.assertEqual(ctx.stats("pt").row_versions, 4)
+        self.assertIsNone(ctx.stats("Größe").row_versions)
+
+    def test_file_name(self):
+        self.assertEqual(mysql_context.file_name("a-b"), "a@002db")
+        self.assertEqual(mysql_context.file_name("Orders_2"), "orders_2")
+        self.assertEqual(mysql_context.file_name("a b"), "a@0020b")
+        self.assertIsNone(mysql_context.file_name("Größe"))
+        self.assertIsNone(mysql_context.file_name("x\U0001f600"))
 
     def test_server_version(self):
         self.assertEqual(mysql.server_version("8.0.19"), ("mysql", (8, 0, 19)))

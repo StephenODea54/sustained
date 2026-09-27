@@ -25,6 +25,11 @@ The rules read each statement against what came before it in the run:
   state follows `RENAME CONSTRAINT`, `RENAME COLUMN`, `DROP CONSTRAINT`,
   and `DROP COLUMN` for these checks and for the checks the schema
   read reports (`schema_check_kept()`, `schema_column()`).
+- A statement that changes how a table is stored changes what later
+  statements on the table can do. On InnoDB, an instant column change
+  uses one of the table's row versions, a rebuild gives them back, and
+  a FULLTEXT index or `ROW_FORMAT=COMPRESSED` stops instant column
+  changes. The rules record these with `record_storage()`.
 - A lock timeout set earlier covers the statements after it, as far as
   its scope reaches (`TimeoutScope`). `RESET` of the setting, `RESET
   ALL`, and `DISCARD ALL` end it, and so does a `ROLLBACK` that undoes
@@ -186,6 +191,9 @@ class RunState:
         self.schema_columns: Dict[str, Dict[str, Optional[str]]] = {}
         self.settings: Dict[str, str] = {}
         self.timeouts = TimeoutScope()
+        # The storage facts the rules recorded, by live table name, such
+        # as InnoDB's instant row versions.
+        self.storage: Dict[str, Dict[str, object]] = {}
 
     def is_new(self, table: str) -> bool:
         """Whether the run created the table earlier, and it is still empty."""
@@ -222,6 +230,18 @@ class RunState:
     def index_table(self, index: str) -> Optional[str]:
         """The table of an index the run created, or None."""
         return self.indexes.get(index.lower())
+
+    def stored(self, table: str) -> Mapping[str, object]:
+        """The storage facts the rules recorded for a table in the run."""
+        return self.storage.get(self.original(table).lower(), {})
+
+    def record_storage(self, table: str, **facts: object) -> None:
+        """
+        Records storage facts a statement changed on a table, such as
+        `row_format="COMPRESSED"`, for the statements after it. The
+        facts stay with the live table across a rename.
+        """
+        self.storage.setdefault(self.original(table).lower(), {}).update(facts)
 
     def proves_not_null(self, table: str, column: str) -> bool:
         """

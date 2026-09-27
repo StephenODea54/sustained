@@ -38,6 +38,10 @@ class CreateDrop(Cursor):
         fulltext = self.accept_any("FULLTEXT", "SPATIAL")
         if self.accept("INDEX"):
             parsed = self.create_index(unique, fulltext is not None)
+            if fulltext == "SPATIAL":
+                parsed = parsed._replace(
+                    options=frozen({**parsed.options, "spatial": True})
+                )
             if clustered is None:
                 return parsed
             options = {**parsed.options, "clustered": clustered == "CLUSTERED"}
@@ -78,6 +82,10 @@ class CreateDrop(Cursor):
         options["concurrently"] = self.accept("CONCURRENTLY")
         options["if_not_exists"] = self.accept("IF", "NOT", "EXISTS")
         options["name"] = None if self.is_word("ON") else self.name()
+        if self.accept("USING"):
+            # MySQL names the index type before ON as well as after the
+            # columns.
+            options["using"] = self.value().lower()
         self.expect("ON")
         options["only"] = self.accept("ONLY")
         table = self.target()
@@ -113,6 +121,10 @@ class CreateDrop(Cursor):
                 options["algorithm"] = self.mysql_option("ALGORITHM")
             elif self.is_word("LOCK"):
                 options["lock"] = self.mysql_option("LOCK")
+            elif self.accept("USING"):
+                options["using"] = self.value().lower()
+            elif self.is_word("WAIT", "NOWAIT"):
+                options["wait"] = self.wait()
             elif self.accept("ON"):
                 # SQL Server: ON a filegroup or partition scheme.
                 self.name()
@@ -249,6 +261,8 @@ class CreateDrop(Cursor):
                 options["algorithm"] = self.mysql_option("ALGORITHM")
             elif self.is_word("LOCK"):
                 options["lock"] = self.mysql_option("LOCK")
+            elif self.is_word("WAIT", "NOWAIT"):
+                options["wait"] = self.wait()
             else:
                 raise Unrecognized(f"unread text {self.where()}")
         return ParsedStatement("drop_index", table, options=frozen(options))

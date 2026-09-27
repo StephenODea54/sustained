@@ -106,7 +106,8 @@ class Definitions(Cursor):
     def key_columns(self, options: Options) -> None:
         """
         The column list of a key, or Postgres's USING INDEX form. SQL
-        Server's CLUSTERED or NONCLUSTERED sets `clustered`.
+        Server's CLUSTERED or NONCLUSTERED sets `clustered`, and MySQL's
+        USING BTREE or USING HASH sets `using`, in lower case.
         """
         clustered = self.accept_any("CLUSTERED", "NONCLUSTERED")
         if clustered is not None:
@@ -117,7 +118,14 @@ class Definitions(Cursor):
         if self.accept("USING", "INDEX"):
             options["using_index"] = self.name()
             return
+        # MySQL's index type, USING BTREE or USING HASH, before or after
+        # the columns.
+        if self.accept("USING"):
+            options["using"] = self.value().lower()
         self.group()
+        if self.is_word("USING") and not self.is_words("USING", "INDEX"):
+            self.pos += 1
+            options["using"] = self.value().lower()
 
     def foreign_key_tail(self) -> None:
         while True:
@@ -196,9 +204,10 @@ class Definitions(Cursor):
         statement leaves it unsaid), default, default_volatility,
         default_function, default_certain, generated (`stored`,
         `virtual`, or `identity`), identity, references, unique,
-        primary_key, check, position (MySQL FIRST or AFTER), and comment
-        when the definition gives one. A SQL Server computed column,
-        `name AS (expression) [PERSISTED]`, has no type, and type is None.
+        primary_key, check, position (MySQL FIRST or AFTER), and comment,
+        charset, and collate when the definition gives them. A SQL Server
+        computed column, `name AS (expression) [PERSISTED]`, has no type,
+        and type is None.
         """
         computed = self.mssql and self.is_word("AS")
         type_tokens = [] if computed else self.column_type()
@@ -299,11 +308,11 @@ class Definitions(Cursor):
         )
 
     def column_attribute(self, options: Options) -> bool:
-        """The attributes that change nothing this analysis reads."""
-        if self.accept("COLLATE") or self.accept("CHARSET"):
-            self.value()
-        elif self.accept("CHARACTER", "SET"):
-            self.value()
+        """The attributes after the type and the column constraints."""
+        if self.accept("COLLATE"):
+            options["collate"] = self.value()
+        elif self.accept("CHARSET") or self.accept("CHARACTER", "SET"):
+            options["charset"] = self.value()
         elif self.accept("IDENTITY"):
             options["identity"] = True
             if self.is_punct("("):

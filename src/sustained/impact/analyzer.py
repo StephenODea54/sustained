@@ -60,7 +60,7 @@ from sustained.impact.model import (
 from sustained.impact.recognizer import recognize
 from sustained.impact.rules import Effect, Facts, Profile, profile_for, profiles_for
 from sustained.impact.state import RunState
-from sustained.impact.window import aggregate
+from sustained.impact.window import aggregate, held_in_scopes, row_scopes
 
 if TYPE_CHECKING:
     from sustained.analysis import MigrationStatement
@@ -401,8 +401,14 @@ class _Run:
             self.statement(text, migration_id, transactional, spans)
             for text in statements
         )
+        scopes = None
+        if transactional and not self.profile.transactional_ddl:
+            # The DDL commits, and the row locks of the DML between
+            # last until it does.
+            scopes = row_scopes(impacts)
+            impacts = held_in_scopes(impacts, scopes)
         locks, windows, findings = aggregate(
-            impacts, spans, self.profile.locks_database
+            impacts, spans, self.profile.locks_database, scopes
         )
         return MigrationImpact(
             migration_id, transactional, impacts, locks, windows, findings, spans

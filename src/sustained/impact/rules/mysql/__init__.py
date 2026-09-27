@@ -34,8 +34,16 @@ table, reported as `IX`, and lock the rows they change.
 A statement the rules leave unknown here includes ANALYZE TABLE, LOCK
 TABLES, and anything in another engine's syntax.
 
-MySQL commits each DDL statement on its own, so every statement is a
-transaction window of its own.
+MySQL commits each DDL statement on its own, so every DDL statement is
+a transaction window of its own. Inside a transaction, the row locks of
+INSERT, UPDATE, and DELETE last until the next DDL statement commits
+them, so each run of those statements is one window, as
+`sustained.impact.window.row_scopes()` makes it.
+
+An earlier statement of the run can change how a table is stored: the
+handlers record the instant row versions a statement used or gave back,
+a FULLTEXT index, and a new ROW_FORMAT in the run state, and
+`table_stats()` reads them over the context's figures.
 
 `trace` probes each ALTER TABLE, CREATE INDEX, and DROP INDEX of a
 traced rehearsal on a scratch database for the ALGORITHM and LOCK the
@@ -43,8 +51,8 @@ server accepts; `sustained.impact.rules.mysql.trace` describes it.
 
 `context_plan()` reads what the rules use: `VERSION()`, which also names
 the server MySQL or MariaDB, `foreign_key_checks` and
-`lock_wait_timeout`, each table's size, row format, and FULLTEXT indexes
-from `information_schema`, and on MySQL 8.0.29 and later the instant row
+`lock_wait_timeout`, each table's size, row format, default collation,
+and FULLTEXT indexes from `information_schema`, and on MySQL 8.0.29 and later the instant row
 versions each table has used from `INNODB_TABLES.TOTAL_ROW_VERSIONS`.
 `preflight_plan()` reads the other connections' metadata locks and
 InnoDB transactions for the live preflight;

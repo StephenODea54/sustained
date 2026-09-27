@@ -333,6 +333,18 @@ class Cursor:
         self.accept_op("=")
         return self.value().upper()
 
+    def wait(self) -> Optional[str]:
+        """
+        MariaDB's `WAIT n` or `NOWAIT`, the seconds the statement waits
+        for its metadata lock, as text: `0` for NOWAIT. None when
+        neither is next.
+        """
+        if self.accept("NOWAIT"):
+            return "0"
+        if self.accept("WAIT"):
+            return self.value()
+        return None
+
     def finish(self) -> None:
         if not self.at_end():
             raise Unrecognized(f"unread text {self.where()}")

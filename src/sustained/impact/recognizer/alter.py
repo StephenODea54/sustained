@@ -30,8 +30,22 @@ class AlterTable(Definitions):
     """ALTER TABLE and its actions, and ALTER TYPE."""
 
     def alter(self) -> ParsedStatement:
+        # MariaDB's ALTER ONLINE TABLE asks for LOCK=NONE, and its ALTER
+        # IGNORE TABLE drops the rows a new unique key would refuse.
+        online = self.accept("ONLINE")
+        ignore = self.accept("IGNORE")
         if self.accept("TABLE"):
-            return self.alter_table()
+            parsed = self.alter_table()
+            flags: Options = {}
+            if online:
+                flags["online"] = True
+            if ignore:
+                flags["ignore"] = True
+            if not flags:
+                return parsed
+            return parsed._replace(options=frozen({**parsed.options, **flags}))
+        if online or ignore:
+            raise Unrecognized(f"expected TABLE {self.where()}")
         if self.accept("TYPE"):
             return self.alter_type()
         if self.mssql and self.accept("INDEX"):
@@ -105,6 +119,9 @@ class AlterTable(Definitions):
         options["only"] = self.accept("ONLY")
         table = self.target()
         self.accept_op("*")
+        wait = self.wait()
+        if wait is not None:
+            options["wait"] = wait
         actions: List[Action] = []
         while True:
             action = self.alter_action(options, actions)
@@ -172,11 +189,15 @@ class AlterTable(Definitions):
         fulltext = kind in ("FULLTEXT", "SPATIAL")
         if fulltext:
             self.accept_any("INDEX", "KEY")
-        name = None if self.is_punct("(") else self.name()
-        if self.accept("USING"):
-            self.value()
-        self.group()
+        name = None if self.is_punct("(") or self.is_word("USING") else self.name()
         options: Options = {"name": name, "fulltext": fulltext}
+        if self.accept("USING"):
+            options["using"] = self.value().lower()
+        self.group()
+        if self.accept("USING"):
+            options["using"] = self.value().lower()
+        if kind == "SPATIAL":
+            options["spatial"] = True
         return Action("add_index", None, frozen(options))
 
     def action_drop(self) -> Action:
@@ -221,6 +242,8 @@ class AlterTable(Definitions):
         )
 
     def action_alter(self) -> Action:
+        if self.accept("INDEX"):
+            return self.index_visibility()
         self.accept("COLUMN")
         if self.is_word("CONSTRAINT", "INDEX", "CHECK"):
             raise Unrecognized(f"no rule reads ALTER {self.where()}")
@@ -253,6 +276,23 @@ class AlterTable(Definitions):
         if self.accept("WITH"):
             options["with"] = self.with_options()
         return Action("alter_column", column, frozen(options))
+
+    def index_visibility(self) -> Action:
+        """
+        MySQL's `ALTER INDEX name VISIBLE | INVISIBLE`, and MariaDB's
+        `ALTER INDEX name [NOT] IGNORED`: name, visible, which is False
+        for INVISIBLE and IGNORED, and word, the keywords spelled, such
+        as `NOT IGNORED`.
+        """
+        name = self.name()
+        if self.accept("NOT", "IGNORED"):
+            word = "NOT IGNORED"
+        elif self.accept("IGNORED"):
+            word = "IGNORED"
+        else:
+            word = self.expect_one_of_words("VISIBLE", "INVISIBLE")
+        options = {"name": name, "visible": word in ("VISIBLE", "NOT IGNORED")}
+        return Action("index_visibility", None, frozen({**options, "word": word}))
 
     def alter_column_type(self, column: str) -> Action:
         type_tokens = self.column_type()

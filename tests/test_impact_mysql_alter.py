@@ -12,9 +12,19 @@ from sustained.impact import (
     analyze,
 )
 from sustained.impact.rules import mysql
-from sustained.impact.rules.mysql.column_types import length_bytes
+from sustained.impact.rules.mysql.column_types import (
+    length_bytes,
+    mariadb_widens_instantly,
+)
+from sustained.impact.rules.mysql.locks import INPLACE_NONE
+from sustained.introspect.model import (
+    IntrospectedColumn,
+    IntrospectedIndex,
+    Snapshot,
+)
 from tests.test_impact_mysql import (
     _STATS,
+    FIXTURE_SCHEMA,
     MARIADB,
     MY,
     MYSQL,
@@ -451,16 +461,451 @@ class AlgorithmTestCase(unittest.TestCase):
         self.assertEqual(statement.tables[0].lock, "INSTANT")
 
     def test_a_heavier_algorithm_runs_as_asked(self):
+        # COPY takes LOCK=SHARED on MySQL, and on MariaDB before 11.2.
         copy = table("ALTER TABLE t ADD COLUMN d int, ALGORITHM=COPY")
+        self.assertEqual((copy.lock, copy.work), ("COPY, LOCK=SHARED", Work.REWRITE))
+        copy = table("ALTER TABLE t ADD COLUMN d int, ALGORITHM=COPY", ctx=MARIADB)
         self.assertEqual((copy.lock, copy.work), ("COPY, LOCK=NONE", Work.REWRITE))
+        old = context("mariadb", (11, 1, 2))
+        copy = table("ALTER TABLE t ADD COLUMN d int, ALGORITHM=COPY", ctx=old)
+        self.assertEqual(copy.lock, "COPY, LOCK=SHARED")
         shared = table("ALTER TABLE t ADD INDEX ix2 (name), LOCK=SHARED")
         self.assertEqual(shared.lock, "INPLACE, LOCK=SHARED")
-        inplace = impact("ALTER TABLE t ADD COLUMN d int, ALGORITHM=INPLACE")
-        self.assertEqual(inplace.tables[0].lock, "INPLACE, LOCK=NONE")
-        self.assertIs(inplace.confidence, Confidence.LIKELY)
+        # An instant ADD or DROP COLUMN run in place rebuilds the table
+        # on MySQL.
+        for sql in (
+            "ALTER TABLE t ADD COLUMN d int, ALGORITHM=INPLACE",
+            "ALTER TABLE t DROP COLUMN name, ALGORITHM=INPLACE, LOCK=NONE",
+        ):
+            inplace = impact(sql)
+            (found,) = inplace.tables
+            self.assertEqual((found.lock, found.work), (INPLACE_NONE, Work.REWRITE))
+            self.assertIs(inplace.confidence, Confidence.KNOWN)
+            self.assertIn(
+                found.rule, ("mysql.add_column.rebuild", "mysql.drop_column.rebuild")
+            )
+        # Another instant change keeps its work, less sure.
+        renamed = impact("ALTER TABLE t RENAME COLUMN name TO label, ALGORITHM=INPLACE")
+        self.assertEqual(renamed.tables[0].lock, INPLACE_NONE)
+        self.assertIs(renamed.tables[0].work, Work.CATALOG)
+        self.assertIs(renamed.confidence, Confidence.LIKELY)
+        # MariaDB runs a change a faster algorithm can run with it.
+        mariadb = impact("ALTER TABLE t ADD COLUMN d int, ALGORITHM=INPLACE", MARIADB)
+        self.assertEqual(mariadb.tables[0].lock, "INSTANT")
+        self.assertIs(mariadb.tables[0].work, Work.CATALOG)
         # MySQL runs a bare LOCK clause in place.
         locked = impact("ALTER TABLE t ADD COLUMN d int, LOCK=SHARED")
         self.assertEqual(locked.tables[0].lock, "INPLACE, LOCK=SHARED")
+
+
+def rules_text(statement):
+    """The messages of a statement's findings, joined."""
+    return " ".join(f.message for f in statement.findings)
+
+
+def ci_stats(ctx, **stats):
+    """The context with the stats of table ci changed."""
+    tables = dict(ctx.tables, ci=ctx.tables["ci"]._replace(**stats))
+    return ctx._replace(tables=tables)
+
+
+class CollationTestCase(unittest.TestCase):
+    CASES = [
+        # A new collation of the same character set.
+        (
+            "MODIFY COLUMN name varchar(100) COLLATE utf8mb4_bin",
+            ("INPLACE, LOCK=NONE", Work.CATALOG),
+            ("INSTANT", Work.CATALOG),
+        ),
+        # The same on a column in an index.
+        (
+            "MODIFY COLUMN code varchar(50) COLLATE utf8mb4_bin",
+            ("COPY, LOCK=SHARED", Work.REWRITE),
+            ("NOCOPY, LOCK=NONE", Work.INDEX_BUILD),
+        ),
+        # Another character set.
+        (
+            "MODIFY COLUMN name varchar(100) CHARACTER SET latin1",
+            ("COPY, LOCK=SHARED", Work.REWRITE),
+            ("COPY, LOCK=NONE", Work.REWRITE),
+        ),
+        # A latin1 column takes the table's utf8mb4 default.
+        (
+            "MODIFY COLUMN l varchar(100)",
+            ("COPY, LOCK=SHARED", Work.REWRITE),
+            ("COPY, LOCK=NONE", Work.REWRITE),
+        ),
+        # The column's own character set, named again.
+        (
+            "MODIFY COLUMN l varchar(100) CHARACTER SET latin1",
+            ("INSTANT", Work.CATALOG),
+            ("INSTANT", Work.CATALOG),
+        ),
+        # utf8mb3 to utf8mb4 below 256 bytes, and past 255 bytes.
+        (
+            "MODIFY COLUMN s3 varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin",
+            ("INPLACE, LOCK=NONE", Work.CATALOG),
+            ("INSTANT", Work.CATALOG),
+        ),
+        (
+            "MODIFY COLUMN m3 varchar(80) CHARACTER SET utf8mb4",
+            ("COPY, LOCK=SHARED", Work.REWRITE),
+            ("COPY, LOCK=NONE", Work.REWRITE),
+        ),
+        # A new collation beside a longer VARCHAR.
+        (
+            "MODIFY COLUMN name varchar(200) COLLATE utf8mb4_bin",
+            ("INPLACE, LOCK=NONE", Work.CATALOG),
+            ("INSTANT", Work.CATALOG),
+        ),
+    ]
+
+    def test_each_change(self):
+        for action, on_mysql, on_mariadb in self.CASES:
+            sql = f"ALTER TABLE ci {action}"
+            with self.subTest(sql=sql):
+                found = table(sql, "ci")
+                self.assertEqual((found.lock, found.work), on_mysql)
+                found = table(sql, "ci", MARIADB)
+                self.assertEqual((found.lock, found.work), on_mariadb)
+
+    def test_the_known_changes_are_known(self):
+        for sql in (
+            "ALTER TABLE ci MODIFY COLUMN name varchar(100) COLLATE utf8mb4_bin",
+            "ALTER TABLE ci MODIFY COLUMN code varchar(50) COLLATE utf8mb4_bin",
+            "ALTER TABLE ci MODIFY COLUMN l varchar(100)",
+        ):
+            with self.subTest(sql=sql):
+                self.assertIs(impact(sql).confidence, Confidence.KNOWN)
+                self.assertEqual(impact(sql).tables[0].rule.split(".")[0], "mysql")
+
+    def test_an_unread_table_collation_counts_as_a_copy(self):
+        unread = ci_stats(MYSQL, collation=None)
+        statement = impact("ALTER TABLE ci MODIFY COLUMN l varchar(100)", unread)
+        self.assertEqual(statement.tables[0].lock, "COPY, LOCK=SHARED")
+        self.assertEqual(statement.tables[0].rule, "mysql.modify_column.copy")
+        self.assertIs(statement.confidence, Confidence.LIKELY)
+        self.assertIn("did not read", statement.findings[0].message)
+        # The same collation as the table's default changes nothing.
+        same = impact("ALTER TABLE ci MODIFY COLUMN name varchar(100)")
+        self.assertEqual(same.tables[0].lock, "INSTANT")
+
+    def test_a_character_set_without_a_collation(self):
+        # utf8mb4 takes utf8mb4_0900_ai_ci on MySQL, the column's own.
+        sql = "ALTER TABLE ci MODIFY COLUMN name varchar(100) CHARACTER SET utf8mb4"
+        statement = impact(sql)
+        self.assertEqual(statement.tables[0].lock, "INSTANT")
+        self.assertIs(statement.confidence, Confidence.KNOWN)
+        sql = "ALTER TABLE ci MODIFY COLUMN s3 varchar(30) CHARACTER SET utf8mb4"
+        self.assertIs(impact(sql).confidence, Confidence.KNOWN)
+        # MariaDB's default for utf8mb4 differs between versions.
+        sql = "ALTER TABLE ci MODIFY COLUMN code varchar(50) CHARACTER SET utf8mb4"
+        statement = impact(sql, MARIADB)
+        self.assertEqual(statement.tables[0].lock, "NOCOPY, LOCK=NONE")
+        self.assertIs(statement.confidence, Confidence.LIKELY)
+        # An instant change costs the same either way.
+        sql = "ALTER TABLE ci MODIFY COLUMN name varchar(100) CHARACTER SET utf8mb4"
+        self.assertIs(impact(sql, MARIADB).confidence, Confidence.KNOWN)
+
+    def test_utf8_reads_as_utf8mb3(self):
+        sql = "ALTER TABLE ci MODIFY COLUMN s3 varchar(30) CHARACTER SET utf8"
+        self.assertEqual(table(sql, "ci").lock, "INSTANT")
+        sql = "ALTER TABLE ci MODIFY COLUMN s3 varchar(30) COLLATE `utf8_bin`"
+        self.assertEqual(table(sql, "ci").lock, "INPLACE, LOCK=NONE")
+
+    def test_an_index_read_or_not(self):
+        sql = "ALTER TABLE ci MODIFY COLUMN s3 varchar(30) CHARACTER SET utf8mb4"
+        # utf8mb3 to utf8mb4 on an indexed column: 11.4 rebuilds the
+        # indexes, and 12.3 changes it instantly.
+        indexed = FIXTURE_SCHEMA["ci"]._replace(
+            indexes={
+                **FIXTURE_SCHEMA["ci"].indexes,
+                "s3_ix": IntrospectedIndex(("s3",), False, name="s3_ix"),
+            }
+        )
+        schema = Snapshot({**FIXTURE_SCHEMA, "ci": indexed})
+        mariadb = impact(sql, MARIADB._replace(schema=schema))
+        self.assertEqual(mariadb.tables[0].lock, "NOCOPY, LOCK=NONE")
+        self.assertIs(mariadb.confidence, Confidence.LIKELY)
+        self.assertEqual(
+            table(sql, "ci", MYSQL._replace(schema=schema)).lock, "COPY, LOCK=SHARED"
+        )
+
+    def test_a_text_column_widened_to_utf8mb4(self):
+        # Only VARCHAR lengths are read; another type is less sure.
+        column = IntrospectedColumn("text", True, False, collation="utf8mb3_general_ci")
+        ci = FIXTURE_SCHEMA["ci"]
+        ci = ci._replace(columns={**ci.columns, "tx": column})
+        schema = Snapshot({**FIXTURE_SCHEMA, "ci": ci})
+        statement = impact(
+            "ALTER TABLE ci MODIFY COLUMN tx text CHARACTER SET utf8mb4 "
+            "COLLATE utf8mb4_bin",
+            MYSQL._replace(schema=schema),
+        )
+        self.assertEqual(statement.tables[0].lock, "INPLACE, LOCK=NONE")
+        self.assertIs(statement.confidence, Confidence.LIKELY)
+
+
+class MariadbWideningTestCase(unittest.TestCase):
+    def test_the_255_byte_boundary(self):
+        cases = [
+            ((31, 64, "utf8mb4_bin", "DYNAMIC"), (True, Confidence.KNOWN)),
+            ((32, 64, "utf8mb4_bin", "DYNAMIC"), (False, Confidence.KNOWN)),
+            ((32, 64, "utf8mb4_bin", "COMPACT"), (False, Confidence.KNOWN)),
+            ((32, 64, "utf8mb4_bin", "compressed"), (False, Confidence.KNOWN)),
+            ((32, 64, "utf8mb4_bin", "REDUNDANT"), (True, Confidence.KNOWN)),
+            ((127, 256, "latin1_swedish_ci", "DYNAMIC"), (True, Confidence.KNOWN)),
+            ((128, 256, "latin1_swedish_ci", "DYNAMIC"), (False, Confidence.KNOWN)),
+            ((128, 255, "latin1_swedish_ci", "DYNAMIC"), (True, Confidence.KNOWN)),
+            ((64, 100, "utf8mb3_general_ci", "DYNAMIC"), (False, Confidence.KNOWN)),
+            # No row format read.
+            ((32, 64, "utf8mb4_bin", None), (False, Confidence.LIKELY)),
+            # No collation read: one byte and four to a character.
+            ((128, 256, None, "DYNAMIC"), (False, Confidence.LIKELY)),
+            ((20, 64, None, "DYNAMIC"), (True, Confidence.KNOWN)),
+            ((20, 64, None, None), (True, Confidence.KNOWN)),
+        ]
+        for arguments, expected in cases:
+            with self.subTest(arguments=arguments):
+                self.assertEqual(mariadb_widens_instantly(*arguments), expected)
+
+    def test_the_rules_read_the_row_format(self):
+        sql = "ALTER TABLE ci MODIFY COLUMN mid varchar(64)"
+        found = table(sql, "ci", MARIADB)
+        self.assertEqual((found.lock, found.work), ("COPY, LOCK=NONE", Work.REWRITE))
+        redundant = table(sql, "ci", ci_stats(MARIADB, row_format="REDUNDANT"))
+        self.assertEqual(redundant.lock, "INSTANT")
+        unread = impact(sql, ci_stats(MARIADB, row_format=None))
+        self.assertEqual(unread.tables[0].lock, "COPY, LOCK=NONE")
+        self.assertIs(unread.confidence, Confidence.LIKELY)
+        # A VARBINARY counts one byte to a character.
+        self.assertEqual(
+            mariadb_widens_instantly(200, 300, "binary", "DYNAMIC"),
+            (False, Confidence.KNOWN),
+        )
+
+
+class CombinedTestCase(unittest.TestCase):
+    def test_an_instant_column_change_beside_an_index_rebuilds(self):
+        cases = [
+            (
+                "ALTER TABLE t ADD COLUMN d int, ADD INDEX ix2 (name)",
+                MYSQL,
+                "mysql.add_column.rebuild",
+            ),
+            (
+                "ALTER TABLE t ADD COLUMN d int, ADD INDEX ix2 (name)",
+                MARIADB,
+                "mariadb.add_column.rebuild",
+            ),
+            (
+                "ALTER TABLE t DROP COLUMN name, ADD INDEX ix2 (small)",
+                MYSQL,
+                "mysql.drop_column.rebuild",
+            ),
+            (
+                "ALTER TABLE t MODIFY COLUMN c int FIRST, ADD INDEX ix2 (name)",
+                MARIADB,
+                "mariadb.modify_column.rebuild",
+            ),
+            (
+                "ALTER TABLE t ADD COLUMN d int, MODIFY COLUMN name varchar(200)",
+                MYSQL,
+                "mysql.add_column.rebuild",
+            ),
+        ]
+        for sql, ctx, rule in cases:
+            with self.subTest(sql=sql, profile=ctx.profile):
+                statement = impact(sql, ctx)
+                (found,) = statement.tables
+                self.assertEqual((found.lock, found.work), (INPLACE_NONE, Work.REWRITE))
+                self.assertEqual(found.rule, rule)
+                self.assertIs(statement.confidence, Confidence.KNOWN)
+                self.assertIn("rebuilds the table", statement.findings[0].message)
+
+    def test_instant_changes_together_stay_instant(self):
+        for sql, ctx in (
+            ("ALTER TABLE t ADD COLUMN d int, RENAME COLUMN c TO c2", MYSQL),
+            ("ALTER TABLE t ADD COLUMN d int, RENAME COLUMN c TO c2", MARIADB),
+            (
+                "ALTER TABLE t ADD COLUMN d int, MODIFY COLUMN name varchar(200)",
+                MARIADB,
+            ),
+        ):
+            with self.subTest(sql=sql, profile=ctx.profile):
+                found = table(sql, ctx=ctx)
+                self.assertEqual((found.lock, found.work), ("INSTANT", Work.CATALOG))
+
+    def test_a_copy_keeps_its_own_rule(self):
+        found = table("ALTER TABLE t ADD COLUMN d int, MODIFY COLUMN c bigint")
+        self.assertEqual((found.lock, found.work), ("COPY, LOCK=SHARED", Work.REWRITE))
+        self.assertEqual(found.rule, "mysql.modify_column.copy")
+        found = table(
+            "ALTER TABLE t ADD COLUMN d int, MODIFY COLUMN c bigint", ctx=MARIADB
+        )
+        self.assertEqual(found.lock, "COPY, LOCK=NONE")
+        self.assertEqual(found.rule, "mariadb.modify_column.copy")
+
+
+class SpatialAndFulltextTestCase(unittest.TestCase):
+    def test_a_spatial_index_is_an_index_build(self):
+        for sql in (
+            "ALTER TABLE g ADD SPATIAL INDEX sp (p)",
+            "CREATE SPATIAL INDEX sp ON g (p)",
+        ):
+            with self.subTest(sql=sql):
+                found = table(sql, "g")
+                self.assertEqual(
+                    (found.lock, found.work, found.rule),
+                    ("INPLACE, LOCK=SHARED", Work.INDEX_BUILD, "mysql.add_spatial"),
+                )
+                self.assertEqual(found.blocks, Blocks.WRITES)
+                found = table(sql, "g", MARIADB)
+                self.assertEqual(
+                    (found.lock, found.rule),
+                    ("NOCOPY, LOCK=SHARED", "mariadb.add_spatial"),
+                )
+
+    def test_a_spatial_index_takes_no_lock_none(self):
+        statement = impact("ALTER TABLE g ADD SPATIAL INDEX sp (p), LOCK=NONE")
+        self.assertEqual(statement.tables[0].rule, "mysql.refused")
+
+    def test_a_column_added_to_a_fulltext_table_copies_on_mysql(self):
+        # MySQL 8.4 and 26.7 accept only COPY, LOCK=SHARED for it.
+        found = table("ALTER TABLE ft ADD COLUMN d int", "ft")
+        self.assertEqual(
+            (found.lock, found.work, found.rule),
+            ("COPY, LOCK=SHARED", Work.REWRITE, "mysql.add_column.copy"),
+        )
+
+    def test_a_column_dropped_from_a_fulltext_table(self):
+        found = table("ALTER TABLE ft DROP COLUMN x", "ft")
+        self.assertEqual(
+            (found.lock, found.work, found.rule),
+            ("COPY, LOCK=SHARED", Work.REWRITE, "mysql.drop_column.rebuild"),
+        )
+        found = table("ALTER TABLE ft DROP COLUMN x", "ft", MARIADB)
+        self.assertEqual(
+            (found.lock, found.work, found.rule),
+            ("INPLACE, LOCK=SHARED", Work.REWRITE, "mariadb.drop_column.rebuild"),
+        )
+
+
+class HashedUniqueKeyTestCase(unittest.TestCase):
+    def test_mariadb_copies_for_a_unique_key_using_hash(self):
+        for sql in (
+            "ALTER TABLE t ADD CONSTRAINT uq UNIQUE (name) USING HASH",
+            "ALTER TABLE t ADD UNIQUE INDEX uq USING HASH (name)",
+            "CREATE UNIQUE INDEX uq ON t (name) USING HASH",
+            "CREATE UNIQUE INDEX uq USING HASH ON t (name)",
+        ):
+            with self.subTest(sql=sql):
+                found = table(sql, ctx=MARIADB)
+                self.assertEqual(
+                    (found.lock, found.work, found.rule),
+                    ("COPY, LOCK=NONE", Work.REWRITE, "mariadb.add_index"),
+                )
+                self.assertEqual(table(sql).lock, INPLACE_NONE)
+
+    def test_another_index_using_hash_is_built_as_ever(self):
+        for sql in (
+            "ALTER TABLE t ADD INDEX ix2 (name) USING HASH",
+            "CREATE INDEX ix2 ON t (name) USING HASH",
+            "ALTER TABLE t ADD UNIQUE KEY uq (name) USING BTREE",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(table(sql, ctx=MARIADB).lock, "NOCOPY, LOCK=NONE")
+
+
+class ServerSyntaxTestCase(unittest.TestCase):
+    def test_index_visibility_in_each_servers_spelling(self):
+        mysql_form = "ALTER TABLE ci ALTER INDEX code_ix INVISIBLE"
+        mariadb_form = "ALTER TABLE ci ALTER INDEX code_ix NOT IGNORED"
+        found = table(mysql_form, "ci")
+        self.assertEqual(
+            (found.lock, found.work, found.rule),
+            (INPLACE_NONE, Work.CATALOG, "mysql.index_visibility"),
+        )
+        found = table(mariadb_form, "ci", MARIADB)
+        self.assertEqual(
+            (found.lock, found.work, found.rule),
+            ("INSTANT", Work.CATALOG, "mariadb.index_visibility"),
+        )
+        for sql, ctx, server in (
+            (mariadb_form, MYSQL, "MySQL"),
+            (mysql_form, MARIADB, "MariaDB"),
+        ):
+            with self.subTest(sql=sql, profile=ctx.profile):
+                statement = impact(sql, ctx)
+                self.assertIs(statement.confidence, Confidence.UNKNOWN)
+                self.assertIn(f"which {server} does not accept", rules_text(statement))
+
+    def test_mysql_reads_the_mariadb_forms_as_unknown(self):
+        for sql in (
+            "ALTER ONLINE TABLE t ADD COLUMN d int",
+            "ALTER IGNORE TABLE t ADD COLUMN d int",
+            "ALTER TABLE t WAIT 5 ADD COLUMN d int",
+            "CREATE INDEX ix2 ON t (name) WAIT 3",
+            "DROP INDEX r_ix ON t NOWAIT",
+        ):
+            with self.subTest(sql=sql):
+                statement = impact(sql)
+                self.assertIs(statement.confidence, Confidence.UNKNOWN)
+                self.assertIn("which MySQL does not accept", rules_text(statement))
+
+    def test_mariadb_online_asks_for_lock_none(self):
+        added = impact("ALTER ONLINE TABLE t ADD COLUMN d int", MARIADB)
+        self.assertEqual(added.tables[0].lock, "INSTANT")
+        for sql, name in (
+            ("ALTER ONLINE TABLE ft ADD FULLTEXT INDEX f2 (body)", "ft"),
+            ("ALTER ONLINE TABLE g ADD SPATIAL INDEX sp (p)", "g"),
+        ):
+            with self.subTest(sql=sql):
+                statement = impact(sql, MARIADB)
+                self.assertEqual(table(sql, name, MARIADB).rule, "mariadb.refused")
+                self.assertIn("ALTER ONLINE TABLE", statement.findings[0].message)
+        # Before 11.2 a copy takes LOCK=SHARED, which ONLINE refuses.
+        old = context("mariadb", (11, 1, 2))
+        copied = table("ALTER ONLINE TABLE t MODIFY COLUMN c bigint", ctx=old)
+        self.assertEqual(copied.rule, "mariadb.refused")
+        copied = table("ALTER ONLINE TABLE t MODIFY COLUMN c bigint", ctx=MARIADB)
+        self.assertEqual(copied.lock, "COPY, LOCK=NONE")
+
+    def test_mariadb_ignore_copies_a_new_key_under_a_shared_lock(self):
+        unique = impact("ALTER IGNORE TABLE t ADD CONSTRAINT uq UNIQUE (name)", MARIADB)
+        (found,) = unique.tables
+        self.assertEqual((found.lock, found.work), ("COPY, LOCK=SHARED", Work.REWRITE))
+        self.assertIs(unique.confidence, Confidence.KNOWN)
+        column = impact("ALTER IGNORE TABLE t ADD COLUMN d int UNIQUE", MARIADB)
+        self.assertEqual(column.tables[0].lock, "COPY, LOCK=SHARED")
+        self.assertIs(column.confidence, Confidence.LIKELY)
+        copied = table("ALTER IGNORE TABLE t MODIFY COLUMN c bigint", ctx=MARIADB)
+        self.assertEqual(copied.lock, "COPY, LOCK=SHARED")
+        for sql in (
+            "ALTER IGNORE TABLE t ADD COLUMN d int",
+            "ALTER IGNORE TABLE t ADD INDEX ix2 (name)",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(
+                    table(sql, ctx=MARIADB).lock,
+                    table(sql.replace(" IGNORE", ""), ctx=MARIADB).lock,
+                )
+
+    def test_mariadb_wait_bounds_the_lock_wait(self):
+        for sql in (
+            "ALTER TABLE t WAIT 5 ADD COLUMN d int",
+            "ALTER TABLE t NOWAIT ADD COLUMN d int",
+            "CREATE INDEX ix2 ON t (name) WAIT 3",
+            "DROP INDEX r_ix ON t NOWAIT",
+        ):
+            with self.subTest(sql=sql):
+                self.assertNotIn("mariadb.lock_timeout", rules(impact(sql, MARIADB)))
+        for sql in (
+            "ALTER TABLE t WAIT 100000 ADD COLUMN d int",
+            "ALTER TABLE t ADD COLUMN d int",
+        ):
+            with self.subTest(sql=sql):
+                self.assertIn("mariadb.lock_timeout", rules(impact(sql, MARIADB)))
 
 
 if __name__ == "__main__":

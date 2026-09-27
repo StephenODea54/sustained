@@ -5,6 +5,8 @@ import unittest
 from sustained.analysis import MigrationStatement, with_intent
 from sustained.dialects import Dialects
 from sustained.impact.rules.mysql import asserted_statements
+from sustained.impact.rules.mysql.locks import Online
+from sustained.impact.rules.mysql.online import assertion
 from sustained.migrations import Migration
 from sustained.migrations.planning import asserted_migration
 from tests.test_impact_mysql import MARIADB, MYSQL
@@ -116,6 +118,78 @@ class AssertedStatementsTestCase(unittest.TestCase):
         self.assertEqual(result.intent, generated.intent)
 
 
+INSTANT = Online("INSTANT")
+NOCOPY = Online("NOCOPY", "NONE")
+
+
+class AssertionTestCase(unittest.TestCase):
+    def test_the_clause_goes_before_a_trailing_comment(self):
+        cases = [
+            (
+                "ALTER TABLE t ADD COLUMN d int -- c",
+                "ALTER TABLE t ADD COLUMN d int, ALGORITHM=INSTANT -- c",
+            ),
+            (
+                "ALTER TABLE t ADD COLUMN d int /* c */",
+                "ALTER TABLE t ADD COLUMN d int, ALGORITHM=INSTANT /* c */",
+            ),
+            (
+                "ALTER TABLE t ADD COLUMN d int;",
+                "ALTER TABLE t ADD COLUMN d int, ALGORITHM=INSTANT",
+            ),
+            (
+                "  ALTER TABLE t ADD COLUMN d int; -- c\n",
+                "ALTER TABLE t ADD COLUMN d int, ALGORITHM=INSTANT -- c",
+            ),
+            (
+                "ALTER TABLE t ADD COLUMN d varchar(5) DEFAULT ';'",
+                "ALTER TABLE t ADD COLUMN d varchar(5) DEFAULT ';', ALGORITHM=INSTANT",
+            ),
+        ]
+        for statement, expected in cases:
+            with self.subTest(statement=statement):
+                self.assertEqual(assertion(statement, "alter_table", INSTANT), expected)
+
+    def test_a_statement_without_an_end_is_left(self):
+        for statement in (
+            "ALTER TABLE t ADD COLUMN d varchar(5) DEFAULT 'x",
+            "",
+            "  -- only a comment",
+        ):
+            with self.subTest(statement=statement):
+                self.assertIsNone(assertion(statement, "alter_table", INSTANT))
+
+    def test_mariadb_drop_index_with_a_comment_and_nowait(self):
+        self.assertEqual(
+            assertion("DROP INDEX ix ON t -- c", "drop_index", NOCOPY, True),
+            "ALTER TABLE t DROP INDEX ix, ALGORITHM=NOCOPY, LOCK=NONE -- c",
+        )
+        self.assertEqual(
+            assertion("DROP INDEX ix ON t NOWAIT;", "drop_index", NOCOPY, True),
+            "ALTER TABLE t NOWAIT DROP INDEX ix, ALGORITHM=NOCOPY, LOCK=NONE",
+        )
+        self.assertEqual(
+            assertion("CREATE INDEX ix ON t (c) WAIT 3 -- c", "create_index", NOCOPY),
+            "CREATE INDEX ix ON t (c) WAIT 3 ALGORITHM=NOCOPY LOCK=NONE -- c",
+        )
+
+    def test_asserted_statements_read_the_run(self):
+        # The second ADD COLUMN finds no instant row version left.
+        tables = dict(MYSQL.tables)
+        tables["t"] = tables["t"]._replace(row_versions=63)
+        ctx = MYSQL._replace(tables=tables)
+        self.assertEqual(
+            asserted_statements(
+                ["ALTER TABLE t ADD COLUMN d int", "ALTER TABLE t ADD COLUMN e int"],
+                ctx,
+            ),
+            [
+                "ALTER TABLE t ADD COLUMN d int, ALGORITHM=INSTANT",
+                "ALTER TABLE t ADD COLUMN e int, ALGORITHM=INPLACE, LOCK=NONE",
+            ],
+        )
+
+
 class AssertedMigrationTestCase(unittest.TestCase):
     def test_the_up_step_takes_the_clauses(self):
         migration = Migration(
@@ -132,6 +206,17 @@ class AssertedMigrationTestCase(unittest.TestCase):
         )
         self.assertEqual(result.down, ["ALTER TABLE t DROP COLUMN x"])
         self.assertFalse(result.transactional)
+
+    def test_a_repeatable_migration_stays_repeatable(self):
+        migration = Migration(
+            "gen", up=["ALTER TABLE t ADD COLUMN x int"], down=None, repeatable=True
+        )
+        result = asserted_migration(migration, MY, COMPILER, MYSQL)
+        self.assertEqual(
+            result.up, ["ALTER TABLE t ADD COLUMN x int, ALGORITHM=INSTANT"]
+        )
+        self.assertTrue(result.repeatable)
+        self.assertIsNone(result.down)
 
     def test_a_migration_without_a_change_is_returned_as_it_is(self):
         migration = Migration("gen", up=["ALTER TABLE t MODIFY c bigint"], down=None)

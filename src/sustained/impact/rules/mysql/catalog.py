@@ -70,6 +70,10 @@ _SPECS = (
             "ALTER TABLE t ADD COLUMN d datetime DEFAULT CURRENT_TIMESTAMP",
             "ALTER TABLE t ADD COLUMN d int DEFAULT (1 + 1)",
             "ALTER TABLE t ADD COLUMN d int GENERATED ALWAYS AS (c * 2) VIRTUAL",
+            "ALTER TABLE t ADD COLUMN d int, ALGORITHM=INPLACE",
+            "ALTER ONLINE TABLE t ADD COLUMN d int",
+            "ALTER TABLE t WAIT 5 ADD COLUMN d int",
+            "ALTER IGNORE TABLE t NOWAIT ADD COLUMN d int",
         ),
     ),
     _Spec(
@@ -80,12 +84,16 @@ _SPECS = (
             "ALTER TABLE t ADD COLUMN d int UNIQUE",
             "ALTER TABLE p ADD COLUMN d int AUTO_INCREMENT PRIMARY KEY",
             "ALTER TABLE cz ADD COLUMN d int",
+            "ALTER TABLE t ADD COLUMN d int, ADD INDEX ix2 (name)",
+            "ALTER TABLE t ADD COLUMN d int, MODIFY COLUMN name varchar(200)",
+            "ALTER TABLE t ADD COLUMN d int, ALGORITHM=INPLACE",
         ),
         (
             "ALTER TABLE t ADD COLUMN d int UNIQUE",
             "ALTER TABLE p ADD COLUMN d int AUTO_INCREMENT PRIMARY KEY",
             "ALTER TABLE cz ADD COLUMN d int",
             "ALTER TABLE ft ADD COLUMN d int",
+            "ALTER TABLE t ADD COLUMN d int, ADD INDEX ix2 (name)",
         ),
     ),
     _Spec(
@@ -96,10 +104,12 @@ _SPECS = (
             "ALTER TABLE t ADD COLUMN d int DEFAULT (1 + 1)",
             "ALTER TABLE t ADD COLUMN d int GENERATED ALWAYS AS (c * 2) STORED",
             "ALTER TABLE ft ADD COLUMN d int",
+            "ALTER TABLE t ADD COLUMN d int, ALGORITHM=COPY",
         ),
         (
             "ALTER TABLE t ADD COLUMN d varchar(36) DEFAULT (uuid())",
             "ALTER TABLE t ADD COLUMN d int GENERATED ALWAYS AS (c * 2) STORED",
+            "ALTER TABLE t ADD COLUMN d int, ALGORITHM=COPY",
         ),
     ),
     _Spec(
@@ -112,7 +122,11 @@ _SPECS = (
         "drop_column.rebuild",
         _COLUMN_OPS,
         _MARIADB_NOCOPY,
-        ("ALTER TABLE t DROP COLUMN c",),
+        (
+            "ALTER TABLE t DROP COLUMN c",
+            "ALTER TABLE ft DROP COLUMN x",
+            "ALTER TABLE t DROP COLUMN name, ADD INDEX ix2 (small)",
+        ),
     ),
     _Spec(
         "modify_column.instant",
@@ -132,6 +146,11 @@ _SPECS = (
             "ALTER TABLE t MODIFY COLUMN name varchar(200)",
             "ALTER TABLE t MODIFY COLUMN small varchar(64)",
             "ALTER TABLE t MODIFY COLUMN c int FIRST",
+            "ALTER TABLE ci MODIFY COLUMN name varchar(100) COLLATE utf8mb4_bin",
+            "ALTER TABLE ci MODIFY COLUMN name varchar(200) COLLATE utf8mb4_bin",
+            "ALTER TABLE ci MODIFY COLUMN s3 varchar(30) CHARACTER SET utf8mb4",
+            "ALTER TABLE ci MODIFY COLUMN l varchar(100) CHARACTER SET latin1",
+            "ALTER TABLE ci MODIFY COLUMN mid varchar(40)",
         ),
     ),
     _Spec(
@@ -141,6 +160,9 @@ _SPECS = (
         (
             "ALTER TABLE t MODIFY COLUMN name varchar(200)",
             "ALTER TABLE t MODIFY COLUMN small varchar(63)",
+            "ALTER TABLE ci MODIFY COLUMN name varchar(100) COLLATE utf8mb4_bin",
+            "ALTER TABLE ci MODIFY COLUMN name varchar(200) COLLATE utf8mb4_bin",
+            "ALTER TABLE ci MODIFY COLUMN s3 varchar(30) CHARACTER SET utf8mb4",
         ),
         engines=("mysql",),
     ),
@@ -156,6 +178,8 @@ _SPECS = (
         (
             "ALTER TABLE t MODIFY COLUMN c int NOT NULL",
             "ALTER TABLE t MODIFY COLUMN nn int NULL DEFAULT 0",
+            "ALTER TABLE t MODIFY COLUMN c int FIRST, ADD INDEX ix2 (name)",
+            "ALTER TABLE ci MODIFY COLUMN code varchar(50) COLLATE utf8mb4_bin",
         ),
     ),
     _Spec(
@@ -168,12 +192,21 @@ _SPECS = (
             "ALTER TABLE t MODIFY COLUMN name varchar(50)",
             "ALTER TABLE t MODIFY COLUMN e enum('b','a')",
             "ALTER TABLE t CHANGE COLUMN name label text",
+            "ALTER TABLE ci MODIFY COLUMN name varchar(100) CHARACTER SET latin1",
+            "ALTER TABLE ci MODIFY COLUMN code varchar(50) COLLATE utf8mb4_bin",
+            "ALTER TABLE ci MODIFY COLUMN l varchar(100)",
+            "ALTER TABLE ci MODIFY COLUMN mid varchar(64)",
+            "ALTER TABLE ci MODIFY COLUMN m3 varchar(80) CHARACTER SET utf8mb4",
         ),
         (
             "ALTER TABLE t MODIFY COLUMN c bigint",
             "ALTER TABLE t MODIFY COLUMN name varchar(50)",
             "ALTER TABLE t MODIFY COLUMN e enum('b','a')",
             "ALTER TABLE t CHANGE COLUMN name label text",
+            "ALTER TABLE ci MODIFY COLUMN name varchar(100) CHARACTER SET latin1",
+            "ALTER TABLE ci MODIFY COLUMN l varchar(100)",
+            "ALTER TABLE ci MODIFY COLUMN mid varchar(64)",
+            "ALTER TABLE ci MODIFY COLUMN m3 varchar(80) CHARACTER SET utf8mb4",
         ),
     ),
     _Spec(
@@ -216,7 +249,33 @@ _SPECS = (
             "CREATE UNIQUE INDEX ix2 ON t (name)",
             "ALTER TABLE t ADD INDEX ix2 (name)",
             "ALTER TABLE t ADD CONSTRAINT uq UNIQUE (name)",
+            "CREATE INDEX ix2 USING BTREE ON t (name)",
+            "CREATE INDEX ix2 ON t (name) USING BTREE",
+            "ALTER TABLE t ADD INDEX ix2 (name) USING BTREE",
+            "ALTER TABLE t ADD CONSTRAINT uq UNIQUE (name) USING HASH",
+            "CREATE UNIQUE INDEX uq ON t (name) USING HASH",
         ),
+        (
+            "CREATE INDEX ix2 ON t (name)",
+            "CREATE UNIQUE INDEX ix2 ON t (name)",
+            "ALTER TABLE t ADD INDEX ix2 (name)",
+            "ALTER TABLE t ADD CONSTRAINT uq UNIQUE (name)",
+            "CREATE INDEX ix2 USING BTREE ON t (name)",
+            "CREATE INDEX ix2 ON t (name) USING BTREE",
+            "ALTER TABLE t ADD INDEX ix2 (name) USING BTREE",
+            "ALTER TABLE t ADD CONSTRAINT uq UNIQUE (name) USING HASH",
+            "CREATE UNIQUE INDEX uq ON t (name) USING HASH",
+            "ALTER TABLE t ADD INDEX ix2 (name) USING HASH",
+            "CREATE INDEX ix2 ON t (name) WAIT 3",
+            "ALTER ONLINE TABLE t ADD INDEX ix2 (name)",
+            "ALTER IGNORE TABLE t ADD CONSTRAINT uq UNIQUE (name)",
+        ),
+    ),
+    _Spec(
+        "add_spatial",
+        _INDEX_OPS,
+        _MARIADB_NOCOPY,
+        ("ALTER TABLE g ADD SPATIAL INDEX sp (p)", "CREATE SPATIAL INDEX sp ON g (p)"),
     ),
     _Spec(
         "add_fulltext",
@@ -232,6 +291,18 @@ _SPECS = (
         _INDEX_OPS,
         _MARIADB_NOCOPY,
         ("DROP INDEX ix ON t", "ALTER TABLE t DROP INDEX ix"),
+        (
+            "DROP INDEX ix ON t",
+            "ALTER TABLE t DROP INDEX ix",
+            "DROP INDEX ix ON t NOWAIT",
+        ),
+    ),
+    _Spec(
+        "index_visibility",
+        MYSQL_DOCS + "invisible-indexes.html",
+        MARIADB_DOCS + "ignored-indexes/",
+        ("ALTER TABLE ci ALTER INDEX code_ix INVISIBLE",),
+        ("ALTER TABLE ci ALTER INDEX code_ix IGNORED",),
     ),
     _Spec(
         "add_primary_key",
@@ -346,6 +417,10 @@ _SPECS = (
         "refused",
         _ONLINE,
         _MARIADB_ONLINE,
+        (
+            "ALTER TABLE t MODIFY COLUMN c bigint, ALGORITHM=INPLACE",
+            "ALTER TABLE t ADD COLUMN d int, ALGORITHM=COPY, LOCK=NONE",
+        ),
         ("ALTER TABLE t MODIFY COLUMN c bigint, ALGORITHM=INPLACE",),
     ),
 )
@@ -395,8 +470,17 @@ FIXTURE_SCHEMA = (
     + ", ".join(f"({i}, {i}, 'n{i}', 's{i}', 'a', 1)" for i in range(1, 21)),
     "CREATE TABLE p (id int NOT NULL, v int)",
     "INSERT INTO p VALUES (1, 1), (2, 2)",
-    "CREATE TABLE ft (id int PRIMARY KEY, body text, FULLTEXT KEY ft_body (body))",
-    "INSERT INTO ft VALUES (1, 'a b c')",
+    "CREATE TABLE ft (id int PRIMARY KEY, body text, x int, "
+    "FULLTEXT KEY ft_body (body))",
+    "INSERT INTO ft VALUES (1, 'a b c', 1)",
+    "CREATE TABLE ci (id int PRIMARY KEY, name varchar(100), code varchar(50), "
+    "mid varchar(40), l varchar(100) CHARACTER SET latin1, "
+    "s3 varchar(30) CHARACTER SET utf8mb3, m3 varchar(80) CHARACTER SET utf8mb3, "
+    "KEY code_ix (code)) DEFAULT CHARSET=utf8mb4",
+    "INSERT INTO ci VALUES (1, 'a', 'b', 'c', 'd', 'e', 'f'), "
+    "(2, 'g', 'h', 'i', 'j', 'k', 'l')",
+    "CREATE TABLE g (id int PRIMARY KEY, p point NOT NULL)",
+    "INSERT INTO g VALUES (1, POINT(1, 1))",
     "CREATE TABLE cz (id int PRIMARY KEY, v int) ROW_FORMAT=COMPRESSED",
     "INSERT INTO cz VALUES (1, 1)",
     "CREATE VIEW v AS SELECT id FROM p",

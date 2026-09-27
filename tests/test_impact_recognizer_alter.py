@@ -379,5 +379,110 @@ class AlterTableTestCase(RecognizerTestCase):
         )
 
 
+class MysqlOptionsTestCase(RecognizerTestCase):
+    def test_mariadb_online_and_ignore(self):
+        parsed = recognize("ALTER ONLINE IGNORE TABLE t ADD COLUMN d int", MYSQL)
+        self.assertEqual(parsed.kind, "alter_table")
+        self.assertTrue(parsed.options["online"])
+        self.assertTrue(parsed.options["ignore"])
+        self.assertTrue(
+            recognize("ALTER ONLINE TABLE t FORCE", MYSQL).options["online"]
+        )
+        plain = recognize("ALTER TABLE t FORCE", MYSQL)
+        self.assertNotIn("online", plain.options)
+        self.assertNotIn("ignore", plain.options)
+        self.assertUnknown("ALTER ONLINE INDEX ix", MYSQL)
+
+    def test_mariadb_wait_and_nowait(self):
+        waited = recognize("ALTER TABLE t WAIT 5 ADD COLUMN d int", MYSQL)
+        self.assertEqual(waited.options["wait"], "5")
+        nowait = recognize("ALTER TABLE t NOWAIT DROP COLUMN d", MYSQL)
+        self.assertEqual(nowait.options["wait"], "0")
+        created = recognize("CREATE INDEX ix ON t (c) WAIT 3", MYSQL)
+        self.assertEqual(created.options["wait"], "3")
+        dropped = recognize("DROP INDEX ix ON t NOWAIT", MYSQL)
+        self.assertEqual((dropped.kind, dropped.options["wait"]), ("drop_index", "0"))
+        self.assertNotIn("wait", recognize("DROP INDEX ix ON t", MYSQL).options)
+
+    def test_index_types_before_and_after_the_columns(self):
+        for sql in (
+            "ALTER TABLE t ADD INDEX ix USING BTREE (c)",
+            "ALTER TABLE t ADD INDEX ix (c) USING HASH",
+            "ALTER TABLE t ADD INDEX USING BTREE (c)",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(action(sql, MYSQL).kind, "add_index")
+        self.assertIsNone(
+            action("ALTER TABLE t ADD INDEX USING BTREE (c)", MYSQL).options["name"]
+        )
+        self.assertEqual(
+            action("ALTER TABLE t ADD INDEX ix (c) USING HASH", MYSQL).options["using"],
+            "hash",
+        )
+        self.assertNotIn(
+            "using", action("ALTER TABLE t ADD INDEX ix (c)", MYSQL).options
+        )
+        unique = action("ALTER TABLE t ADD UNIQUE INDEX uq USING HASH (c)", MYSQL)
+        self.assertEqual(
+            (unique.options["name"], unique.options["using"]), ("uq", "hash")
+        )
+        for sql in (
+            "ALTER TABLE t ADD CONSTRAINT uq UNIQUE USING BTREE (c)",
+            "ALTER TABLE t ADD CONSTRAINT uq UNIQUE (c) USING HASH",
+        ):
+            with self.subTest(sql=sql):
+                found = action(sql, MYSQL).options
+                self.assertEqual(found["constraint"], "unique")
+                self.assertIn(found["using"], ("btree", "hash"))
+        before = recognize("CREATE INDEX ix USING BTREE ON t (c)", MYSQL)
+        self.assertEqual(before.options["using"], "btree")
+        after = recognize("CREATE INDEX ix ON t (c) USING HASH", MYSQL)
+        self.assertEqual(after.options["using"], "hash")
+
+    def test_spatial_is_marked(self):
+        added = action("ALTER TABLE g ADD SPATIAL INDEX sp (p)", MYSQL).options
+        self.assertTrue(added["spatial"])
+        self.assertTrue(added["fulltext"])
+        self.assertNotIn(
+            "spatial", action("ALTER TABLE t ADD FULLTEXT INDEX f (b)", MYSQL).options
+        )
+        created = recognize("CREATE SPATIAL INDEX sp ON g (p)", MYSQL).options
+        self.assertTrue(created["spatial"])
+        self.assertNotIn(
+            "spatial", recognize("CREATE FULLTEXT INDEX f ON t (b)", MYSQL).options
+        )
+
+    def test_index_visibility(self):
+        for word, visible in (
+            ("VISIBLE", True),
+            ("INVISIBLE", False),
+            ("IGNORED", False),
+            ("NOT IGNORED", True),
+        ):
+            with self.subTest(word=word):
+                found = action(f"ALTER TABLE t ALTER INDEX ix {word}", MYSQL)
+                self.assertEqual(found.kind, "index_visibility")
+                self.assertEqual(found.options["name"], "ix")
+                self.assertEqual(found.options["visible"], visible)
+                self.assertEqual(found.options["word"], word)
+        self.assertUnknown("ALTER TABLE t ALTER INDEX ix HIDDEN", MYSQL, table="t")
+
+    def test_column_charset_and_collation(self):
+        options = action(
+            "ALTER TABLE t MODIFY COLUMN c varchar(10) CHARACTER SET utf8mb4 "
+            "COLLATE utf8mb4_bin NOT NULL",
+            MYSQL,
+        ).options
+        self.assertEqual(options["type"], "varchar(10)")
+        self.assertEqual(options["charset"], "utf8mb4")
+        self.assertEqual(options["collate"], "utf8mb4_bin")
+        charset = action("ALTER TABLE t MODIFY c varchar(10) CHARSET latin1", MYSQL)
+        self.assertEqual(charset.options["charset"], "latin1")
+        self.assertNotIn("collate", charset.options)
+        plain = action("ALTER TABLE t MODIFY c varchar(10)", MYSQL).options
+        self.assertNotIn("charset", plain)
+        self.assertNotIn("collate", plain)
+
+
 if __name__ == "__main__":
     unittest.main()

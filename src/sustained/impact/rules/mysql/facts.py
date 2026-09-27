@@ -6,6 +6,8 @@ What the InnoDB handlers read about the server and the table, and
 from __future__ import annotations
 
 from typing import (
+    Any,
+    Dict,
     NamedTuple,
     Optional,
     Tuple,
@@ -41,8 +43,15 @@ def version_of(facts: Facts) -> Tuple[int, ...]:
 
 
 def copy_algorithm(facts: Facts) -> Online:
-    """COPY as the server runs it: MariaDB 11.2 and later allow writes."""
-    if is_mariadb(facts) and version_of(facts) >= (11, 2):
+    """
+    COPY as the server runs it: MariaDB 11.2 and later allow writes,
+    except in an ALTER IGNORE TABLE.
+    """
+    if (
+        is_mariadb(facts)
+        and version_of(facts) >= (11, 2)
+        and not facts.parsed.options.get("ignore")
+    ):
         return Online("COPY", "NONE")
     return Online("COPY", "SHARED")
 
@@ -68,13 +77,28 @@ def foreign_key_checks_off(facts: Facts) -> bool:
 
 
 def table_stats(facts: Facts, table: str) -> TableStats:
+    """
+    The table's stats as the run has left them: the context read, with
+    the storage facts earlier statements of the run recorded in place.
+    """
     if facts.state.is_new(table):
-        return TableStats(0, 0, "DYNAMIC", 0, False)
-    return facts.context.stats(facts.state.original(table))
+        stats = TableStats(0, 0, "DYNAMIC", 0, False)
+    else:
+        stats = facts.context.stats(facts.state.original(table))
+    stored = facts.state.stored(table)
+    if not stored:
+        return stats
+    fields: Dict[str, Any] = dict(stored)
+    return stats._replace(**fields)
 
 
 class Change(NamedTuple):
-    """What the server does for one ALTER TABLE action."""
+    """
+    What the server does for one ALTER TABLE action. `rebuild` is set
+    on an instant change that rebuilds the table when the statement
+    runs it in place: the rule that applies then, and what the change
+    does, such as "the column is added".
+    """
 
     online: Online
     work: Work
@@ -82,6 +106,7 @@ class Change(NamedTuple):
     reason: str
     confidence: Confidence = Confidence.KNOWN
     notes: Tuple[str, ...] = ()
+    rebuild: Optional[Tuple[str, str]] = None
 
 
 def rename_note(what: str, old: str) -> str:

@@ -22,14 +22,16 @@ The statement kinds, and the options each one sets:
 
 - `create_index`: name, unique, concurrently, if_not_exists, only,
   using, partial, columns, with (a dict of the WITH (...) options),
-  algorithm, lock, fulltext, and on SQL Server clustered when the
+  algorithm, lock, fulltext, spatial (MySQL SPATIAL), wait (MariaDB
+  WAIT n or NOWAIT, as seconds), and on SQL Server clustered when the
   statement spells CLUSTERED or NONCLUSTERED
 - `drop_index`: name, names, concurrently, if_exists, algorithm, lock,
-  with
+  wait, with
 - `alter_index` (SQL Server): name (None for ALL), operation, such as
   `rebuild` or `reorganize`, partition, with
 - `update_statistics` (SQL Server): fullscan
-- `alter_table`: actions, plus if_exists, only, algorithm, lock, and
+- `alter_table`: actions, plus if_exists, only, algorithm, lock, wait,
+  online and ignore (MariaDB ALTER ONLINE and ALTER IGNORE), and
   nocheck (SQL Server WITH NOCHECK)
 - `create_table`: if_not_exists, temporary, references, partition_of,
   as_select, and reads for `AS SELECT` (`sources.py`)
@@ -166,6 +168,7 @@ ACTION_KINDS = frozenset(
         "rebuild",
         "switch",
         "table_option",
+        "index_visibility",
     }
 )
 

@@ -176,7 +176,8 @@ def asserted_migration(
     writes them, so the server refuses the statement instead of running
     it with a slower algorithm or a stronger lock. The migration is
     returned as it is on a dialect other than MySQL, and when no
-    statement changed. The down step is left as it is.
+    statement changed. The down step, the transaction flag, and the
+    repeatable flag are left as they are.
     """
     if dialect is not Dialects.MYSQL or callable(migration.up):
         return migration
@@ -191,6 +192,7 @@ def asserted_migration(
         up=asserted,
         down=migration.down,
         transactional=migration.transactional,
+        repeatable=migration.repeatable,
     )
 
 

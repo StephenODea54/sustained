@@ -10,9 +10,13 @@ each rule fixture runs under the algorithm probe, and the clause the
 server accepts must match what the rule predicted for that server's
 version and settings.
 
+The run-state test runs a list of statements under the probe in order,
+each predicted from one context read before the first, so the rules
+must follow what the earlier statements changed.
+
 The tests run in the scratch database, since MySQL schema changes do not
-roll back. The rule fixtures run in a database of their own, created
-again for each fixture.
+roll back. The rule fixtures run in a database of their own, named after
+the scratch database and created again for each fixture.
 """
 
 import unittest
@@ -21,6 +25,7 @@ from sustained.dialects import Dialects
 from sustained.exceptions import PreflightBlocked
 from sustained.impact import Evidence, Work, analyze, preflight, read_context
 from sustained.impact.rules import Probe, mysql, profile_for
+from sustained.impact.rules.mysql.facts import row_version_limit
 from sustained.impact.rules.mysql.trace import attempts, observe, refused, tables_plan
 from sustained.introspect.runner import run_plan
 from sustained.migrations import Migration, Migrator
@@ -42,9 +47,6 @@ TABLES = (
 # MySQL's error for a lock wait that ran out of lock_wait_timeout.
 LOCK_WAIT_TIMEOUT = 1205
 
-# The database the rule fixtures run in.
-FIXTURE_DATABASE = "it_impact_fixtures"
-
 
 class InnodbImpactCase(unittest.TestCase):
     """
@@ -65,12 +67,18 @@ class InnodbImpactCase(unittest.TestCase):
         cursor = cls.connection.cursor()
         cursor.execute("SELECT DATABASE()")
         ((cls.database,),) = cursor.fetchall()
+        # The rule fixtures run in a database of their own, named after
+        # the scratch database, so runs on other scratch databases do
+        # not share it.
+        cls.fixture_database = f"{cls.database}_fixtures"
 
     @classmethod
     def tearDownClass(cls):
         connection = getattr(cls, "connection", None)
         if connection is not None:
-            connection.cursor().execute(f"DROP DATABASE IF EXISTS {FIXTURE_DATABASE}")
+            connection.cursor().execute(
+                f"DROP DATABASE IF EXISTS `{cls.fixture_database}`"
+            )
             connection.close()
 
     def setUp(self):
@@ -473,12 +481,72 @@ class InnodbImpactCase(unittest.TestCase):
                 ]
                 self.assertEqual(mismatches, [])
 
+    def test_each_statement_of_a_run_reads_what_the_earlier_ones_changed(self):
+        profile = profile_for(self.DIALECT, self.PROFILE)
+        runs = [
+            [
+                "ALTER TABLE it_impact_orders ADD FULLTEXT INDEX it_impact_ft (note)",
+                "ALTER TABLE it_impact_orders ADD COLUMN extra int",
+            ],
+            [
+                "ALTER TABLE it_impact_orders ROW_FORMAT=COMPRESSED",
+                "ALTER TABLE it_impact_orders ADD COLUMN extra int",
+            ],
+        ]
+        for statements in runs:
+            with self.subTest(statements=statements):
+                self.drop()
+                self.orders()
+                observed = self.observe_run(statements, profile)
+                self.assertNotEqual(observed[-1].tables[0].lock, "INSTANT")
+
+    def test_a_run_past_the_row_version_limit_rebuilds(self):
+        profile = profile_for(self.DIALECT, self.PROFILE)
+        self.orders()
+        context = self.context()
+        if "row_versions" not in context.read:
+            self.skipTest("the server counts no instant row versions")
+        limit = row_version_limit(context.version)
+        for i in range(limit - 1):
+            self.execute(
+                f"ALTER TABLE it_impact_orders ADD COLUMN c{i} int, ALGORITHM=INSTANT"
+            )
+        used = self.context().stats("it_impact_orders").row_versions
+        self.assertEqual(used, limit - 1)
+        first, second = self.observe_run(
+            [
+                "ALTER TABLE it_impact_orders ADD COLUMN extra int",
+                "ALTER TABLE it_impact_orders ADD COLUMN more int",
+            ],
+            profile,
+        )
+        self.assertEqual(first.tables[0].lock, "INSTANT")
+        self.assertEqual(second.tables[0].lock, "INPLACE, LOCK=NONE")
+
+    def observe_run(self, statements, profile):
+        """
+        Each statement's impact, predicted from one context read before
+        the first, with the clause the server accepted in its place, and
+        no `impact.mismatch` finding on any of them.
+        """
+        report = analyze(statements, self.DIALECT, self.context())
+        observed = []
+        for predicted in report.statements:
+            statement = self.observe_statement(predicted, profile)
+            self.assertIs(statement.evidence, Evidence.OBSERVED, predicted.statement)
+            mismatches = [
+                f.message for f in statement.findings if f.rule == "impact.mismatch"
+            ]
+            self.assertEqual(mismatches, [], predicted.statement)
+            observed.append(statement)
+        return observed
+
     def fixture_schema(self, profile):
         """Creates the fixture database again, with the fixtures' objects."""
         self.execute(
-            f"DROP DATABASE IF EXISTS {FIXTURE_DATABASE}",
-            f"CREATE DATABASE {FIXTURE_DATABASE}",
-            f"USE {FIXTURE_DATABASE}",
+            f"DROP DATABASE IF EXISTS `{self.fixture_database}`",
+            f"CREATE DATABASE `{self.fixture_database}`",
+            f"USE `{self.fixture_database}`",
             *profile.fixture_schema,
         )
 
@@ -490,6 +558,14 @@ class InnodbImpactCase(unittest.TestCase):
         refusal, and any other must run.
         """
         (predicted,) = analyze([fixture], self.DIALECT, context).statements
+        return self.observe_statement(predicted, profile)
+
+    def observe_statement(self, predicted, profile):
+        """
+        The statement's predicted impact with the clause the server
+        accepted in its place, as `observe_fixture()` reads it.
+        """
+        fixture = str(predicted.statement)
         existing = run_plan(self.connection, self.DIALECT, tables_plan())
         tried = attempts(predicted, profile)
         if not tried:

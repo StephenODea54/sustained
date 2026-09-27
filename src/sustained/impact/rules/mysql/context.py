@@ -1,6 +1,7 @@
 """
 The InnoDB context read: `VERSION()`, the settings, and each table's
-size, row format, FULLTEXT indexes, and instant row versions.
+size, row format, default collation, FULLTEXT indexes, and instant row
+versions.
 """
 
 from __future__ import annotations
@@ -35,13 +36,15 @@ _SYSTEM_SCHEMAS = "('mysql', 'information_schema', 'performance_schema', 'sys')"
 
 # One row per base table outside the system schemas: its schema, its
 # name, whether it is in the current database, the estimated rows, the
-# bytes of its data and indexes, and its row format. The hint reads the
-# figures from the storage engine instead of the cache MySQL keeps for
-# a day by default; MariaDB reads the hint as a comment.
+# bytes of its data and indexes, its row format, and its default
+# collation. The hint reads the figures from the storage engine instead
+# of the cache MySQL keeps for a day by default; MariaDB reads the hint
+# as a comment.
 _SIZES_SQL = (
     "SELECT /*+ SET_VAR(information_schema_stats_expiry = 0) */ "
     "TABLE_SCHEMA, TABLE_NAME, TABLE_SCHEMA = DATABASE(), TABLE_ROWS, "
-    "COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0), UPPER(ROW_FORMAT) "
+    "COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0), UPPER(ROW_FORMAT), "
+    "LOWER(TABLE_COLLATION) "
     "FROM information_schema.TABLES "
     f"WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA NOT IN {_SYSTEM_SCHEMAS}"
 )
@@ -56,6 +59,26 @@ _ROW_VERSIONS_SQL = (
     "SELECT NAME, TOTAL_ROW_VERSIONS FROM information_schema.INNODB_TABLES "
     "WHERE TOTAL_ROW_VERSIONS > 0"
 )
+
+# The characters MySQL writes as they are in a file name, and so in
+# INNODB_TABLES.NAME.
+_FILE_NAME_SAFE = frozenset(
+    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
+)
+
+# The code points MySQL may write as `@` and two characters from a table
+# of its own, such as `@1i` for `ö`, instead of four hex digits.
+_FILE_NAME_TABLES = (
+    (0x00C0, 0x05FF),
+    (0x1E00, 0x1FFF),
+    (0x2160, 0x217F),
+    (0x24B0, 0x24EF),
+    (0xFF20, 0xFF5F),
+)
+
+# A partition's suffix on its table's name in INNODB_TABLES, such as
+# `#p#p0` or `#p#p0#sp#s0`.
+_PARTITION_RE = re.compile(r"#p#.*$", re.IGNORECASE)
 
 
 def server_version(text: str) -> Tuple[str, Tuple[int, ...]]:
@@ -97,9 +120,9 @@ def context_plan(
         read |= {"version", "settings"}
     sizes = yield from attempt(_sized(tables))
     if sizes is not None:
-        found, current = _sizes(sizes)
+        found, current, files = _sizes(sizes)
         read.add("sizes")
-        yield from _storage(found, current, profile, version, read)
+        yield from _storage(found, current, files, profile, version, read)
     return EngineContext(
         profile,
         version,
@@ -127,6 +150,7 @@ _StoragePlan = Generator[str, Rows, None]
 def _storage(
     tables: Dict[str, TableStats],
     current: Mapping[str, str],
+    files: Mapping[str, Optional[str]],
     profile: str,
     version: Tuple[int, ...],
     read: Set[str],
@@ -134,6 +158,8 @@ def _storage(
     """
     Adds each table's FULLTEXT indexes and instant row versions to
     `tables`, whose `schema.table` keys `current` maps each bare key to.
+    `files` maps each `schema.table` key to the name INNODB_TABLES gives
+    the table, or None when the rules cannot write that name.
     """
     fulltext = yield from attempt(_FULLTEXT_SQL)
     if fulltext is not None:
@@ -145,13 +171,42 @@ def _storage(
     versions = yield from attempt(_ROW_VERSIONS_SQL)
     if versions is None:
         return
-    # INNODB_TABLES names a table `schema/table`.
-    counts = {
-        str(name).replace("/", ".", 1).lower(): int(str(count))
-        for name, count in versions
-    }
-    _update(tables, current, lambda key, s: s._replace(row_versions=counts.get(key, 0)))
+    # INNODB_TABLES names a table `schema/table` in the encoding MySQL
+    # gives file names, and names each partition of a partitioned table
+    # on its own. A partitioned table counts the most any partition has
+    # used.
+    counts: Dict[str, int] = {}
+    for name, count in versions:
+        key = _PARTITION_RE.sub("", str(name)).lower()
+        counts[key] = max(counts.get(key, 0), int(str(count)))
+
+    def row_versions(key: str, stats: TableStats) -> TableStats:
+        file = files.get(key)
+        found = None if file is None else counts.get(file, 0)
+        return stats._replace(row_versions=found)
+
+    _update(tables, current, row_versions)
     read.add("row_versions")
+
+
+def file_name(name: str) -> Optional[str]:
+    """
+    A schema or table name as INNODB_TABLES spells it, in lower case:
+    ASCII letters, digits, and `_` as they are, and any other character
+    as `@` and its code point in four hex digits, such as `a@002db` for
+    `a-b`. None for a name with a character MySQL may write from a table
+    of its own, such as `ö`, which the rules do not follow.
+    """
+    found = []
+    for char in name:
+        point = ord(char)
+        if char in _FILE_NAME_SAFE:
+            found.append(char)
+        elif point > 0xFFFF or any(a <= point <= b for a, b in _FILE_NAME_TABLES):
+            return None
+        else:
+            found.append(f"@{point:04x}")
+    return "".join(found).lower()
 
 
 def _update(
@@ -168,22 +223,26 @@ def _update(
 
 def _sizes(
     rows: Sequence[Sequence[object]],
-) -> Tuple[Dict[str, TableStats], Dict[str, str]]:
+) -> Tuple[Dict[str, TableStats], Dict[str, str], Dict[str, Optional[str]]]:
     """
     Each table's stats, keyed `schema.table`, and also by the bare name
     when the table is in the current database, with the full key each
-    bare key stands for.
+    bare key stands for, and the name INNODB_TABLES gives each full key.
     """
     tables: Dict[str, TableStats] = {}
     current: Dict[str, str] = {}
-    for schema, name, here, count, size, row_format in rows:
+    files: Dict[str, Optional[str]] = {}
+    for schema, name, here, count, size, row_format, collation in rows:
         stats = TableStats(
             None if count is None else int(str(count)),
             int(str(size)),
             None if row_format is None else str(row_format),
+            collation=None if collation is None else str(collation),
         )
         bare = bool(here and int(str(here)))
         key = common.add_stats(tables, str(schema), str(name), bare, stats)
         if bare:
             current[str(name).lower()] = key
-    return tables, current
+        parts = file_name(str(schema)), file_name(str(name))
+        files[key] = None if None in parts else f"{parts[0]}/{parts[1]}"
+    return tables, current, files

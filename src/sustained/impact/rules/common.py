@@ -34,7 +34,7 @@ from sustained.impact.model import (
     Work,
 )
 from sustained.impact.rules import Facts, Outcome, Profile, title
-from sustained.impact.window import aggregate
+from sustained.impact.window import aggregate, row_scopes
 
 UNNAMED_TABLE = "(unnamed table)"
 
@@ -197,7 +197,12 @@ def with_observations(
                 if spans:
                     statement = _kept_to_commit(statement)
             statements.append(statement)
-        locks, windows, findings = aggregate(statements, spans, profile.locks_database)
+        scopes = None
+        if migration.transactional and not profile.transactional_ddl:
+            scopes = row_scopes(statements)
+        locks, windows, findings = aggregate(
+            statements, spans, profile.locks_database, scopes
+        )
         migrations.append(
             migration._replace(
                 statements=tuple(statements),

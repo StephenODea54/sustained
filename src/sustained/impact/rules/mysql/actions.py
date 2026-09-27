@@ -74,10 +74,35 @@ def _rename_action(facts: Facts, action: Action) -> Change:
 
 
 def _add_index(facts: Facts, action: Action) -> Change:
-    return index_change(facts, bool(action.options.get("fulltext")))
+    options = action.options
+    return index_change(
+        facts, bool(options.get("fulltext")), bool(options.get("spatial"))
+    )
 
 
-def index_change(facts: Facts, fulltext: bool) -> Change:
+def index_change(
+    facts: Facts, fulltext: bool, spatial: bool = False, hashed: bool = False
+) -> Change:
+    """
+    The change a new index makes. `hashed` is set for a UNIQUE key
+    `USING HASH`, which MariaDB keeps in a hidden generated column, so
+    it copies the table; InnoDB on MySQL builds a B-tree index for it.
+    """
+    if hashed and is_mariadb(facts):
+        return Change(
+            copy_algorithm(facts),
+            Work.REWRITE,
+            "add_index",
+            "a UNIQUE key USING HASH adds a hidden generated column, which "
+            "copies the table",
+        )
+    if spatial:
+        return Change(
+            Online("NOCOPY" if is_mariadb(facts) else "INPLACE", "SHARED"),
+            Work.INDEX_BUILD,
+            "add_spatial",
+            "a SPATIAL index is built while writes wait",
+        )
     if not fulltext:
         return Change(
             nocopy_algorithm(facts),
@@ -117,7 +142,7 @@ def _add_constraint(facts: Facts, action: Action) -> Change:
             "a primary key orders the rows, so the table is rebuilt in place",
         )
     if constraint == "unique":
-        return index_change(facts, False)
+        return index_change(facts, False, hashed=options.get("using") == "hash")
     if constraint == "foreign_key":
         return _add_foreign_key(facts, action)
     if constraint == "check":
@@ -259,6 +284,24 @@ def _table_option(facts: Facts, action: Action) -> Change:
     )
 
 
+def _index_visibility(facts: Facts, action: Action) -> Optional[Change]:
+    """
+    MySQL's `ALTER INDEX ... VISIBLE | INVISIBLE`, or MariaDB's `ALTER
+    INDEX ... [NOT] IGNORED`. None for the other server's spelling,
+    which the server does not accept.
+    """
+    word = str(action.options.get("word") or "")
+    mariadb = is_mariadb(facts)
+    if mariadb != word.endswith("IGNORED"):
+        return None
+    return Change(
+        _instant_on_mariadb(facts),
+        Work.CATALOG,
+        "index_visibility",
+        "the index's visibility to the optimizer changes in the data dictionary",
+    )
+
+
 def _unread(action: Action) -> Change:
     return Change(
         Online("COPY", "EXCLUSIVE"),
@@ -269,7 +312,8 @@ def _unread(action: Action) -> Change:
     )
 
 
-_ActionHandler = Callable[[Facts, Action], Change]
+# A handler returns None for an action the server does not accept.
+_ActionHandler = Callable[[Facts, Action], Optional[Change]]
 ACTIONS: Dict[str, _ActionHandler] = {
     "add_column": _add_column,
     "drop_column": _drop_column,
@@ -316,4 +360,5 @@ ACTIONS: Dict[str, _ActionHandler] = {
         _inplace, Work.REWRITE, "table_rebuild", "FORCE rebuilds the table in place"
     ),
     "table_option": _table_option,
+    "index_visibility": _index_visibility,
 }

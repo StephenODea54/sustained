@@ -19,6 +19,7 @@ from sustained.impact.model import (
 )
 from sustained.impact.rules import Facts, common
 from sustained.impact.rules.mysql.column_types import (
+    collation_change,
     type_change,
 )
 from sustained.impact.rules.mysql.facts import (
@@ -179,6 +180,10 @@ def _add_column(facts: Facts, action: Action) -> Change:
         "add_column.instant",
         note or "the column is added in the data dictionary",
         confidence,
+        rebuild=(
+            "add_column.rebuild",
+            "the column is added",
+        ),
     )
 
 
@@ -215,6 +220,21 @@ def _drop_column(facts: Facts, action: Action) -> Change:
             "before MySQL 8.0.29 a column is dropped by rebuilding the table",
         )
     reason, confidence = _storage_limits(facts, table)
+    if reason is not None and "FULLTEXT" in reason and not mariadb:
+        return Change(
+            copy_algorithm(facts),
+            Work.REWRITE,
+            "drop_column.rebuild",
+            f"{reason}, so the column is dropped by copying the table",
+        )
+    if reason is not None and "FULLTEXT" in reason:
+        return Change(
+            Online("INPLACE", "SHARED"),
+            Work.REWRITE,
+            "drop_column.rebuild",
+            f"{reason}, so the column is dropped by rebuilding the table while "
+            "writes wait",
+        )
     if reason is not None:
         return Change(
             Online("INPLACE", "NONE"),
@@ -235,6 +255,10 @@ def _drop_column(facts: Facts, action: Action) -> Change:
         "drop_column.instant",
         note or "the column is dropped in the data dictionary",
         confidence,
+        rebuild=(
+            "drop_column.rebuild",
+            "the column is dropped",
+        ),
     )
 
 
@@ -258,6 +282,10 @@ def _modify_column(facts: Facts, action: Action) -> Change:
                     Work.CATALOG,
                     "modify_column.instant",
                     "MariaDB reorders columns in the data dictionary",
+                    rebuild=(
+                        "modify_column.rebuild",
+                        "the column is moved",
+                    ),
                 )
             )
         else:
@@ -278,12 +306,26 @@ def _modify_column(facts: Facts, action: Action) -> Change:
                 spec = candidate
     new_type = str(options.get("type"))
     new_nullable = not options.get("not_null") and not options.get("primary_key")
+    stats = table_stats(facts, table)
+    if spec is not None:
+        change = collation_change(
+            facts,
+            spec.collation,
+            _optional(options.get("charset")),
+            _optional(options.get("collate")),
+            stats.collation,
+            _indexed(facts, table, column),
+            spec.raw_type,
+        )
+        if change is not None:
+            changes.append(change)
     if intent is not None and intent.kind == "alter_column_type":
         change = type_change(
             facts,
             str(intent.get("from_type")),
             str(intent.get("to_type") or new_type),
             spec.collation if spec is not None else None,
+            stats.row_format,
         )
         if change is not None:
             changes.append(change)
@@ -292,7 +334,9 @@ def _modify_column(facts: Facts, action: Action) -> Change:
     elif intent is not None and intent.kind == "set_column_comment":
         pass
     elif spec is not None:
-        change = type_change(facts, spec.raw_type, new_type, spec.collation)
+        change = type_change(
+            facts, spec.raw_type, new_type, spec.collation, stats.row_format
+        )
         if change is not None:
             changes.append(change)
         if spec.nullable != new_nullable:
@@ -337,6 +381,10 @@ def _modify_column(facts: Facts, action: Action) -> Change:
     return heaviest(changes)
 
 
+def _optional(value: object) -> Optional[str]:
+    return None if value is None else str(value)
+
+
 def _nullability(nullable: bool) -> Change:
     what = "NOT NULL to NULL" if nullable else "NULL to NOT NULL"
     return Change(
@@ -348,7 +396,12 @@ def _nullability(nullable: bool) -> Change:
 
 
 def heaviest(changes: Sequence[Change]) -> Change:
-    """The changes of one statement as the server runs them together."""
+    """
+    The changes of one statement as the server runs them together. An
+    instant change that rebuilds the table when it runs in place does
+    so beside a change that is not instant, and on MariaDB that rebuild
+    is INPLACE, since NOCOPY rebuilds nothing.
+    """
     online = changes[0].online
     for change in changes[1:]:
         online = online.combined(change.online)
@@ -358,14 +411,22 @@ def heaviest(changes: Sequence[Change]) -> Change:
     )
     confidence = min(c.confidence for c in changes)
     notes = tuple(n for c in changes for n in c.notes)
-    return Change(
-        online,
-        max(c.work for c in changes),
-        worst.rule,
-        worst.reason,
-        confidence,
-        notes,
-    )
+    work = max(c.work for c in changes)
+    rule, reason = worst.rule, worst.reason
+    rebuilds = [c.rebuild for c in changes if c.rebuild is not None]
+    rebuild = rebuilds[0] if rebuilds else None
+    if rebuild is not None and online.algorithm != "INSTANT":
+        if online.algorithm == "NOCOPY":
+            online = Online("INPLACE", online.level)
+        if online.algorithm != "COPY":
+            rule, what = rebuild
+            reason = (
+                f"{what} in place with the statement's other changes, which "
+                "rebuilds the table"
+            )
+        work = max(work, Work.REWRITE)
+        rebuild = None
+    return Change(online, work, rule, reason, confidence, notes, rebuild)
 
 
 def _rename_column(facts: Facts, action: Optional[Action] = None) -> Change:

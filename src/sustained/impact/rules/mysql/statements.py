@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import (
     Dict,
     List,
+    Optional,
     Sequence,
 )
 
@@ -37,6 +38,7 @@ from sustained.impact.rules.mysql.facts import (
     table_stats,
 )
 from sustained.impact.rules.mysql.locks import (
+    INSTANT,
     MDL_EXCLUSIVE,
     ROW_LOCKS,
     Online,
@@ -50,6 +52,9 @@ from sustained.impact.rules.mysql.online import (
 
 
 def _alter_table(facts: Facts) -> Outcome:
+    refused = _mariadb_syntax(facts)
+    if refused is not None:
+        return refused
     changes: List[Change] = []
     actions = facts.parsed.actions
     kinds = {(a.kind, a.options.get("constraint")) for a in actions}
@@ -64,19 +69,137 @@ def _alter_table(facts: Facts) -> Outcome:
             # Dropping the primary key and adding another in the same
             # statement rebuilds the table in place.
             continue
-        changes.append(handler(facts, action))
+        change = handler(facts, action)
+        if change is None:
+            server = "MariaDB" if is_mariadb(facts) else "MySQL"
+            return common.unknown(
+                facts,
+                f"the ALTER TABLE action {action.kind} as written, which {server} "
+                "does not accept",
+            )
+        changes.append(_ignored(facts, action, change))
     if not changes:
         return common.unknown(facts, f"the ALTER TABLE action {actions[0].kind}")
-    return online_outcome(facts, heaviest(changes))
+    outcome = online_outcome(facts, heaviest(changes))
+    _record_storage(facts, outcome)
+    return outcome
 
 
-def _create_index(facts: Facts) -> Outcome:
-    return online_outcome(
-        facts, index_change(facts, bool(facts.parsed.options.get("fulltext")))
+def _mariadb_syntax(facts: Facts) -> Optional[Outcome]:
+    """
+    The unknown outcome of MariaDB's ALTER ONLINE TABLE, ALTER IGNORE
+    TABLE, or `WAIT n` and `NOWAIT` on MySQL, which does not accept
+    them; None otherwise.
+    """
+    if is_mariadb(facts):
+        return None
+    options = facts.parsed.options
+    for option, what in (
+        ("online", "ALTER ONLINE TABLE"),
+        ("ignore", "ALTER IGNORE TABLE"),
+        ("wait", "WAIT or NOWAIT"),
+    ):
+        if options.get(option) is not None:
+            return common.unknown(facts, f"{what}, which MySQL does not accept")
+    return None
+
+
+def _ignored(facts: Facts, action: Action, change: Change) -> Change:
+    """
+    The change as MariaDB's ALTER IGNORE TABLE runs it: a new unique or
+    primary key drops the rows that repeat a key, which copies the
+    table, and every copy takes LOCK=SHARED, as `copy_algorithm()`
+    returns under IGNORE.
+    """
+    if not facts.parsed.options.get("ignore") or not is_mariadb(facts):
+        return change
+    options = action.options
+    keyed = action.kind == "add_constraint" and options.get("constraint") in (
+        "unique",
+        "primary_key",
+    )
+    if not keyed and not (
+        action.kind == "add_column"
+        and (options.get("unique") or options.get("primary_key"))
+    ):
+        return change
+    unique = action.kind == "add_constraint" and options.get("constraint") == "unique"
+    return change._replace(
+        online=copy_algorithm(facts),
+        work=Work.REWRITE,
+        reason="under ALTER IGNORE TABLE a new key drops the rows that repeat it, "
+        "by copying the table",
+        confidence=Confidence.KNOWN if unique else Confidence.LIKELY,
+        rebuild=None,
     )
 
 
+def _create_index(facts: Facts) -> Outcome:
+    refused = _mariadb_syntax(facts)
+    if refused is not None:
+        return refused
+    options = facts.parsed.options
+    outcome = online_outcome(
+        facts,
+        index_change(
+            facts,
+            bool(options.get("fulltext")),
+            bool(options.get("spatial")),
+            bool(options.get("unique")) and options.get("using") == "hash",
+        ),
+    )
+    _record_storage(facts, outcome)
+    return outcome
+
+
+def _record_storage(facts: Facts, outcome: Outcome) -> None:
+    """
+    Records in the run state what the statement changed about how its
+    table is stored, for the statements after it: a FULLTEXT index,
+    which stays with the table's hidden FTS_DOC_ID column even once the
+    index is dropped, a new ROW_FORMAT, and the instant row versions,
+    which a rebuild gives back and an instant ADD or DROP COLUMN uses
+    one of. A statement the rules predict the server refuses changes
+    nothing. The analyzer reads each statement's effects once, before
+    it records the statement in the run state.
+    """
+    table = common.table(facts)
+    effect = next(
+        (e for e in outcome.effects if e.table.lower() == table.lower()), None
+    )
+    if effect is None or effect.rule.id.endswith(".refused"):
+        return
+    parsed = facts.parsed
+    found: Dict[str, object] = {}
+    if parsed.kind == "create_index":
+        if parsed.options.get("fulltext") and not parsed.options.get("spatial"):
+            found["fulltext"] = True
+    for action in parsed.actions:
+        options = action.options
+        if (
+            action.kind == "add_index"
+            and options.get("fulltext")
+            and not options.get("spatial")
+        ):
+            found["fulltext"] = True
+        elif action.kind == "table_option" and options.get("name") == "row_format":
+            found["row_format"] = str(options.get("value")).upper()
+    if effect.work is Work.REWRITE:
+        found["row_versions"] = 0
+    elif effect.lock == INSTANT and any(
+        a.kind in ("add_column", "drop_column") for a in parsed.actions
+    ):
+        used = table_stats(facts, table).row_versions
+        if used is not None:
+            found["row_versions"] = used + 1
+    if found:
+        facts.state.record_storage(table, **found)
+
+
 def _drop_index(facts: Facts) -> Outcome:
+    refused = _mariadb_syntax(facts)
+    if refused is not None:
+        return refused
     name = str(facts.parsed.options.get("name") or "")
     if name.upper() == "PRIMARY":
         change = _drop_constraint(
@@ -84,7 +207,9 @@ def _drop_index(facts: Facts) -> Outcome:
         )
     else:
         change = drop_index_change(facts)
-    return online_outcome(facts, change)
+    outcome = online_outcome(facts, change)
+    _record_storage(facts, outcome)
+    return outcome
 
 
 def _metadata(facts: Facts, rule_name: str, tables: Sequence[str]) -> Outcome:
@@ -145,6 +270,7 @@ def _optimize(facts: Facts) -> Outcome:
     rule = rules_for(facts)["table_rebuild"]
     effects = []
     for table in common.tables(facts):
+        facts.state.record_storage(table, row_versions=0)
         if table_stats(facts, table).fulltext:
             online = copy_algorithm(facts)
         else:
