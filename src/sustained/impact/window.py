@@ -142,7 +142,7 @@ def aggregate(
         scoped = _windows(statements, works, scope, database)
         windows.extend(window for window, _ in scoped)
         if not locks_database:
-            findings.extend(_held(scoped))
+            findings.extend(_held(scoped, _end(scope, len(statements))))
         if spans_transaction:
             findings.extend(_lock_order([window for window, _ in scoped]))
     return locks, tuple(windows), tuple(findings)
@@ -181,8 +181,20 @@ def _windows(
     return windows
 
 
+def _end(scope: range, count: int) -> str:
+    """
+    When the locks of the scope end: at the migration's commit, or, for
+    a scope `row_scopes()` ends early, at the implicit commit before the
+    next statement, a DDL statement.
+    """
+    if scope.stop < count:
+        return f"until the implicit commit before statement {scope.stop + 1}"
+    return "until the migration commits"
+
+
 def _held(
     windows: Sequence[Tuple[Window, Tuple[Tuple[Blocks, int], ...]]],
+    end: str,
 ) -> List[Finding]:
     findings = []
     for window, levels in windows:
@@ -196,9 +208,9 @@ def _held(
             Finding(
                 "window.held",
                 Severity.WARN,
-                f"{window.table} stays blocked {blocked} until the migration "
-                f"commits, across the {window.heaviest} work of statement "
-                f"{window.during}; move that work to a migration of its own",
+                f"{window.table} stays blocked {blocked} {end}, across the "
+                f"{window.heaviest} work of statement {window.during}; move that "
+                "work to a migration of its own",
             )
         )
     return findings

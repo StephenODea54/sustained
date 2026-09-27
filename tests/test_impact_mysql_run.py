@@ -223,7 +223,23 @@ class RowScopeTestCase(unittest.TestCase):
         window, _ = migration.windows
         self.assertEqual((window.table, window.taken_by), ("t", 1))
         self.assertEqual((window.blocks, window.during), (Blocks.WRITES, 2))
-        self.assertIn("window.held", [f.rule for f in migration.findings])
+        (held,) = [f for f in migration.findings if f.rule == "window.held"]
+        # The DDL statement commits the run before it starts.
+        self.assertIn(
+            "for writes from statement 1 until the implicit commit before "
+            "statement 3, across",
+            held.message,
+        )
+
+    def test_a_run_that_ends_the_migration_is_held_until_it_commits(self):
+        report = analyze(
+            ["ALTER TABLE t ADD COLUMN d int", "UPDATE t SET c = 1", "FROB t"],
+            MY,
+            MYSQL,
+        )
+        (migration,) = report.migrations
+        (held,) = [f for f in migration.findings if f.rule == "window.held"]
+        self.assertIn("until the migration commits", held.message)
 
     def test_outside_a_transaction_each_statement_is_a_window(self):
         statements = [

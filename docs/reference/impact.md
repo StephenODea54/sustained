@@ -267,7 +267,7 @@ The analysis itself raises these findings:
 | `pg.lock_timeout` | `warn` | A lock that blocks writes or more waits with no `lock_timeout` in scope, from a `SET` earlier in the run or from the connection's settings. |
 | `mysql.lock_timeout`, `mariadb.lock_timeout` | `warn` | A statement that takes the exclusive metadata lock runs with no `lock_wait_timeout` below a day in scope. |
 | `mysql.refused`, `mariadb.refused` | `warn` | The statement spells an `ALGORITHM` or `LOCK` the change cannot run with, so the server refuses it. |
-| `window.held` | `warn` | A table stays blocked until the commit across heavier work from a later statement. The message names each level the table is blocked for, and the first statement to block it that far. |
+| `window.held` | `warn` | A table stays blocked until the commit across heavier work from a later statement. The message names each level the table is blocked for, the first statement to block it that far, and when the block ends: when the migration commits, or on MySQL and MariaDB at the implicit commit before the next DDL statement. |
 | `window.lock_order` | `warn` | One migration blocks reads and writes on more than one table at once. |
 
 ## Enums
