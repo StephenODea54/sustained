@@ -96,6 +96,8 @@ Adding a database means adding a row to `support.json`, a service to the compose
 
 ## Releasing a Version
 
+Each version's section in `CHANGELOG.md` uses only the subheadings `### Added`, `### Removed`, `### Changed`, and `### Fixed`, in that order, and leaves out the empty ones. Each bullet is one sentence, two at most, that names the public API, command, or option and says what it does for the user. A breaking change starts its bullet with `**Breaking:**`. Leave out implementation detail and anything a user would not act on, and group minor fixes into one bullet. `sync_changelog.py` writes the file to `docs/changelog.md` for the site, where the releases are grouped under one heading per major version.
+
 Write the new version's `## <version>` section at the top of `CHANGELOG.md`, and leave it uncommitted. Then run the release script with the part of the version to increment:
 
 ```bash
