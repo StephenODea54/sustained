@@ -12,3 +12,8 @@ social:
   links:
     - https://github.com/wetherc/sustained
     - https://pypi.org/project/sustained/
+defaults:
+  - scope:
+      path: google576c0297ab8c823d.html
+    values:
+      sitemap: false
