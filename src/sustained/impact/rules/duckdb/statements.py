@@ -41,13 +41,20 @@ from sustained.impact.window import DATABASE
 ALTERED_TABLE = "altered table"
 CATALOG_ENTRY = "catalog entry"
 CHANGED_ROWS = "changed rows"
+DROPPED_TABLE = "dropped table"
 
 _BLOCKS: Dict[str, Blocks] = {
     CATALOG_ENTRY: Blocks.DDL,
     CHANGED_ROWS: Blocks.WRITES,
     ALTERED_TABLE: Blocks.WRITES,
+    DROPPED_TABLE: Blocks.WRITES,
 }
-_RANKS: Dict[str, int] = {CATALOG_ENTRY: 0, CHANGED_ROWS: 1, ALTERED_TABLE: 2}
+_RANKS: Dict[str, int] = {
+    CATALOG_ENTRY: 0,
+    CHANGED_ROWS: 1,
+    ALTERED_TABLE: 2,
+    DROPPED_TABLE: 3,
+}
 
 # The column constraints DuckDB refuses on ADD COLUMN, as the recognizer
 # names them.
@@ -61,7 +68,9 @@ def blocks(lock: Optional[str]) -> Blocks:
     schema change after an ALTER TABLE that changes the table's storage
     (`altered table`), an UPDATE or DELETE of the same rows after a row
     change (`changed rows`), and a schema change after any other change
-    to the table's catalog entry (`catalog entry`).
+    to the table's catalog entry (`catalog entry`). After a DROP TABLE
+    (`dropped table`) a schema change on the table aborts, and a
+    transaction that wrote to the table before the DROP fails to commit.
     """
     return Blocks.NOTHING if lock is None else _BLOCKS[lock]
 
@@ -122,8 +131,10 @@ def _add_column(facts: Facts, action: Action) -> Optional[Effect]:
     if options.get("generated") or any(options.get(k) for k in _REFUSED_ON_ADD):
         return None
     if options.get("default_volatility") != "volatile":
+        # DuckDB fills the new column in every row group, in time that
+        # grows with the rows.
         return _effect(
-            ADD_COLUMN, table, ALTERED_TABLE, Work.CATALOG, _altered(facts, table)
+            ADD_COLUMN, table, ALTERED_TABLE, Work.ROWS, _altered(facts, table)
         )
     function = options.get("default_function")
     reason = f"the default calls {function}(), which gives each row a new value"
@@ -242,7 +253,16 @@ def _schema_change(facts: Facts) -> Outcome:
 def _drop_table(facts: Facts) -> Outcome:
     return Outcome(
         tuple(
-            _effect(DROP_TABLE, table, CATALOG_ENTRY, Work.CATALOG)
+            _effect(
+                DROP_TABLE,
+                table,
+                DROPPED_TABLE,
+                Work.CATALOG,
+                f"until {_until(facts)}, schema changes on {table} in other "
+                "transactions abort with a conflict error instead of waiting, and "
+                f"a transaction that wrote to {table} before the DROP fails to "
+                "commit; reads go on",
+            )
             for table in common.tables(facts)
         )
     )
@@ -255,6 +275,8 @@ def _write_rows(facts: Facts) -> Outcome:
     effects = []
     for table in common.tables(facts):
         advice = "; on a large table, backfill in batches outside the DDL migration"
+        if kind == "delete":
+            advice = "; on a large table, delete in batches outside the DDL migration"
         if kind == "update":
             what = "the UPDATE changes rows"
             other = "updates the same columns of the same rows"

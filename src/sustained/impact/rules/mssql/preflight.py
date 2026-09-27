@@ -2,10 +2,13 @@
 The SQL Server live preflight: the table locks other sessions were
 granted or are waiting for in this database, from `sys.dm_tran_locks`,
 with each session's login, program, status, transaction age, and most
-recent statement, and the user transactions of sessions in this
+recent statement, and the user transactions of the sessions that are in
+this database or have a transaction with work in it, from
+`sys.dm_tran_database_transactions`, whatever the session's current
 database. The dynamic management views need `VIEW SERVER STATE`, or
-`VIEW SERVER PERFORMANCE STATE` on SQL Server 2022 and later; without
-it the reads fail and are left out of `read`.
+`VIEW SERVER PERFORMANCE STATE` on SQL Server 2022 and later, and
+`VIEW DATABASE STATE` on Azure SQL Database; without it the reads fail
+and are left out of `read`.
 
 A planned lock waits behind a lock the compatibility matrix says it
 conflicts with. The intent update modes `IU`, `SIU`, and `UIX`, which
@@ -78,14 +81,19 @@ WHERE l.resource_type = 'OBJECT'
   AND l.resource_database_id = DB_ID()
   AND l.request_session_id <> @@SPID"""
 
-# One row per other session in this database with a user transaction.
+# One row per other session with a user transaction whose current
+# database is this one, or whose transaction has work in this database.
 _TRANSACTIONS_SQL = f"""SELECT s.session_id, {_SESSION_COLUMNS}
 FROM sys.dm_exec_sessions s
 OUTER APPLY (SELECT TOP 1 c.most_recent_sql_handle FROM sys.dm_exec_connections c
              WHERE c.session_id = s.session_id) c
 OUTER APPLY sys.dm_exec_sql_text(c.most_recent_sql_handle) q
 WHERE s.session_id <> @@SPID
-  AND s.database_id = DB_ID()
+  AND (s.database_id = DB_ID()
+       OR EXISTS (SELECT 1 FROM sys.dm_tran_session_transactions st2
+                  JOIN sys.dm_tran_database_transactions dt
+                    ON dt.transaction_id = st2.transaction_id
+                  WHERE st2.session_id = s.session_id AND dt.database_id = DB_ID()))
   AND EXISTS (SELECT 1 FROM sys.dm_tran_session_transactions st
               WHERE st.session_id = s.session_id AND st.is_user_transaction = 1)"""
 

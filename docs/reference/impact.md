@@ -246,7 +246,7 @@ TableImpact(table, lock, blocks, work, hold, rows=None, bytes=None, rule=None)
 ```
 {: .sig}
 
-What the statement does to one table: the engine's lock name, or `None` for no lock, what it blocks, the work, how long the lock lasts, the row and byte estimates when known, and the id of the rule that gave the answer. DuckDB takes no locks, so there the lock name is the conflict the statement opens on the table: `altered table`, `changed rows`, or `catalog entry`; see [DuckDB](/impact#duckdb).
+What the statement does to one table: the engine's lock name, or `None` for no lock, what it blocks, the work, how long the lock lasts, the row and byte estimates when known, and the id of the rule that gave the answer. DuckDB takes no locks, so there the lock name is the conflict the statement opens on the table: `altered table`, `changed rows`, `dropped table`, or `catalog entry`; see [DuckDB](/impact#duckdb).
 
 ```python
 Finding(rule, severity, message, remedy=(), source=None)

@@ -21,10 +21,13 @@ gets:
 - `changed rows`: an UPDATE, DELETE, or TRUNCATE. Another transaction
   that updates the same columns of the same rows, or deletes the same
   rows, aborts (`writes`)
+- `dropped table`: a DROP TABLE. Schema changes on the table in other
+  transactions abort, and a transaction that wrote to the table before
+  the DROP fails to commit; reads go on (`writes`)
 - `catalog entry`: any other change to the table's entry in the
-  catalog, such as a rename, a default, a comment, DROP INDEX, DROP
-  TABLE, or a new table whose foreign key points at it. Only schema changes
-  on the table abort; reads and writes go on (`ddl`)
+  catalog, such as a rename, a default, a comment, DROP INDEX, or a new
+  table whose foreign key points at it. Only schema changes on the table
+  abort; reads and writes go on (`ddl`)
 
 CREATE INDEX, INSERT, ANALYZE, and creating or dropping a view, a type,
 a sequence, or a schema open no conflict with other transactions
@@ -35,12 +38,13 @@ Each statement's work:
 - SET DATA TYPE writes every value of the column again, and so does
   ADD COLUMN with a volatile default, such as `random()` (`rewrite`);
   the other columns keep their storage
+- any other ADD COLUMN fills the column in every row group, in time
+  that grows with the rows (`rows`)
 - SET NOT NULL reads every row to check for NULLs (`scan`)
 - CREATE INDEX builds the index from every row (`index_build`)
 - ANALYZE reads every row (`scan`)
 - UPDATE, DELETE, TRUNCATE, and INSERT write rows (`rows`)
-- any other ADD COLUMN, DROP COLUMN, and every other statement change
-  only the catalog
+- DROP COLUMN and every other statement change only the catalog
 
 DuckDB refuses to alter a table that an index depends on, and refuses a
 constraint on ADD COLUMN and ADD CONSTRAINT. The rules leave the first
@@ -60,6 +64,7 @@ from sustained.impact.rules.duckdb.statements import (
     ALTERED_TABLE,
     CATALOG_ENTRY,
     CHANGED_ROWS,
+    DROPPED_TABLE,
     STATEMENTS,
     blocks,
     lock_rank,
@@ -99,6 +104,7 @@ __all__ = [
     "ALTERED_TABLE",
     "CATALOG_ENTRY",
     "CHANGED_ROWS",
+    "DROPPED_TABLE",
     "FIXTURE_SCHEMA",
     "PROFILE",
     "blocks",

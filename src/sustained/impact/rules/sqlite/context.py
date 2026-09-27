@@ -36,14 +36,14 @@ _BYTES_SQL = (
     "SELECT m.tbl_name, SUM(s.pgsize) FROM sqlite_schema m "
     "JOIN dbstat s ON s.name = m.name "
     "WHERE s.aggregate = 1 AND m.type IN ('table', 'index') "
-    "AND m.tbl_name NOT LIKE 'sqlite_%'"
+    "AND m.tbl_name NOT LIKE 'sqlite\\_%' ESCAPE '\\'"
 )
 
 # The tables a row count can read: virtual tables are left out, since
 # counting one runs the module that implements it.
 _TABLES_SQL = (
     "SELECT name FROM sqlite_schema WHERE type = 'table' "
-    "AND name NOT LIKE 'sqlite_%' AND sql NOT LIKE 'CREATE VIRTUAL%'"
+    "AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND sql NOT LIKE 'CREATE VIRTUAL%'"
 )
 
 

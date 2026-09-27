@@ -29,6 +29,14 @@ ADD_COLUMN_CHECKED = Rule(
         "VIRTUAL NOT NULL",
     ),
 )
+ADD_COLUMN_REFUSED = Rule(
+    "sqlite.add_column.refused",
+    _ALTER_TABLE + "#alter_table_add_column",
+    (
+        "ALTER TABLE t ADD COLUMN z integer NOT NULL",
+        "ALTER TABLE t ADD COLUMN z integer DEFAULT (random())",
+    ),
+)
 DROP_COLUMN = Rule(
     "sqlite.drop_column",
     _ALTER_TABLE + "#alter_table_drop_column",
@@ -81,6 +89,7 @@ VACUUM = Rule("sqlite.vacuum", DOCS + "lang_vacuum.html", ("VACUUM",))
 RULES = (
     ADD_COLUMN,
     ADD_COLUMN_CHECKED,
+    ADD_COLUMN_REFUSED,
     DROP_COLUMN,
     RENAME,
     REBUILD,

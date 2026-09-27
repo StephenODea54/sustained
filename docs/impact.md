@@ -89,7 +89,7 @@ The last line counts the statements and findings and says what the answer rests 
 | `writes` | INSERT, UPDATE, and DELETE wait. Reads proceed. |
 | `reads_and_writes` | Every query on the table waits. |
 
-**Lock** is the engine's own name for the lock. On PostgreSQL it is the mode `pg_locks.mode` reports, without the `Lock` suffix, such as `ACCESS EXCLUSIVE`, `SHARE`, or `SHARE UPDATE EXCLUSIVE`. On MySQL and MariaDB it is the `ALGORITHM` and `LOCK` clause the server accepts for the statement, such as `INSTANT` or `INPLACE, LOCK=NONE`, or `MDL EXCLUSIVE` and `IX` for statements that take no such clause. On SQL Server it is the table lock mode `sys.dm_tran_locks.request_mode` reports, such as `Sch-M`, `S`, or `X`. On SQLite it is `database write lock`, which every write takes on the whole database file. DuckDB takes no locks, so there it is the conflict a statement opens on the table, `altered table`, `changed rows`, or `catalog entry`, and another transaction that conflicts with it aborts instead of waiting.
+**Lock** is the engine's own name for the lock. On PostgreSQL it is the mode `pg_locks.mode` reports, without the `Lock` suffix, such as `ACCESS EXCLUSIVE`, `SHARE`, or `SHARE UPDATE EXCLUSIVE`. On MySQL and MariaDB it is the `ALGORITHM` and `LOCK` clause the server accepts for the statement, such as `INSTANT` or `INPLACE, LOCK=NONE`, or `MDL EXCLUSIVE` and `IX` for statements that take no such clause. On SQL Server it is the table lock mode `sys.dm_tran_locks.request_mode` reports, such as `Sch-M`, `S`, or `X`. On SQLite it is `database write lock`, which every write takes on the whole database file. DuckDB takes no locks, so there it is the conflict a statement opens on the table, `altered table`, `changed rows`, `dropped table`, or `catalog entry`, and another transaction that conflicts with it aborts instead of waiting.
 
 **Work**, ordered from lightest to heaviest:
 
@@ -408,7 +408,7 @@ What each engine reads:
 | PostgreSQL | `pg_locks`, with `pg_stat_activity` and `pg_prepared_xacts` | `pg_stat_activity` and `pg_prepared_xacts`, in the current database | `pg_read_all_stats` for another user's state, transaction age, and statement; without it, another user's transactions are not listed, and its blockers show no state. The locks need none |
 | MySQL | `performance_schema.metadata_locks` | `information_schema.INNODB_TRX` and `PROCESSLIST` | `PROCESS`, and `SELECT` on `performance_schema` |
 | MariaDB | `performance_schema.metadata_locks` when the Performance Schema is on, and otherwise `information_schema.METADATA_LOCK_INFO`, which the `metadata_lock_info` plugin adds and which lists granted locks only | the same as MySQL | the same as MySQL |
-| SQL Server | `sys.dm_tran_locks`, in the current database | `sys.dm_tran_session_transactions` and `sys.dm_exec_sessions`, for sessions in the current database | `VIEW SERVER STATE`, or `VIEW SERVER PERFORMANCE STATE` on 2022 and later |
+| SQL Server | `sys.dm_tran_locks`, in the current database | `sys.dm_tran_session_transactions` and `sys.dm_exec_sessions`, for sessions in the current database, and `sys.dm_tran_database_transactions`, for sessions whose transaction has work in the current database whatever their own current database | `VIEW SERVER STATE`, or `VIEW SERVER PERFORMANCE STATE` on 2022 and later; `VIEW DATABASE STATE` on Azure SQL Database |
 
 The application is `application_name` on PostgreSQL, the `program_name` connection attribute on MySQL and MariaDB, which only some clients send, and `program_name` on SQL Server. MariaDB ships with the Performance Schema off, so there the locks are read only with `performance_schema = ON` in the server configuration or with the plugin installed.
 
@@ -768,7 +768,7 @@ Each table line names the table lock mode the statement has when it ends, as `sy
 
 | Lock | Taken by | Blocks |
 | --- | --- | --- |
-| `Sch-S` | `UPDATE STATISTICS`, and an online index operation or `ALTER COLUMN` while it runs | `ddl` |
+| `Sch-S` | `UPDATE STATISTICS`, and an online index operation or `ALTER COLUMN` while it works | `ddl` |
 | `IX` | `INSERT`, `UPDATE`, and `DELETE`, with an `X` lock on each row they change | `ddl` on the table. The table line reports `reads_and_writes` for the rows they change, or `writes` when the database reads with `READ_COMMITTED_SNAPSHOT` on |
 | `S` | `CREATE INDEX` of a nonclustered index | `writes` |
 | `X` | a write whose row locks escalate to the table, and `ALTER INDEX ... REORGANIZE` inside a transaction | `reads_and_writes`, or `writes` when the database reads with `READ_COMMITTED_SNAPSHOT` on |
@@ -778,17 +778,21 @@ With `READ_COMMITTED_SNAPSHOT` on, readers read the last committed version of ea
 
 SQL Server DDL is transactional, so inside a migration's transaction every lock is held until the commit. A foreign key that a statement adds, drops, checks, or disables takes `Sch-M` on the table it points at as well, and so does `DROP TABLE` of a table whose foreign keys point at others.
 
-SQL Server escalates the row locks of one statement to `X` on the whole table once the statement has 5,000 locks on it. An `UPDATE` or `DELETE` with no `WHERE` and no `TOP`, on a table of 5,000 rows or more, reports `X` under `mssql.lock_escalation`. Without the table's row count it reports `X` with confidence `likely`. Any other `UPDATE` or `DELETE` reports `IX`, and one without `TOP` gets an `info` finding that a write of 5,000 rows or more escalates.
+SQL Server escalates the row locks of one statement to `X` on the whole table once the statement has 5,000 locks on it. An `UPDATE` or `DELETE` with no `WHERE` and no `TOP`, on a table of 5,000 rows or more, reports `X` under `mssql.lock_escalation`. Without the table's row count it reports `X` with confidence `likely`. Any other `UPDATE` or `DELETE` reports `IX`, and one without `TOP` gets an `info` finding that a write of 5,000 rows or more escalates. An `INSERT ... SELECT` reports `IX` with an `info` finding under `mssql.lock_escalation` that it can escalate, since the analysis does not count the rows the query gives. SQL Server 2022 and 2025 were observed to keep `IX` for an `INSERT ... SELECT` of 6,000 rows and to escalate at 6,500 rows. An `INSERT ... VALUES` gets no finding.
 
 ### Editions
 
-The Enterprise, Developer, and Evaluation editions, Azure SQL Database, and Azure SQL Managed Instance run index operations and `ALTER COLUMN` with `ONLINE = ON`, and add a NOT NULL column with a runtime constant default as a catalog change. The Standard, Web, and Express editions write the default into every row, and refuse `ONLINE = ON`. The rules read `SERVERPROPERTY('EngineEdition')`, and without it assume an edition without these features:
+The Enterprise, Developer, and Evaluation editions, Azure SQL Database, and Azure SQL Managed Instance run index operations and `ALTER COLUMN` with `ONLINE = ON`, and add a NOT NULL column with a runtime constant default as a catalog change. The Standard, Web, and Express editions write the default into every row, and refuse `ONLINE = ON`. Every edition writes into every row the default of a large value type (`nvarchar(max)`, `varchar(max)`, `varbinary(max)`), `xml`, `text`, `ntext`, `image`, `hierarchyid`, `geography`, `geometry`, `json`, or a CLR type, and the value of a new `rowversion` or `timestamp` column, with or without NULL. The rules read `SERVERPROPERTY('EngineEdition')`, and without it assume an edition without these features:
 
 - `ADD` of a NOT NULL column with a constant default, or of a default `WITH VALUES`, is a `rewrite` with confidence `likely`, and the finding names both cases
 - a statement with `ONLINE = ON` gets an `info` finding that it fails on the other editions; on an edition that was read to lack it, the finding is `danger`
 - the remedy offers `ONLINE = ON` unless the edition was read to lack it
 
-An operation with `ONLINE = ON` runs with `Sch-S`, so reads and writes go on, and takes `S`, or `Sch-M` for a clustered index, a key, a rebuild, or `ALTER COLUMN`, on the table when it ends. Inside a transaction, that lock is held until the migration commits, so the table line names it with the work, and the finding is `info` whatever the table's size. The finding says to run the statement in a migration with `transactional=False`, or last in its migration. In a migration with `transactional=False`, the table line names `Sch-S`.
+An operation with `ONLINE = ON` takes `S` on the table when it starts, works with `Sch-S`, so reads and writes go on, and takes `S`, or `Sch-M` for a clustered index, a key, a rebuild, or `ALTER COLUMN`, on the table when it ends. The locks at the start and at the end wait for the open transactions that conflict with them, and new queries on the table wait behind them. Inside a transaction, the lock at the end is held until the migration commits, so the table line names it with the work, and the finding is `info` whatever the table's size. The finding says to run the statement in a migration with `transactional=False`, or last in its migration. In a migration with `transactional=False`, the table line names the lock at the end, blocking `ddl`, so the statement draws the `mssql.lock_timeout` finding and the live preflight checks the sessions it would wait behind. An `info` finding says what the lock waits for, and offers `WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 MINUTES, ABORT_AFTER_WAIT = SELF)` in the `ONLINE = ON` of `ALTER INDEX ... REBUILD` and `ALTER TABLE ... REBUILD` on 2014 and later and of `CREATE INDEX` on 2022 and later. SQL Server refuses it in `ADD CONSTRAINT` and `ALTER COLUMN`.
+
+A lock request with `WAIT_AT_LOW_PRIORITY` waits beside the lock queue, so later queries on the table go ahead of it. With `ABORT_AFTER_WAIT = SELF` or `BLOCKERS` it never joins the queue, and the statement draws no `mssql.lock_timeout` finding, inside a transaction or not; `SET LOCK_TIMEOUT` does not end a low-priority wait, and `MAX_DURATION` does. With `ABORT_AFTER_WAIT = NONE` the request joins the queue once `MAX_DURATION` has passed, and the finding stays. `ALTER TABLE ... SWITCH` with `WAIT_AT_LOW_PRIORITY` follows the same rules.
+
+`RESUMABLE = ON` fails inside a transaction, with error 574, and without `ONLINE = ON`, with error 11438. Either case gets a `danger` finding under `mssql.resumable`, and the first says to run the statement in a migration with `transactional=False`.
 
 ### Lock timeouts on SQL Server
 
@@ -800,7 +804,7 @@ A statement waiting for a lock queues every later lock request on the table that
 | --- | --- | --- | --- |
 | `ADD` a nullable column, with or without a default, or a computed column | `Sch-M` | catalog | `mssql.add_column` |
 | `ADD` a NOT NULL column with a runtime constant default, or a default `WITH VALUES` | `Sch-M` | catalog on the editions above, and rewrite on the others | `mssql.add_column.default` |
-| `ADD` a column with a per-row default such as `NEWID()`, an identity, or a `PERSISTED` computed column | `Sch-M` | rewrite | `mssql.add_column.rewrite` |
+| `ADD` a column with a per-row default such as `NEWID()`, an identity, a `PERSISTED` computed column, or a `rowversion` or `timestamp` column; and a NOT NULL column, or a default `WITH VALUES`, of a large value type, `xml`, `text`, `ntext`, `image`, `hierarchyid`, a spatial type, or `json`, on every edition. A type that is not a system type may be a CLR type, which writes every row too, so it is a rewrite with confidence `likely` | `Sch-M` | rewrite | `mssql.add_column.rewrite` |
 | `DROP COLUMN`, with a note that the space stays in each row until the table is rebuilt | `Sch-M` | catalog | `mssql.drop_column` |
 | `ALTER COLUMN` to a longer length of the same variable-length type, to the same type, or to NULL | `Sch-M` | catalog | `mssql.alter_column.metadata` |
 | `ALTER COLUMN ... NOT NULL` on a nullable column: a scan of a fixed-length column, and an update of every row of a variable-length one | `Sch-M` | scan or rewrite | `mssql.set_not_null` |
@@ -817,7 +821,7 @@ A statement waiting for a lock queues every later lock request on the table that
 | `DROP CONSTRAINT`: a rewrite into a heap for the key behind the clustered index | `Sch-M` | catalog or rewrite | `mssql.drop_constraint` |
 | `ADD DEFAULT ... FOR`, and the diff's default drop | `Sch-M` | catalog | `mssql.default` |
 | `CREATE INDEX` of a nonclustered index | `S` | index build | `mssql.create_index` |
-| `CREATE INDEX ... WITH (ONLINE = ON)` | `S` when it ends | index build | `mssql.create_index.online` |
+| `CREATE INDEX ... WITH (ONLINE = ON)` | `S` when it starts and when it ends | index build | `mssql.create_index.online` |
 | `CREATE CLUSTERED INDEX`, which copies a heap into the index | `Sch-M` | rewrite | `mssql.create_index.clustered` |
 | `DROP INDEX` | `Sch-M` | catalog | `mssql.drop_index` |
 | `DROP INDEX` of the clustered index, which copies the table into a heap | `Sch-M` | rewrite | `mssql.drop_index.clustered` |
@@ -832,6 +836,7 @@ A statement waiting for a lock queues every later lock request on the table that
 | `CREATE TABLE`, reported with each table its foreign keys reference; creating or dropping a view | `Sch-M` | catalog | `mssql.schema_change` |
 | `INSERT`, `UPDATE`, `DELETE` | `IX` | rows | `mssql.write_rows` |
 | `UPDATE` or `DELETE` of every row of a table of 5,000 rows or more | `X` | rows | `mssql.lock_escalation` |
+| `RESUMABLE = ON` inside a transaction or without `ONLINE = ON`, which SQL Server refuses, with a `danger` finding | the statement's lock | the statement's work | `mssql.resumable` |
 | `UPDATE STATISTICS` | `Sch-S` | scan | `mssql.update_statistics` |
 
 The rules read the column's current type and nullability from the intent the diff attaches, or from the schema read. Without either, an `ALTER COLUMN` is a rewrite with confidence `likely`, and the finding says the current type was not read. A change of precision or scale within one type is a rewrite with confidence `likely`, since the new values may fit the same storage.
@@ -844,12 +849,13 @@ The rules read the column's current type and nullability from the intent the dif
 | `ALTER INDEX ... REBUILD` | `WITH (ONLINE = ON (WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 MINUTES, ABORT_AFTER_WAIT = SELF)))` on 2014 and later, with `RESUMABLE = ON` in a migration with `transactional=False` on 2017 and later |
 | `ALTER COLUMN` that updates every row | The statement `WITH (ONLINE = ON)`, on 2016 and later |
 | `ALTER TABLE ... SWITCH` | `WITH (WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 MINUTES, ABORT_AFTER_WAIT = SELF))`, on 2014 and later |
+| An online `CREATE INDEX` on 2022 and later, or an online rebuild on 2014 and later, in a migration with `transactional=False` | `WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 MINUTES, ABORT_AFTER_WAIT = SELF)` inside its `ONLINE = ON` |
 | `ADD CONSTRAINT` of a CHECK or FOREIGN KEY | `WITH NOCHECK ADD CONSTRAINT`, with a note that the constraint stays untrusted, and the optimizer does not rely on it, until `WITH CHECK CHECK CONSTRAINT` checks every row later |
-| `ADD` a NOT NULL column that writes every row | Add the column as NULL without a default, backfill it in batches, then add the default and make it NOT NULL |
+| `ADD` a NOT NULL column that writes every row, or a default of a type that writes every row | Add the column as NULL without a default, backfill it in batches, then add the default and make it NOT NULL |
 
 A remedy that needs `ONLINE = ON` is left out on an edition that was read to lack it.
 
-The integration suite checks the rules against SQL Server 2022 and 2025, on the Developer edition, which has the Enterprise features, so the rules for the other editions are checked by the unit tests alone. It checks the facts `read_context()` reads. It creates the tables the rules' fixture statements name on a scratch database, runs each fixture inside a transaction between two reads of the locks granted to the session, the partitions of the tables it names, and the log the transaction has written, rolls it back, and fails on any `impact.mismatch`. It also runs a traced rehearsal of an index build and a size-of-data `ALTER COLUMN`, and checks the observed lock and work of each.
+The integration suite checks the rules against SQL Server 2022 and 2025, on the Developer edition, which has the Enterprise features, so the rules for the other editions are checked by the unit tests alone. It checks the facts `read_context()` reads. It creates the tables the rules' fixture statements name on a scratch database, runs each fixture inside a transaction between two reads of the locks granted to the session, the partitions of the tables it names, and the log the transaction has written, rolls it back, and fails on any `impact.mismatch`. The `mssql.resumable` fixtures must fail inside the transaction with error 574. It checks that an online `CREATE INDEX` outside a transaction behind an open write fails with error 1222 under `SET LOCK_TIMEOUT`, that one with `WAIT_AT_LOW_PRIORITY` lets a later write go ahead, and that the live preflight names a session in `master` whose transaction writes a table of the scratch database. It also runs a traced rehearsal of an index build and a size-of-data `ALTER COLUMN`, and checks the observed lock and work of each.
 
 ## SQLite
 
@@ -886,6 +892,7 @@ Every write blocks the same connections, so the work of a later statement blocks
 | --- | --- | --- |
 | `ADD COLUMN` | catalog | `sqlite.add_column` |
 | `ADD COLUMN` with a CHECK constraint, or a NOT NULL constraint on a generated column, which SQLite checks against every row | scan | `sqlite.add_column.checked` |
+| `ADD COLUMN` that SQLite refuses, with a `danger` finding: a UNIQUE or PRIMARY KEY column always, and on a table that has rows a NOT NULL column without a default other than NULL, a default in parentheses such as `(random())`, `CURRENT_TIME`, `CURRENT_DATE`, or `CURRENT_TIMESTAMP`, and a `STORED` generated column. A table the run created, or one read as empty, gets no finding, and one whose row count was not read gets it with confidence `likely`. The remedy is to rebuild the table with the new column | catalog | `sqlite.add_column.refused` |
 | `DROP COLUMN` | rewrite | `sqlite.drop_column` |
 | `RENAME COLUMN`, `RENAME TO`, with a note that running code naming the old name fails | catalog | `sqlite.rename` |
 | The diff's rebuild recipe, reported on the table it rebuilds | rewrite | `sqlite.rebuild` |
@@ -905,7 +912,7 @@ The diff changes a column's type or constraints on SQLite by rebuilding the tabl
 
 A statement the rules do not read, such as an `ALTER TABLE` action other than a column add, drop, or rename, is unknown.
 
-The integration suite checks each rule's fixtures on a WAL database file. Each fixture runs inside a transaction while a second connection tries to take the write lock and to read the database: the write must wait when the rules predict the write lock, and the read must go on. Each fixture then runs again with automatic checkpoints off, and the frames it leaves in the WAL count the pages it wrote. A statement the rules say rewrites a table or builds an index must write at least half as many pages as the table has, and one they say changes only the schema at most two.
+The integration suite checks each rule's fixtures on a WAL database file. The `sqlite.add_column.refused` fixtures must fail on the fixture table, which has rows. Each other fixture runs inside a transaction while a second connection tries to take the write lock and to read the database: the write must wait when the rules predict the write lock, and the read must go on. Each fixture then runs again with automatic checkpoints off, and the frames it leaves in the WAL count the pages it wrote. A statement the rules say rewrites a table or builds an index must write at least half as many pages as the table has, and one they say changes only the schema at most two.
 
 ## DuckDB
 
@@ -921,7 +928,8 @@ Each table line names the conflict the statement opens on the table, after the e
 | --- | --- | --- |
 | `altered table` | `ADD COLUMN`, `DROP COLUMN`, `SET DATA TYPE`, `SET NOT NULL` | `writes`. `INSERT`, `UPDATE`, `DELETE`, and schema changes on the table in other transactions abort, and a transaction that wrote to the table before the statement fails to commit. |
 | `changed rows` | `UPDATE`, `DELETE`, `TRUNCATE` | `writes`. Another transaction that updates the same columns of the same rows, or deletes the same rows, aborts. Other rows, and inserts, go on. |
-| `catalog entry` | a rename, `SET DEFAULT`, `DROP DEFAULT`, `DROP NOT NULL`, `COMMENT ON`, `DROP INDEX`, `DROP TABLE`, and a new table whose foreign key points at the table | `ddl`. Schema changes on the table in other transactions abort. Reads and writes go on. |
+| `dropped table` | `DROP TABLE` | `writes`. Schema changes on the table in other transactions abort, and a transaction that wrote to the table before the `DROP` fails to commit. Reads go on. |
+| `catalog entry` | a rename, `SET DEFAULT`, `DROP DEFAULT`, `DROP NOT NULL`, `COMMENT ON`, `DROP INDEX`, and a new table whose foreign key points at the table | `ddl`. Schema changes on the table in other transactions abort. Reads and writes go on. |
 | none | `CREATE INDEX`, `INSERT`, `ANALYZE`, and creating or dropping a view, a type, a sequence, or a schema | `nothing` |
 
 The finding for a statement that blocks writes says which transactions abort:
@@ -929,7 +937,7 @@ The finding for a statement that blocks writes says which transactions abort:
 ```console
 20260926_items  transaction
   ALTER TABLE items ADD COLUMN note varchar
-    items  altered table  blocks writes  catalog  transaction  ~2.0M rows  [duckdb.add_column]
+    items  altered table  blocks writes  rows  transaction  ~2.0M rows  [duckdb.add_column]
     info    until the migration commits, INSERT, UPDATE, DELETE, and schema changes on items in other transactions abort with a conflict error instead of waiting, and a transaction that wrote to items before it fails to commit; reads go on
   ALTER TABLE items ALTER COLUMN price SET DATA TYPE decimal(12, 2)
     items  altered table  blocks writes  rewrite  transaction  ~2.0M rows  [duckdb.alter_column_type]
@@ -944,7 +952,7 @@ A conflict works both ways. When another transaction changes the schema of a tab
 
 | Statement | Work | Rule |
 | --- | --- | --- |
-| `ADD COLUMN` with no default, a constant default, or a default such as `now()` that gives every row the same value | catalog | `duckdb.add_column` |
+| `ADD COLUMN` with no default, a constant default, or a default such as `now()` that gives every row the same value, which DuckDB fills in every row group, in time that grows with the rows | rows | `duckdb.add_column` |
 | `ADD COLUMN` with a volatile default, such as `random()` or `gen_random_uuid()`, which DuckDB writes for every row | rewrite | `duckdb.add_column.volatile` |
 | `DROP COLUMN` | catalog | `duckdb.drop_column` |
 | `SET DATA TYPE`, or `TYPE`, with or without `USING`, which writes every value of the column again | rewrite | `duckdb.alter_column_type` |
@@ -956,7 +964,7 @@ A conflict works both ways. When another transaction changes the schema of a tab
 | `COMMENT ON` | catalog | `duckdb.comment` |
 | `CREATE TABLE`, reported with each table its foreign keys reference | catalog | `duckdb.create_table` |
 | Creating or dropping a view, a type, a sequence, or a schema | catalog | `duckdb.schema_change` |
-| `DROP TABLE` | catalog | `duckdb.drop_table` |
+| `DROP TABLE`, which opens the `dropped table` conflict | catalog | `duckdb.drop_table` |
 | `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` | rows | `duckdb.write_rows` |
 | `ANALYZE` | scan | `duckdb.analyze` |
 
@@ -964,4 +972,4 @@ A rewrite on DuckDB writes one column again. The other columns keep their storag
 
 DuckDB refuses to alter a table that an index depends on, with a dependency error. The rules leave that to the rehearsal, which runs the statement. DuckDB also refuses a constraint on `ADD COLUMN`, a generated column on `ADD COLUMN`, and `ADD CONSTRAINT` and `DROP CONSTRAINT`; the analysis reads those, and any other statement the rules do not read, as unknown.
 
-The integration suite checks each rule's fixtures on a database file. Each fixture runs inside a transaction while a second connection to the same database reads the table, then inserts, updates, and deletes a row of it, and adds a column to it, each in a transaction of its own. The read must go on, and which of the others abort with a conflict must match what the rules say the statement blocks. Each fixture then runs again on its own between two checkpoints. The column segments `pragma_storage_info()` shows in blocks the table did not use before count the rows the statement wrote: a statement the rules say rewrites a column must write every row of a column again, and one they say changes only the catalog, or scans, must write none and leave `pragma_database_size()` with no more used blocks. An index build must write no column and take more blocks.
+The integration suite checks each rule's fixtures on a database file. Each fixture runs inside a transaction while a second connection to the same database reads the table, then inserts, updates, and deletes a row of it, and adds a column to it, each in a transaction of its own. The read must go on, and which of the others abort with a conflict must match what the rules say the statement blocks. On a fresh database for each write, a second connection's open transaction also inserts, updates, or deletes a row first, and the fixture then runs and commits; a fixture that aborts, or a commit of the other transaction that fails, counts as blocking writes. Each fixture then runs again on its own between two checkpoints. The column segments `pragma_storage_info()` shows in blocks the table did not use before count the rows the statement wrote: a statement the rules say rewrites a column must write every row of a column again, and one they say changes only the catalog, or scans, must write none and leave `pragma_database_size()` with no more used blocks. An index build must write no column and take more blocks.

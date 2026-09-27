@@ -71,17 +71,17 @@ class StatementTestCase(unittest.TestCase):
             duckdb.CHANGED_ROWS,
         )
         cases = [
-            ("ALTER TABLE t ADD COLUMN d integer", altered, Work.CATALOG, "add_column"),
+            ("ALTER TABLE t ADD COLUMN d integer", altered, Work.ROWS, "add_column"),
             (
                 "ALTER TABLE t ADD COLUMN d integer DEFAULT 5",
                 altered,
-                Work.CATALOG,
+                Work.ROWS,
                 "add_column",
             ),
             (
                 "ALTER TABLE t ADD COLUMN d timestamp DEFAULT now()",
                 altered,
-                Work.CATALOG,
+                Work.ROWS,
                 "add_column",
             ),
             (
@@ -125,7 +125,7 @@ class StatementTestCase(unittest.TestCase):
             ("ALTER TABLE t RENAME TO u", entry, Work.CATALOG, "rename"),
             ("CREATE INDEX ix ON t (c)", None, Work.INDEX_BUILD, "create_index"),
             ("COMMENT ON COLUMN t.c IS 'x'", entry, Work.CATALOG, "comment"),
-            ("DROP TABLE t", entry, Work.CATALOG, "drop_table"),
+            ("DROP TABLE t", duckdb.DROPPED_TABLE, Work.CATALOG, "drop_table"),
             ("UPDATE t SET c = 1", changed, Work.ROWS, "write_rows"),
             ("DELETE FROM t", changed, Work.ROWS, "write_rows"),
             ("TRUNCATE t", changed, Work.ROWS, "write_rows"),
@@ -153,7 +153,9 @@ class StatementTestCase(unittest.TestCase):
         self.assertIn("until it ends", outside.findings[0].message)
 
     def test_the_message_says_other_transactions_abort(self):
-        (finding,) = impact("ALTER TABLE t ADD COLUMN d integer").findings
+        (finding,) = impact(
+            "ALTER TABLE t ADD COLUMN d integer", context(t=100)
+        ).findings
         self.assertEqual(str(finding.severity), "info")
         self.assertIn("abort with a conflict error instead of waiting", finding.message)
         self.assertIn("until the migration commits", finding.message)
@@ -163,6 +165,11 @@ class StatementTestCase(unittest.TestCase):
         self.assertIn("backfill in batches", update.message)
         (delete,) = impact("DELETE FROM t").findings
         self.assertIn("deletes the same rows", delete.message)
+        self.assertIn("delete in batches", delete.message)
+        self.assertNotIn("backfill", delete.message)
+        (drop,) = impact("DROP TABLE t").findings
+        self.assertIn("wrote to t before the DROP fails to commit", drop.message)
+        self.assertIn("reads go on", drop.message)
         (truncate,) = impact("TRUNCATE t").findings
         self.assertIn("deletes a row of t", truncate.message)
         self.assertNotIn("backfill", truncate.message)

@@ -6,7 +6,10 @@ runs twice on a fresh database file holding the fixture schema:
 - inside a transaction, while a second connection to the same database
   reads the table, then inserts, updates, and deletes a row of it, and
   adds a column to it, each in a transaction of its own, which shows
-  which of those abort with a conflict and that none of them wait
+  which of those abort with a conflict and that none of them wait; and,
+  on a fresh database for each write, after a second connection's open
+  transaction has written a row, which shows whether that transaction
+  fails to commit
 - on its own, between two checkpoints, so the column segments that
   `pragma_storage_info()` places in blocks the table did not use before
   count the rows the statement wrote, and `pragma_database_size()`
@@ -87,7 +90,10 @@ class DuckdbImpactCase(unittest.TestCase):
                 reached |= {f.rule for f in predicted.findings}
                 self.assertIn(rule.id, reached)
                 table, blocks = self.watched(predicted, context)
-                self.assertEqual(self.conflicts(connection, fixture, table), blocks)
+                found = self.conflicts(connection, fixture, table)
+                if self.written_first(f"fixture{number}", fixture, table):
+                    found = Blocks.WRITES
+                self.assertEqual(found, blocks)
                 work = max(t.work for t in predicted.tables)
                 fresh = self.database(f"fixture{number}_alone")
                 self.check_writes(fresh, fixture, table, work)
@@ -133,6 +139,41 @@ class DuckdbImpactCase(unittest.TestCase):
         if any(aborted[:3]):
             return Blocks.WRITES
         return Blocks.DDL if aborted[3] else Blocks.NOTHING
+
+    def written_first(self, name, fixture, table):
+        """
+        Whether a second connection's transaction that wrote to the
+        table before the fixture ran conflicts with it: the fixture, or
+        its commit, aborts, or the other transaction fails to commit.
+        Each write runs on a fresh database, since the fixture commits.
+        """
+        writes = [
+            f"INSERT INTO {table} (id) VALUES (900001)",
+            f"UPDATE {table} SET {UPDATED.get(table, 'id')} = "
+            f"{UPDATED.get(table, 'id')} WHERE id = 1",
+            f"DELETE FROM {table} WHERE id = 1",
+        ]
+        conflicted = False
+        for number, sql in enumerate(writes):
+            connection = self.database(f"{name}_first{number}")
+            other = connection.cursor()
+            other.execute("BEGIN")
+            other.execute(sql)
+            connection.execute("BEGIN")
+            try:
+                connection.execute(fixture)
+                connection.execute("COMMIT")
+            except self.duckdb.Error as error:
+                self.assertIsInstance(error, self.duckdb.TransactionException)
+                connection.execute("ROLLBACK")
+                conflicted = True
+            try:
+                other.execute("COMMIT")
+            except self.duckdb.Error as error:
+                self.assertIsInstance(error, self.duckdb.TransactionException)
+                conflicted = True
+            other.close()
+        return conflicted
 
     def aborts(self, other, sql):
         """

@@ -107,7 +107,16 @@ def _odbc_string(piece, database):
     )
 
 
-def _connect_mssql(name, database=None):
+def connect_mssql(name, database=None, autocommit=False):
+    """
+    A connection to the named SQL Server's database, the scratch
+    database by default, in autocommit when asked.
+    """
+    scratch = os.environ.get("SUSTAINED_TEST_SCRATCH_DB", "sustained_scratch")
+    return _connect_mssql(name, database or scratch, autocommit)
+
+
+def _connect_mssql(name, database=None, autocommit=False):
     piece = parts(dsn(name))
     pyodbc = driver(name)
     wanted = database or piece.database
@@ -120,7 +129,7 @@ def _connect_mssql(name, database=None):
         )
     finally:
         bootstrap.close()
-    return pyodbc.connect(_odbc_string(piece, wanted))
+    return pyodbc.connect(_odbc_string(piece, wanted), autocommit=autocommit)
 
 
 def _connect_sqlite(name):

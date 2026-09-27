@@ -12,7 +12,8 @@ runs twice on a fresh WAL database holding the fixture schema:
 A statement the rules say copies a table or builds an index must write
 at least half as many pages as the table holds, and one they say
 changes only the schema at most two. A scan or a row write may write
-any number, so its page count proves nothing.
+any number, so its page count proves nothing. A fixture SQLite refuses
+must raise the error its rule predicts.
 """
 
 import os
@@ -22,13 +23,22 @@ import tempfile
 import unittest
 
 from sustained.dialects import Dialects
-from sustained.impact import Blocks, Work, analyze, read_context
+from sustained.impact import Blocks, Severity, Work, analyze, read_context
 from sustained.impact.rules import profile_for
 from sustained.impact.window import DATABASE
 
 # The most pages a schema change writes: the schema page, and the
 # database header when the change adds a page.
 CATALOG_PAGES = 2
+
+# The fixtures SQLite refuses on a table that has rows. Their rule
+# predicts the refusal, so they take no lock and write no page.
+REFUSED = frozenset(
+    {
+        "ALTER TABLE t ADD COLUMN z integer NOT NULL",
+        "ALTER TABLE t ADD COLUMN z integer DEFAULT (random())",
+    }
+)
 
 
 class SqliteImpactCase(unittest.TestCase):
@@ -79,6 +89,17 @@ class SqliteImpactCase(unittest.TestCase):
                 reached = {t.rule for t in predicted.tables}
                 reached |= {f.rule for f in predicted.findings}
                 self.assertIn(rule.id, reached)
+                if fixture in REFUSED:
+                    # t has rows, so SQLite refuses the column.
+                    dangers = [
+                        f.rule
+                        for f in predicted.findings
+                        if f.severity is Severity.DANGER
+                    ]
+                    self.assertIn(rule.id, dangers)
+                    with self.assertRaises(sqlite3.OperationalError):
+                        connection.execute(fixture)
+                    continue
                 blocks = max((t.blocks for t in predicted.tables), default=None)
                 if fixture != "VACUUM":
                     # VACUUM refuses to run inside a transaction.

@@ -42,6 +42,9 @@ ADD_COLUMN_REWRITE = Rule(
         "ALTER TABLE t ADD d uniqueidentifier NOT NULL DEFAULT NEWID()",
         "ALTER TABLE t ADD d int IDENTITY",
         "ALTER TABLE t ADD d AS (c * 2) PERSISTED",
+        "ALTER TABLE t ADD d nvarchar(max) NOT NULL DEFAULT N'x'",
+        "ALTER TABLE t ADD d xml NOT NULL DEFAULT N'<a/>'",
+        "ALTER TABLE t ADD d rowversion",
     ),
 )
 DROP_COLUMN = Rule(
@@ -263,7 +266,15 @@ WRITE_ROWS = Rule(
 LOCK_ESCALATION = Rule(
     "mssql.lock_escalation",
     _LOCKING + "#lock-escalation",
-    ("UPDATE t SET name = N'x'", "DELETE FROM t"),
+    ("UPDATE t SET name = N'x'", "DELETE FROM t", "INSERT INTO h SELECT id, c FROM t"),
+)
+RESUMABLE = Rule(
+    "mssql.resumable",
+    DOCS + "relational-databases/indexes/guidelines-for-online-index-operations",
+    (
+        "CREATE INDEX ix2 ON t (name) WITH (ONLINE = ON, RESUMABLE = ON)",
+        "ALTER INDEX ix ON t REBUILD WITH (ONLINE = ON, RESUMABLE = ON)",
+    ),
 )
 UPDATE_STATISTICS = Rule(
     "mssql.update_statistics",
@@ -307,6 +318,7 @@ RULES = (
     SCHEMA_CHANGE,
     WRITE_ROWS,
     LOCK_ESCALATION,
+    RESUMABLE,
     UPDATE_STATISTICS,
     ONLINE_EDITION,
 )

@@ -21,6 +21,7 @@ from sustained.impact.rules.mssql.catalog import (
     REBUILD,
     RENAME,
     REORGANIZE,
+    RESUMABLE,
     SCHEMA_CHANGE,
     TRIGGER,
     TRUNCATE,
@@ -29,11 +30,13 @@ from sustained.impact.rules.mssql.catalog import (
 )
 from sustained.impact.rules.mssql.facts import (
     ESCALATION_LOCKS,
+    LOW_PRIORITY,
     escalation,
     exclusive_blocks,
     is_online,
     online_effect,
     online_findings,
+    resumable_findings,
     with_options,
 )
 from sustained.impact.rules.mssql.locks import IX, SCH_M, SCH_S, S, X, enterprise
@@ -71,10 +74,13 @@ def _create_index(facts: Facts) -> Outcome:
     rule = CREATE_CLUSTERED_INDEX if clustered else CREATE_INDEX
     lock = SCH_M if clustered else S
     work = Work.REWRITE if clustered else Work.INDEX_BUILD
+    refused = resumable_findings(facts, RESUMABLE, options)
     if is_online(options):
         online_rule = CREATE_CLUSTERED_INDEX if clustered else CREATE_INDEX_ONLINE
-        effect = online_effect(facts, online_rule, table, lock, work, "the index build")
-        return Outcome((effect,), online_findings(facts, online_rule))
+        effect = online_effect(
+            facts, online_rule, table, lock, work, "the index build", options, (16,)
+        )
+        return Outcome((effect,), online_findings(facts, online_rule) + refused)
     who = "reads and writes on" if clustered else "writes to"
     message = f"{who} {table} wait for the whole index build"
     remedy = _online_remedy(
@@ -82,7 +88,9 @@ def _create_index(facts: Facts) -> Outcome:
         facts.statement,
         not facts.transactional and facts.context.version >= (15,),
     )
-    return Outcome((Effect(rule, table, lock, work, message=message, remedy=remedy),))
+    return Outcome(
+        (Effect(rule, table, lock, work, message=message, remedy=remedy),), refused
+    )
 
 
 def _drop_index(facts: Facts) -> Outcome:
@@ -152,24 +160,25 @@ def _rebuild_index(facts: Facts, table: str, copies: bool) -> Outcome:
     """
     work = Work.REWRITE if copies else Work.INDEX_BUILD
     options = facts.parsed.options
+    refused = resumable_findings(facts, RESUMABLE, options)
     if is_online(options):
-        effect = online_effect(facts, REBUILD, table, SCH_M, work, "the rebuild")
-        return Outcome((effect,), online_findings(facts, REBUILD))
+        effect = online_effect(
+            facts, REBUILD, table, SCH_M, work, "the rebuild", options, (12,)
+        )
+        return Outcome((effect,), online_findings(facts, REBUILD) + refused)
     remedy: Tuple[str, ...] = ()
     if enterprise(facts.context) is not False:
         online = "ONLINE = ON"
         if facts.context.version >= (12,):
-            online += (
-                " (WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 MINUTES, "
-                "ABORT_AFTER_WAIT = SELF))"
-            )
+            online += f" ({LOW_PRIORITY})"
         if not facts.transactional and facts.context.version >= (14,):
             online += ", RESUMABLE = ON"
         if not with_options(options):
             remedy = (f"{facts.statement} WITH ({online})",)
     message = f"reads and writes on {table} wait for the whole rebuild"
     return Outcome(
-        (Effect(REBUILD, table, SCH_M, work, message=message, remedy=remedy),)
+        (Effect(REBUILD, table, SCH_M, work, message=message, remedy=remedy),),
+        refused,
     )
 
 
@@ -278,8 +287,11 @@ def _write_rows(facts: Facts) -> Outcome:
     A write takes IX on the table and X on each row it changes, which
     blocks writes to those rows, and reads of them too unless the
     database reads committed rows from row versions. Once one statement
-    has 5,000 locks on the table, SQL Server escalates them to X on the
-    whole table.
+    has 5,000 locks on the table, SQL Server tries to escalate them to X
+    on the whole table. An INSERT ... SELECT inserts rows the recognizer
+    does not count, so it gets the escalation note; one of 6,000 rows was
+    observed to keep IX on SQL Server 2022 and 2025, and one of 6,500 rows
+    to escalate.
     """
     table = common.table(facts)
     blocked = exclusive_blocks(facts)
@@ -311,7 +323,18 @@ def _write_rows(facts: Facts) -> Outcome:
                 )
             )
     notes: Tuple[Finding, ...] = ()
-    if not options.get("limited") and facts.parsed.kind != "insert":
+    if facts.parsed.kind == "insert":
+        if options.get("source") == "select":
+            notes = (
+                Finding(
+                    LOCK_ESCALATION.id,
+                    Severity.INFO,
+                    f"an INSERT ... SELECT that inserts more than {ESCALATION_LOCKS:,} "
+                    f"rows can escalate its locks to X on the whole of {table}",
+                    source=LOCK_ESCALATION.source,
+                ),
+            )
+    elif not options.get("limited"):
         notes = (
             Finding(
                 LOCK_ESCALATION.id,

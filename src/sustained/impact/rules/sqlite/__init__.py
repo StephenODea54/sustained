@@ -23,7 +23,11 @@ Each statement's work:
 
 - `ADD COLUMN` changes only the schema, unless the column has a CHECK
   constraint, or a NOT NULL constraint on a generated column, which
-  SQLite checks against every row (`scan`)
+  SQLite checks against every row (`scan`). SQLite refuses a UNIQUE or
+  PRIMARY KEY column, and on a table that has rows a NOT NULL column
+  without a default other than NULL, a default in parentheses or of the
+  current time, and a STORED generated column; each gets a `danger`
+  finding
 - `DROP COLUMN` rewrites every row (`rewrite`)
 - the diff's rebuild recipe, known by its `rebuild_table` intent,
   copies every row into a new table and builds its indexes again
@@ -44,7 +48,8 @@ has run, its bytes with its indexes from the `dbstat` virtual table,
 when SQLite was built with it, and the database file's size from
 `PRAGMA page_count` and `page_size`. It counts rows only with
 `exact_counts`, and then only in the tables `sqlite_stat1` has no row
-count for.
+count for. Both reads leave out the tables whose names start with
+`sqlite_`, which SQLite keeps for itself.
 """
 
 from __future__ import annotations

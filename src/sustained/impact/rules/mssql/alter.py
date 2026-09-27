@@ -10,7 +10,7 @@ differs between actions is the work done under that lock.
 from __future__ import annotations
 
 import re
-from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, List, Mapping, NamedTuple, Optional, Tuple
 
 from sustained.impact.model import Action, Confidence, Finding, Severity, Work
 from sustained.impact.rules import Effect, Facts, Outcome, Rule, common
@@ -34,15 +34,19 @@ from sustained.impact.rules.mssql.catalog import (
     DROP_CONSTRAINT,
     REBUILD,
     RENAME,
+    RESUMABLE,
     SET_NOT_NULL,
     SWITCH,
     TRIGGER,
 )
 from sustained.impact.rules.mssql.facts import (
     ENTERPRISE_EDITIONS,
+    LOW_PRIORITY,
     is_online,
     online_effect,
     online_findings,
+    queues,
+    resumable_findings,
     unread_type,
     with_options,
 )
@@ -51,6 +55,64 @@ from sustained.impact.rules.mssql.locks import SCH_M, enterprise
 # The types whose values vary in length, where a longer declared length
 # changes only the catalog.
 _VARIABLE = frozenset({"varchar", "nvarchar", "varbinary"})
+
+# The types whose default ADD COLUMN writes into every row on every
+# edition, as the large value types (max) do.
+_WRITTEN = frozenset(
+    {"xml", "text", "ntext", "image", "hierarchyid", "geography", "geometry", "json"}
+)
+
+# The types a rowversion column spells, whose value SQL Server writes
+# into every row whether or not the column has a default.
+_ROWVERSION = frozenset({"rowversion", "timestamp"})
+
+# The system type names, with the synonyms the grammar takes. Any other
+# name is an alias type or a CLR type, which the schema read does not
+# tell apart.
+_SYSTEM = (
+    frozenset(
+        {
+            "bigint",
+            "int",
+            "integer",
+            "smallint",
+            "tinyint",
+            "bit",
+            "decimal",
+            "dec",
+            "numeric",
+            "money",
+            "smallmoney",
+            "float",
+            "real",
+            "double precision",
+            "date",
+            "time",
+            "datetime",
+            "datetime2",
+            "datetimeoffset",
+            "smalldatetime",
+            "char",
+            "character",
+            "nchar",
+            "national char",
+            "national character",
+            "char varying",
+            "character varying",
+            "national char varying",
+            "national character varying",
+            "binary",
+            "binary varying",
+            "uniqueidentifier",
+            "sql_variant",
+            "sysname",
+            "vector",
+        }
+    )
+    | _VARIABLE
+    | _WRITTEN
+    | _ROWVERSION
+)
 
 ActionHandler = Callable[[Facts, Action], Outcome]
 
@@ -112,12 +174,43 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
         )
     if generated:
         return Outcome((_effect(ADD_COLUMN, table, Work.CATALOG),))
+    kind = column_type(str(options.get("type", "")))
+    if kind.base in _ROWVERSION:
+        return Outcome(
+            (
+                _effect(
+                    ADD_COLUMN_REWRITE,
+                    table,
+                    Work.REWRITE,
+                    message=f"adding a {kind.base} column writes a value into every "
+                    f"row of {table}",
+                ),
+            )
+        )
     default = options.get("default")
     fills = default is not None and (
         options.get("not_null") or options.get("with_values")
     )
     if not fills:
         return Outcome((_effect(ADD_COLUMN, table, Work.CATALOG),))
+    written = _written(options.get("type"), table)
+    if written is not None:
+        message, confidence = written
+        return Outcome(
+            (
+                _effect(
+                    ADD_COLUMN_REWRITE,
+                    table,
+                    Work.REWRITE,
+                    confidence,
+                    message=message,
+                    remedy=(
+                        f"add the column as NULL without a default, backfill {table} "
+                        "in batches, then make it NOT NULL",
+                    ),
+                ),
+            )
+        )
     if options.get("default_volatility") == "volatile":
         function = options.get("default_function")
         gives = (
@@ -178,6 +271,37 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
             ),
         )
     )
+
+
+def _written(text: object, table: str) -> Optional[Tuple[str, Confidence]]:
+    """
+    The message and confidence for a default that ADD COLUMN writes into
+    every row on every edition because of the column's type: a large
+    value type, xml, a spatial type, hierarchyid, json, the deprecated
+    text, ntext, and image, and a CLR type. A type name that is not a
+    system type may be a CLR type, and so may a type that was not read.
+    None for a system type whose default can change only the catalog.
+    """
+    if not text:
+        return (
+            f"a default is written into every row of {table} when the column's "
+            "type is a large value type or a CLR type; the type was not read",
+            Confidence.LIKELY,
+        )
+    kind = column_type(str(text))
+    if kind.base in _WRITTEN or (kind.base in _VARIABLE and kind.length == -1):
+        return (
+            f"a default of type {text} is written into every row of {table}, on "
+            "every edition",
+            Confidence.KNOWN,
+        )
+    if kind.base not in _SYSTEM:
+        return (
+            f"a default of type {text} is written into every row of {table} when "
+            f"{text} is a CLR type, which was not read",
+            Confidence.LIKELY,
+        )
+    return None
 
 
 def _drop_column(facts: Facts, action: Action) -> Outcome:
@@ -247,7 +371,7 @@ def _alter_column(facts: Facts, action: Action) -> Outcome:
         if note:
             message += f"; {note}"
     if is_online(action.options):
-        return _online_column(facts, table, work, confidence, message)
+        return _online_column(facts, table, work, confidence, message, action.options)
     remedy: Tuple[str, ...] = ()
     if work is Work.REWRITE and enterprise(facts.context) is not False:
         if facts.context.version >= (13,):
@@ -305,6 +429,7 @@ def _online_column(
     work: Work,
     confidence: Confidence,
     message: Optional[str],
+    options: Mapping[str, object],
 ) -> Outcome:
     findings = online_findings(facts, ALTER_COLUMN_ONLINE)
     if not ALTER_COLUMN_ONLINE.versions(facts.context.version):
@@ -320,7 +445,7 @@ def _online_column(
     # The online form builds the table again beside the old one.
     work = Work.REWRITE if work > Work.CATALOG else Work.CATALOG
     effect = online_effect(
-        facts, ALTER_COLUMN_ONLINE, table, SCH_M, work, "ALTER COLUMN"
+        facts, ALTER_COLUMN_ONLINE, table, SCH_M, work, "ALTER COLUMN", options
     )
     return Outcome((effect._replace(confidence=confidence),), findings)
 
@@ -417,19 +542,22 @@ def _add_key(facts: Facts, table: str, action: Action) -> Outcome:
             confidence = Confidence.LIKELY
         clustered = stats.heap is not False
     work = Work.REWRITE if clustered else Work.INDEX_BUILD
+    refused = resumable_findings(facts, RESUMABLE, options)
     if is_online(options):
         what = "the key's index build"
-        effect = online_effect(facts, ADD_KEY_ONLINE, table, SCH_M, work, what)
+        effect = online_effect(facts, ADD_KEY_ONLINE, table, SCH_M, work, what, options)
         return Outcome(
             (effect._replace(confidence=confidence),),
-            online_findings(facts, ADD_KEY_ONLINE),
+            online_findings(facts, ADD_KEY_ONLINE) + refused,
         )
     remedy: Tuple[str, ...] = ()
     if enterprise(facts.context) is not False:
         remedy = (f"{facts.statement} WITH (ONLINE = ON)",)
     verb = "copies every row of" if clustered else "builds an index over"
     message = f"reads and writes on {table} wait while the key {verb} {table}"
-    return Outcome((_effect(ADD_KEY, table, work, confidence, message, remedy),))
+    return Outcome(
+        (_effect(ADD_KEY, table, work, confidence, message, remedy),), refused
+    )
 
 
 def _drop_constraint(facts: Facts, action: Action) -> Outcome:
@@ -523,7 +651,9 @@ def _rename(facts: Facts, action: Action) -> Outcome:
 def _rebuild(facts: Facts, action: Action) -> Outcome:
     table = common.table(facts)
     if is_online(action.options):
-        effect = online_effect(facts, REBUILD, table, SCH_M, Work.REWRITE, "REBUILD")
+        effect = online_effect(
+            facts, REBUILD, table, SCH_M, Work.REWRITE, "REBUILD", action.options, (12,)
+        )
         return Outcome((effect,), online_findings(facts, REBUILD))
     remedy: Tuple[str, ...] = ()
     if enterprise(facts.context) is not False:
@@ -540,12 +670,13 @@ def _switch(facts: Facts, action: Action) -> Outcome:
     remedy: Tuple[str, ...] = ()
     options = with_options(action.options)
     if "WAIT_AT_LOW_PRIORITY" not in options and facts.context.version >= (12,):
-        remedy = (
-            f"{facts.statement} WITH (WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 "
-            "MINUTES, ABORT_AFTER_WAIT = SELF))",
-        )
-    effect = _effect(SWITCH, table, Work.CATALOG, remedy=remedy)
-    return Outcome((effect, _effect(SWITCH, target, Work.CATALOG)))
+        remedy = (f"{facts.statement} WITH ({LOW_PRIORITY})",)
+    # With WAIT_AT_LOW_PRIORITY and ABORT_AFTER_WAIT = SELF or BLOCKERS,
+    # other sessions do not queue behind the SWITCH.
+    waits = queues(action.options)
+    effect = _effect(SWITCH, table, Work.CATALOG, remedy=remedy)._replace(waits=waits)
+    other = _effect(SWITCH, target, Work.CATALOG)._replace(waits=waits)
+    return Outcome((effect, other))
 
 
 def _trigger_state(facts: Facts, action: Action) -> Outcome:

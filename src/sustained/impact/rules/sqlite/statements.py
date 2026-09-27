@@ -5,7 +5,7 @@ write takes.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from sustained.impact.model import (
     Action,
@@ -19,6 +19,7 @@ from sustained.impact.rules import Effect, Facts, Outcome, Rule, common
 from sustained.impact.rules.sqlite.catalog import (
     ADD_COLUMN,
     ADD_COLUMN_CHECKED,
+    ADD_COLUMN_REFUSED,
     ANALYZE,
     COPY,
     CREATE_INDEX,
@@ -153,14 +154,83 @@ def _action(facts: Facts, action: Action) -> Optional[Effect]:
     return None
 
 
+# The defaults SQLite takes as not constant, which ADD COLUMN refuses on
+# a table that has rows.
+_TIME_DEFAULTS = frozenset({"CURRENT_TIME", "CURRENT_DATE", "CURRENT_TIMESTAMP"})
+
+
+def _refused(
+    facts: Facts, options: Mapping[str, object]
+) -> Optional[Tuple[Finding, Confidence]]:
+    """
+    The `danger` finding for a column ADD COLUMN refuses. A UNIQUE or
+    PRIMARY KEY column is refused always. A NOT NULL column whose
+    default is missing or NULL, a default in parentheses or of the
+    current time, and a STORED generated column are refused when the
+    table has rows, so a table the run created, or one read as empty,
+    gets no finding, and one whose row count was not read makes the
+    statement's confidence `likely`.
+    """
+    table = common.table(facts)
+    remedy = (
+        f"rebuild {table} with the new column: create the new table, copy the "
+        f"rows into it, drop {table}, and rename the new table to {table}",
+    )
+    if options.get("unique") or options.get("primary_key"):
+        refusal = Finding(
+            ADD_COLUMN_REFUSED.id,
+            Severity.DANGER,
+            "SQLite refuses to add a UNIQUE or PRIMARY KEY column, so the "
+            "migration fails",
+            remedy,
+            ADD_COLUMN_REFUSED.source,
+        )
+        return refusal, Confidence.KNOWN
+    default = options.get("default")
+    text = str(default).strip().upper() if default is not None else None
+    if options.get("not_null") and text in (None, "NULL"):
+        what = "a NOT NULL column without a default other than NULL"
+    elif text is not None and (text.startswith("(") or text in _TIME_DEFAULTS):
+        what = "a column whose default is an expression or the current time"
+    elif options.get("generated") == "stored":
+        what = "a STORED generated column"
+    else:
+        return None
+    rows = facts.context.stats(table).rows
+    if facts.state.is_new(table) or rows == 0:
+        return None
+    if rows is None:
+        confidence = Confidence.LIKELY
+        has = f"unless {table} is empty; its row count was not read"
+    else:
+        confidence = Confidence.KNOWN
+        has = f"and {table} has {rows:,}"
+    refusal = Finding(
+        ADD_COLUMN_REFUSED.id,
+        Severity.DANGER,
+        f"SQLite refuses to add {what} to a table that has rows, so the migration "
+        f"fails, {has}",
+        remedy,
+        ADD_COLUMN_REFUSED.source,
+    )
+    return refusal, confidence
+
+
 def _alter_table(facts: Facts) -> Outcome:
     effects: List[Effect] = []
+    findings: List[Finding] = []
     for action in facts.parsed.actions:
         effect = _action(facts, action)
         if effect is None:
             return common.unknown(facts, f"the ALTER TABLE action {action.kind}")
+        if action.kind == "add_column":
+            refused = _refused(facts, action.options)
+            if refused is not None:
+                refusal, confidence = refused
+                findings.append(refusal)
+                effect = effect._replace(confidence=confidence)
         effects.append(effect)
-    return Outcome(tuple(effects))
+    return Outcome(tuple(effects), tuple(findings))
 
 
 def _rebuilt(facts: Facts) -> Optional[str]:

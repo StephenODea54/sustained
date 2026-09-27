@@ -13,11 +13,20 @@ Enterprise features, so the rules for the other editions are checked by
 the unit tests alone.
 """
 
+import threading
 import unittest
 
+from sustained.analysis import MigrationStatement
 from sustained.dialects import Dialects
 from sustained.exceptions import PreflightBlocked
-from sustained.impact import Evidence, Work, analyze, preflight, read_context
+from sustained.impact import (
+    Evidence,
+    Severity,
+    Work,
+    analyze,
+    preflight,
+    read_context,
+)
 from sustained.impact.rules import profile_for
 from sustained.impact.rules.mssql.trace import observe, sighting_plan, tables_plan
 from sustained.introspect.runner import run_plan
@@ -42,6 +51,18 @@ FIXTURE_OBJECTS = (
 )
 
 TABLES = ("it_impact_orders", "it_impact_migrations", "it_impact_rehearsals")
+
+# The fixtures the server refuses inside the fixture's transaction, with
+# the error number it raises. Their rule predicts the refusal.
+REFUSED = {
+    "CREATE INDEX ix2 ON t (name) WITH (ONLINE = ON, RESUMABLE = ON)": 574,
+    "ALTER INDEX ix ON t REBUILD WITH (ONLINE = ON, RESUMABLE = ON)": 574,
+}
+
+# How long each session of a two-session test waits for a lock, in
+# milliseconds, and for a query, in seconds.
+LOCK_WAIT = 2000
+QUERY_WAIT = 30
 
 
 class MssqlImpactCase(unittest.TestCase):
@@ -193,6 +214,9 @@ class MssqlImpactCase(unittest.TestCase):
         fixtures = [(rule, f) for rule in profile.rules for f in rule.fixtures]
         for rule, fixture in fixtures:
             with self.subTest(rule=rule.id, fixture=fixture):
+                if fixture in REFUSED:
+                    self.assert_refused(fixture, REFUSED[fixture], rule, context)
+                    continue
                 statement = self.observe_fixture(fixture, context, profile)
                 self.assertIs(statement.evidence, Evidence.OBSERVED)
                 reached = {t.rule for t in statement.tables}
@@ -202,6 +226,123 @@ class MssqlImpactCase(unittest.TestCase):
                     f.message for f in statement.findings if f.rule == "impact.mismatch"
                 ]
                 self.assertEqual(mismatches, [])
+
+    def assert_refused(self, fixture, error, rule, context):
+        """
+        The server raises the error inside a transaction, and the rule
+        predicts it with a `danger` finding.
+        """
+        (predicted,) = analyze([fixture], self.DIALECT, context).statements
+        dangers = [f.rule for f in predicted.findings if f.severity is Severity.DANGER]
+        self.assertIn(rule.id, dangers)
+        pyodbc = harness.driver(self.NAME)
+        try:
+            with self.assertRaises(pyodbc.Error) as raised:
+                self.connection.cursor().execute(fixture)
+        finally:
+            self.connection.rollback()
+        self.assertIn(f"({error})", str(raised.exception))
+
+    def session(self, database=None, autocommit=False):
+        """
+        Another connection to the server, which waits LOCK_WAIT for a
+        lock and QUERY_WAIT for a query, and its session id. It is rolled
+        back and closed when the test ends.
+        """
+        other = harness.connect_mssql(self.NAME, database, autocommit)
+        other.timeout = QUERY_WAIT
+        self.addCleanup(other.close)
+        if not autocommit:
+            self.addCleanup(other.rollback)
+        cursor = other.cursor()
+        cursor.execute(f"SET LOCK_TIMEOUT {LOCK_WAIT}")
+        cursor.execute("SELECT @@SPID")
+        ((identifier,),) = cursor.fetchall()
+        return other, identifier
+
+    def writer(self):
+        """A session with an open transaction that has updated order 1."""
+        other, _ = self.session()
+        other.cursor().execute("UPDATE it_impact_orders SET note = 'w' WHERE id = 1")
+        return other
+
+    def run_aside(self, connection, sql):
+        """
+        Runs the statement on the connection in a thread, and returns the
+        thread and a list that receives the error it raised, if any.
+        """
+        errors = []
+
+        def run():
+            try:
+                connection.cursor().execute(sql)
+            except Exception as error:  # noqa: BLE001 - the test reads it
+                errors.append(error)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread, errors
+
+    def test_an_online_build_outside_a_transaction_waits_behind_a_writer(self):
+        self.orders()
+        self.writer()
+        index = (
+            "CREATE INDEX it_impact_note ON it_impact_orders (note) WITH (ONLINE = ON)"
+        )
+        builder, _ = self.session(autocommit=True)
+        pyodbc = harness.driver(self.NAME)
+        with self.assertRaises(pyodbc.Error) as raised:
+            builder.cursor().execute(index)
+        self.assertIn("(1222)", str(raised.exception))
+        context = read_context(self.connection, self.DIALECT)
+        self.connection.rollback()
+        statement = MigrationStatement(index, "001", False)
+        (predicted,) = analyze([statement], self.DIALECT, context).statements
+        self.assertEqual([t.lock for t in predicted.tables], ["S"])
+        self.assertIn("mssql.lock_timeout", [f.rule for f in predicted.findings])
+
+    def test_a_low_priority_build_lets_later_writers_go_ahead(self):
+        self.orders()
+        blocker = self.writer()
+        wait = (
+            "WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 MINUTES, ABORT_AFTER_WAIT = SELF)"
+        )
+        index = (
+            "CREATE INDEX it_impact_note ON it_impact_orders (note) "
+            f"WITH (ONLINE = ON ({wait}))"
+        )
+        builder, _ = self.session(autocommit=True)
+        thread, errors = self.run_aside(builder, index)
+        self.addCleanup(thread.join, QUERY_WAIT)
+        later, _ = self.session()
+        # Waits until the builder's request is in the low-priority queue.
+        waiting = []
+        for _ in range(50):
+            waiting = self.fetch(
+                "SELECT request_status FROM sys.dm_tran_locks WHERE "
+                "request_status = 'LOW_PRIORITY_WAIT' AND resource_database_id = DB_ID()"
+            )
+            if waiting:
+                break
+            threading.Event().wait(0.1)
+        self.assertTrue(waiting)
+        later.cursor().execute("UPDATE it_impact_orders SET note = 'l' WHERE id = 2")
+        later.rollback()
+        blocker.rollback()
+        thread.join(QUERY_WAIT)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+
+    def test_preflight_names_a_transaction_from_another_database(self):
+        self.orders()
+        scratch = self.fetch("SELECT DB_NAME()")[0][0]
+        other, session = self.session(database="master")
+        other.cursor().execute(
+            f"UPDATE [{scratch}].dbo.it_impact_orders SET note = 'm' WHERE id = 1"
+        )
+        found = preflight(self.connection, self.DIALECT, ["SELECT 1"], older_than=0.0)
+        self.connection.rollback()
+        self.assertIn(session, [s.id for s in found.transactions])
 
     def observe_fixture(self, fixture, context, profile):
         """

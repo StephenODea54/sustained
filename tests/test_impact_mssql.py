@@ -201,6 +201,79 @@ class AddColumnTestCase(unittest.TestCase):
         self.assertIs(unknown.confidence, Confidence.LIKELY)
         self.assertIn("next_id", finding(unknown, "mssql.add_column.rewrite").message)
 
+    def test_a_rowversion_column_writes_every_row(self):
+        for sql in (
+            "ALTER TABLE t ADD d rowversion",
+            "ALTER TABLE t ADD d rowversion NULL",
+            "ALTER TABLE t ADD d timestamp",
+        ):
+            with self.subTest(sql=sql):
+                found = impact(sql, context())
+                self.assertEqual(found.tables[0].work, Work.REWRITE)
+                self.assertEqual(found.tables[0].rule, "mssql.add_column.rewrite")
+                self.assertIs(found.confidence, Confidence.KNOWN)
+                self.assertIn(
+                    "into every row",
+                    finding(found, "mssql.add_column.rewrite").message,
+                )
+
+    def test_a_large_type_default_writes_every_row_on_every_edition(self):
+        for kind, default in (
+            ("nvarchar(max)", "N'x'"),
+            ("varchar(max)", "'x'"),
+            ("varbinary(max)", "0x01"),
+            ("xml", "N'<a/>'"),
+            ("text", "'x'"),
+            ("ntext", "N'x'"),
+            ("image", "0x01"),
+            ("hierarchyid", "'/'"),
+            ("geography", "geography::Point(0, 0, 4326)"),
+            ("geometry", "geometry::Point(0, 0, 0)"),
+            ("json", "'{}'"),
+        ):
+            sql = f"ALTER TABLE t ADD d {kind} NOT NULL DEFAULT {default}"
+            for ctx in (context(), context(**STANDARD)):
+                with self.subTest(sql=sql, edition=ctx.edition):
+                    found = impact(sql, ctx)
+                    self.assertEqual(found.tables[0].work, Work.REWRITE)
+                    self.assertIs(found.confidence, Confidence.KNOWN)
+                    rewrite = finding(found, "mssql.add_column.rewrite")
+                    self.assertIn("on every edition", rewrite.message)
+                    self.assertIn("backfill t in batches", rewrite.remedy[0])
+        with_values = impact(
+            "ALTER TABLE t ADD d nvarchar(max) NULL DEFAULT N'x' WITH VALUES", context()
+        )
+        self.assertEqual(with_values.tables[0].rule, "mssql.add_column.rewrite")
+        nullable = table(
+            "ALTER TABLE t ADD d nvarchar(max) NULL DEFAULT N'x'", context()
+        )
+        self.assertEqual(
+            (nullable.work, nullable.rule), (Work.CATALOG, "mssql.add_column")
+        )
+
+    def test_a_system_type_default_stays_catalog(self):
+        for kind, default in (
+            ("nvarchar(4000)", "N'x'"),
+            ("sql_variant", "1"),
+            ("sysname", "N'x'"),
+            ("decimal(10, 2)", "0"),
+        ):
+            sql = f"ALTER TABLE t ADD d {kind} NOT NULL DEFAULT {default}"
+            with self.subTest(sql=sql):
+                found = table(sql, context())
+                self.assertEqual(
+                    (found.work, found.rule), (Work.CATALOG, "mssql.add_column.default")
+                )
+
+    def test_an_alias_or_clr_type_default_likely_writes_every_row(self):
+        found = impact("ALTER TABLE t ADD d dbo.mytype NOT NULL DEFAULT 0", context())
+        self.assertEqual(found.tables[0].work, Work.REWRITE)
+        self.assertIs(found.confidence, Confidence.LIKELY)
+        self.assertIn(
+            "CLR type, which was not read",
+            finding(found, "mssql.add_column.rewrite").message,
+        )
+
     def test_drop_column_changes_the_catalog_and_keeps_the_space(self):
         found = impact("ALTER TABLE t DROP COLUMN v", context())
         self.assertEqual(found.tables[0].work, Work.CATALOG)
@@ -323,8 +396,11 @@ class AlterColumnTestCase(unittest.TestCase):
         self.assertIs(online.severity, Severity.INFO)
         self.assertIn("held until the migration commits", online.message)
         outside = impact(sql, context(), transactional=False)
-        self.assertEqual(outside.tables[0].lock, "Sch-S")
+        self.assertEqual(outside.tables[0].lock, "Sch-M")
         self.assertIs(outside.tables[0].blocks, Blocks.DDL)
+        self.assertIn("mssql.lock_timeout", rules(outside))
+        # ALTER COLUMN refuses WAIT_AT_LOW_PRIORITY, so no remedy offers it.
+        self.assertEqual(finding(outside, "mssql.alter_column.online").remedy, ())
         old = impact(sql, context(version=(12, 0)))
         self.assertIn(
             "2016 or later", finding(old, "mssql.alter_column.online").message
@@ -507,6 +583,94 @@ class IndexTestCase(unittest.TestCase):
         self.assertIs(
             finding(found, "mssql.create_index.online").severity, Severity.INFO
         )
+
+    def test_an_online_build_outside_a_transaction_waits_for_its_locks(self):
+        sql = "CREATE INDEX ix2 ON t (name) WITH (ONLINE = ON)"
+        found = impact(sql, context(), transactional=False)
+        (t,) = found.tables
+        self.assertEqual((t.lock, t.blocks), ("S", Blocks.DDL))
+        self.assertIn("mssql.lock_timeout", rules(found))
+        note = finding(found, "mssql.create_index.online")
+        self.assertIs(note.severity, Severity.INFO)
+        self.assertIn("when it starts", note.message)
+        self.assertEqual(
+            note.remedy,
+            (
+                "CREATE INDEX ix2 ON t (name) WITH (ONLINE = ON (WAIT_AT_LOW_PRIORITY "
+                "(MAX_DURATION = 1 MINUTES, ABORT_AFTER_WAIT = SELF)))",
+            ),
+        )
+        before_2022 = impact(sql, context(version=(15, 0)), transactional=False)
+        self.assertEqual(finding(before_2022, "mssql.create_index.online").remedy, ())
+        rebuild = impact(
+            "ALTER INDEX ix ON t REBUILD WITH (ONLINE = ON)",
+            context(version=(12, 0)),
+            transactional=False,
+        )
+        self.assertEqual(rebuild.tables[0].lock, "Sch-M")
+        self.assertIn(
+            "WAIT_AT_LOW_PRIORITY", finding(rebuild, "mssql.rebuild").remedy[0]
+        )
+        self.assertIn("mssql.lock_timeout", rules(rebuild))
+        key = impact(
+            "ALTER TABLE t ADD CONSTRAINT uq UNIQUE (name) WITH (ONLINE = ON)",
+            context(),
+            transactional=False,
+        )
+        self.assertEqual(key.tables[0].lock, "Sch-M")
+        self.assertEqual(finding(key, "mssql.add_key.online").remedy, ())
+
+    def test_a_low_priority_wait_that_gives_up_needs_no_timeout(self):
+        for abort in ("SELF", "BLOCKERS"):
+            wait = (
+                f"WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 MINUTES, "
+                f"ABORT_AFTER_WAIT = {abort})"
+            )
+            for sql in (
+                f"CREATE INDEX ix2 ON t (name) WITH (ONLINE = ON ({wait}))",
+                f"ALTER INDEX ix ON t REBUILD WITH (ONLINE = ON ({wait}))",
+            ):
+                for transactional in (True, False):
+                    with self.subTest(sql=sql, transactional=transactional):
+                        found = impact(sql, context(), transactional=transactional)
+                        self.assertNotIn("mssql.lock_timeout", rules(found))
+                        # The statement spells the wait, so no remedy adds it.
+                        for note in found.findings:
+                            for remedy in note.remedy:
+                                self.assertEqual(
+                                    remedy.count("WAIT_AT_LOW_PRIORITY"), 1
+                                )
+            switch = impact(f"ALTER TABLE t SWITCH TO t9 WITH ({wait})", context())
+            self.assertNotIn("mssql.lock_timeout", rules(switch))
+        waits = (
+            "WAIT_AT_LOW_PRIORITY (MAX_DURATION = 1 MINUTES, ABORT_AFTER_WAIT = NONE)"
+        )
+        found = impact(
+            f"CREATE INDEX ix2 ON t (name) WITH (ONLINE = ON ({waits}))", context()
+        )
+        self.assertIn("mssql.lock_timeout", rules(found))
+
+    def test_resumable_is_refused_inside_a_transaction(self):
+        for sql in (
+            "CREATE INDEX ix2 ON t (name) WITH (ONLINE = ON, RESUMABLE = ON)",
+            "ALTER INDEX ix ON t REBUILD WITH (ONLINE = ON, RESUMABLE = ON)",
+            "ALTER TABLE t ADD CONSTRAINT uq UNIQUE (name) "
+            "WITH (ONLINE = ON, RESUMABLE = ON)",
+        ):
+            with self.subTest(sql=sql):
+                inside = finding(impact(sql, context()), "mssql.resumable")
+                self.assertIs(inside.severity, Severity.DANGER)
+                self.assertIn("transactional=False", inside.message)
+                outside = impact(sql, context(), transactional=False)
+                self.assertNotIn("mssql.resumable", rules(outside))
+        offline = impact(
+            "CREATE INDEX ix2 ON t (name) WITH (RESUMABLE = ON)",
+            context(),
+            transactional=False,
+        )
+        refused = finding(offline, "mssql.resumable")
+        self.assertIs(refused.severity, Severity.DANGER)
+        self.assertIn("needs ONLINE = ON", refused.message)
 
     def test_a_clustered_index_copies_the_heap(self):
         found = table("CREATE CLUSTERED INDEX cx ON h (id)", context(), "h")
@@ -710,6 +874,18 @@ class WriteRowsTestCase(unittest.TestCase):
         self.assertNotIn(
             "mssql.lock_escalation",
             rules(impact("INSERT INTO t (id) VALUES (1)", context())),
+        )
+
+    def test_an_insert_select_can_escalate(self):
+        found = impact("INSERT INTO h SELECT id, c FROM t", context())
+        t = next(t for t in found.tables if t.table == "h")
+        self.assertEqual((t.lock, t.rule), ("IX", "mssql.write_rows"))
+        note = finding(found, "mssql.lock_escalation")
+        self.assertIs(note.severity, Severity.INFO)
+        self.assertIn("INSERT ... SELECT", note.message)
+        self.assertNotIn(
+            "mssql.lock_escalation",
+            rules(impact("INSERT INTO h (id) VALUES (1), (2)", context())),
         )
 
     def test_a_write_to_every_row_escalates(self):

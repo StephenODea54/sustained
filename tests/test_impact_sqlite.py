@@ -20,6 +20,7 @@ from sustained.impact import (
     Blocks,
     Confidence,
     EngineContext,
+    Severity,
     TableStats,
     Work,
     analyze,
@@ -122,6 +123,56 @@ class StatementTestCase(unittest.TestCase):
                 self.assertTrue(any(advice in text for text in messages), messages)
                 if advice == "delete in batches":
                     self.assertFalse(any("backfill" in text for text in messages))
+
+    def test_a_column_sqlite_refuses_on_a_table_with_rows_is_danger(self):
+        for sql in (
+            "ALTER TABLE t ADD COLUMN z integer NOT NULL",
+            "ALTER TABLE t ADD COLUMN z integer NOT NULL DEFAULT NULL",
+            "ALTER TABLE t ADD COLUMN z integer DEFAULT (random())",
+            "ALTER TABLE t ADD COLUMN z integer DEFAULT (1 + 1)",
+            "ALTER TABLE t ADD COLUMN z text DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE t ADD COLUMN z integer GENERATED ALWAYS AS (id * 2) STORED",
+        ):
+            with self.subTest(sql=sql):
+                found = impact(sql, context(t=(10, 4096)))
+                refused = next(
+                    f for f in found.findings if f.rule == "sqlite.add_column.refused"
+                )
+                self.assertIs(refused.severity, Severity.DANGER)
+                self.assertIn("t has 10", refused.message)
+                self.assertIn("rebuild t", refused.remedy[0])
+                self.assertIs(found.confidence, Confidence.KNOWN)
+                empty = impact(sql, context(t=(0, 4096)))
+                self.assertNotIn("sqlite.add_column.refused", rules(empty))
+                unread = impact(sql, context())
+                self.assertIn("row count was not read", unread.findings[0].message)
+                self.assertIs(unread.confidence, Confidence.LIKELY)
+        for sql in (
+            "ALTER TABLE t ADD COLUMN z integer UNIQUE",
+            "ALTER TABLE t ADD COLUMN z integer PRIMARY KEY",
+        ):
+            with self.subTest(sql=sql):
+                empty = impact(sql, context(t=(0, 4096)))
+                self.assertIn("sqlite.add_column.refused", rules(empty))
+        for sql in (
+            "ALTER TABLE t ADD COLUMN z integer DEFAULT -1",
+            "ALTER TABLE t ADD COLUMN z text NOT NULL DEFAULT 'x'",
+            "ALTER TABLE t ADD COLUMN z integer DEFAULT TRUE",
+        ):
+            with self.subTest(sql=sql):
+                found = impact(sql, context(t=(10, 4096)))
+                self.assertNotIn("sqlite.add_column.refused", rules(found))
+        created = analyze(
+            [
+                MigrationStatement("CREATE TABLE n (id integer)", "001", True),
+                MigrationStatement(
+                    "ALTER TABLE n ADD COLUMN z integer NOT NULL", "001", True
+                ),
+            ],
+            SQLITE,
+            context(),
+        )
+        self.assertNotIn("sqlite.add_column.refused", rules(created.statements[1]))
 
     def test_wal_mode_lets_reads_go_on(self):
         self.assertIs(table("DROP TABLE t", context("wal")).blocks, Blocks.WRITES)
@@ -431,6 +482,17 @@ class ContextTestCase(unittest.TestCase):
         self.assertEqual(ctx.stats('odd "name').rows, 0)
         self.assertIn("counts", ctx.read)
         self.assertNotIn("counts", read_context(connection, SQLITE).read)
+
+    def test_a_table_whose_name_starts_like_sqlite_is_read(self):
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        connection.executescript(
+            "CREATE TABLE sqliteXfoo (id INTEGER PRIMARY KEY, n TEXT);"
+            "INSERT INTO sqliteXfoo (n) VALUES ('a'), ('b'), ('c');"
+        )
+        ctx = read_context(connection, SQLITE, exact_counts=True)
+        self.assertEqual(ctx.stats("sqliteXfoo").rows, 3)
+        self.assertIsNone(ctx.stats("sqlite_schema").rows)
 
     def test_exact_counts_skips_what_it_cannot_read(self):
         failure = RuntimeError("no such table")
