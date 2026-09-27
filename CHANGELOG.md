@@ -1,11 +1,11 @@
 # Changelog
 
-## Unreleased
+## 2.26.0
 
 ### Added
 
 - `sustained impact`, `Migrator.impact()`, and `AsyncMigrator.impact()` report, for each statement a run would apply, the tables it locks, what the lock blocks, the work it does (catalog change, scan, row writes, index build, or rewrite), and how long the lock lasts, with the safer form of the statement where one exists. `--json` prints the report as one object, and the guide is [Statement impact](https://sustained.tbmh.org/impact).
-- The impact analysis covers PostgreSQL, InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later, SQL Server 2012 and later, SQLite 3.35 and later, and DuckDB 1.0 and later, and reads the server's version, settings, table sizes, and schema so that blocking work on a large table is `danger`. `sustained.impact.analyze(statements, dialect)` analyzes statements without a connection, and a statement the analysis cannot read is reported as unknown, never as safe.
+- The impact analysis covers PostgreSQL, InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later, SQL Server 2012 and later, SQLite 3.35 and later, and DuckDB 1.0 and later, and reads the server's version, settings, table sizes, and schema so that blocking work on a large table is `danger`. `sustained.impact.analyze(statements, dialect)` analyzes statements without a connection, and a statement the analysis cannot read is reported as unknown, never as safe. Each statement is read against what the earlier statements of the run did, such as a table created, renamed, or attached as a partition, a domain created, or a `ROLLBACK`, and a fact the server read missed, such as a table's size or its partitions, is named in a finding and counted by the guards as unknown.
 - `sustained plan` lists the statements with a `warn` or `danger` finding in an `impact` section, and `sustained script --annotate` and `script(direction, annotate=True)` on either migrator print each statement's impact above it as SQL comments.
 - The guards `max_blocking()`, `no_rewrite()`, `lock_timeout_required()`, and `no_unknown_impact()` in `sustained.guards` block statements by their analyzed impact instead of their text. `up()` and `sustained migrate` put each statement's impact on `MigrationStatement.impact` for custom guards, and print each `danger` finding on stderr when no configured guard reads impact.
 - `sustained rehearse --trace` and `rehearse(trace=True)` on either migrator run each statement on its own on PostgreSQL, MySQL, MariaDB, and SQL Server, record the locks, rewrites, and index builds the server shows, and report each difference from the prediction as an `impact.mismatch` finding. On MySQL and MariaDB the scratch rehearsal also finds the `ALGORITHM` and `LOCK` clause the server accepts.

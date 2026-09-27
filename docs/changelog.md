@@ -8,12 +8,14 @@ Every released version of Sustained, newest first, grouped by major version. The
 
 Version numbers follow semantic versioning. A major version marks a change that can break working code. A minor version adds new features. A patch version fixes a defect without changing public API signatures or introducing new functionality.
 
-## Unreleased
+## 2.x
 
-### Added
+### 2.26.0
+
+#### Added
 
 - `sustained impact`, `Migrator.impact()`, and `AsyncMigrator.impact()` report, for each statement a run would apply, the tables it locks, what the lock blocks, the work it does (catalog change, scan, row writes, index build, or rewrite), and how long the lock lasts, with the safer form of the statement where one exists. `--json` prints the report as one object, and the guide is [Statement impact](https://sustained.tbmh.org/impact).
-- The impact analysis covers PostgreSQL, InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later, SQL Server 2012 and later, SQLite 3.35 and later, and DuckDB 1.0 and later, and reads the server's version, settings, table sizes, and schema so that blocking work on a large table is `danger`. `sustained.impact.analyze(statements, dialect)` analyzes statements without a connection, and a statement the analysis cannot read is reported as unknown, never as safe.
+- The impact analysis covers PostgreSQL, InnoDB tables on MySQL 8.0.19 and later and MariaDB 10.6 and later, SQL Server 2012 and later, SQLite 3.35 and later, and DuckDB 1.0 and later, and reads the server's version, settings, table sizes, and schema so that blocking work on a large table is `danger`. `sustained.impact.analyze(statements, dialect)` analyzes statements without a connection, and a statement the analysis cannot read is reported as unknown, never as safe. Each statement is read against what the earlier statements of the run did, such as a table created, renamed, or attached as a partition, a domain created, or a `ROLLBACK`, and a fact the server read missed, such as a table's size or its partitions, is named in a finding and counted by the guards as unknown.
 - `sustained plan` lists the statements with a `warn` or `danger` finding in an `impact` section, and `sustained script --annotate` and `script(direction, annotate=True)` on either migrator print each statement's impact above it as SQL comments.
 - The guards `max_blocking()`, `no_rewrite()`, `lock_timeout_required()`, and `no_unknown_impact()` in `sustained.guards` block statements by their analyzed impact instead of their text. `up()` and `sustained migrate` put each statement's impact on `MigrationStatement.impact` for custom guards, and print each `danger` finding on stderr when no configured guard reads impact.
 - `sustained rehearse --trace` and `rehearse(trace=True)` on either migrator run each statement on its own on PostgreSQL, MySQL, MariaDB, and SQL Server, record the locks, rewrites, and index builds the server shows, and report each difference from the prediction as an `impact.mismatch` finding. On MySQL and MariaDB the scratch rehearsal also finds the `ALGORITHM` and `LOCK` clause the server accepts.
@@ -23,18 +25,16 @@ Version numbers follow semantic versioning. A major version marks a change that 
 - `rehearse(lock_timeout=seconds)` on either migrator, and the config module's `rehearsal_lock_timeout`, fail a rehearsal whose statement waits longer than that for a lock.
 - `impact()` and `preflight()` on either migrator take the diff options `up()` takes. On SQLite, `exact_counts=True` and `--exact-counts` count each table's rows and read its bytes from `dbstat` instead of estimating them.
 
-### Changed
+#### Changed
 
 - `index_must_be_concurrent()` passes `CREATE INDEX ... ON ONLY`, which builds no index and cannot take `CONCURRENTLY`, so a partitioned table can be indexed without blocking writes.
 - Error messages name the engine, such as "The live preflight does not cover SQLite.", where they named the `Dialects` member.
 
-### Fixed
+#### Fixed
 
 - The destructive labels and the `no_drops()`, `no_table_rewrite()`, `index_must_be_concurrent()`, and `no_lock_without_timeout()` guards read comments and whitespace as each engine does, so a statement such as `DROP/**/TABLE t` is labelled. `destructive_statements()` takes a `dialect`.
 - A new table's foreign key to a column or unique index that the same diff adds to an existing table is added after them, where the generated migration used to fail.
 - The PostgreSQL schema read recognizes an invalid index, such as one a failed `CREATE INDEX CONCURRENTLY` leaves, and a constraint that is not validated, and the diff builds the index again or emits `VALIDATE CONSTRAINT`. The partitions of a partitioned table no longer read as extra tables.
-
-## 2.x
 
 ### 2.25.0
 
