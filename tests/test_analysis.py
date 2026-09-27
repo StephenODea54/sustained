@@ -11,6 +11,7 @@ from sustained.analysis import (
     scannable_statement,
     summarize,
 )
+from sustained.dialects import Dialects
 from sustained.migrations import Migration
 
 
@@ -209,6 +210,50 @@ class HiddenDropsTestCase(unittest.TestCase):
             scannable_forms("SELECT 'a\\'' , 'b'"),
             ("SELECT ''b'", "SELECT '' , ''"),
         )
+
+
+class DialectReadingTestCase(unittest.TestCase):
+    """The scan reads comments and whitespace as the dialect's server does."""
+
+    def labelled(self, statement, dialect=None):
+        return len(destructive_statements([statement], dialect)) == 1
+
+    def test_a_drop_in_an_executable_comment_is_labelled(self):
+        statement = "ALTER TABLE big ADD COLUMN c INT /*!, DROP COLUMN important */"
+        self.assertTrue(self.labelled(statement))
+        self.assertTrue(self.labelled(statement, Dialects.MYSQL))
+        self.assertFalse(self.labelled(statement, Dialects.POSTGRES))
+
+    def test_a_quote_in_a_hash_comment_hides_nothing_on_mysql(self):
+        statement = "ALTER TABLE t ADD c int # it's\n, DROP COLUMN y"
+        self.assertTrue(self.labelled(statement, Dialects.MYSQL))
+        self.assertTrue(self.labelled(statement))
+
+    def test_a_quote_after_a_nested_comment_hides_nothing_on_postgres(self):
+        statement = "ALTER TABLE t ADD c int /* /* */ ' */, DROP COLUMN y -- '"
+        self.assertTrue(self.labelled(statement, Dialects.POSTGRES))
+        self.assertTrue(self.labelled(statement))
+        self.assertFalse(self.labelled(statement, Dialects.MYSQL))
+
+    def test_a_comment_between_words_reads_as_a_space(self):
+        self.assertTrue(self.labelled("DROP/**/TABLE t"))
+        self.assertEqual(
+            scannable_forms("DROP/**/TABLE t", Dialects.POSTGRES), ("DROP TABLE t",)
+        )
+
+    def test_a_postgres_line_comment_needs_no_space(self):
+        self.assertFalse(self.labelled("SELECT 1 --Don't", Dialects.POSTGRES))
+
+    def test_a_no_break_space_separates_words_where_the_server_says_so(self):
+        self.assertTrue(self.labelled("DROP\xa0TABLE z"))
+        self.assertTrue(self.labelled("DROP\xa0TABLE z", Dialects.MSSQL))
+        self.assertFalse(self.labelled("DROP\xa0TABLE z", Dialects.POSTGRES))
+
+    def test_forms_with_a_dialect_take_that_reading_only(self):
+        self.assertEqual(
+            scannable_forms("SELECT 'a' # x", Dialects.MYSQL), ("SELECT ''",)
+        )
+        self.assertIn("SELECT ''", scannable_forms("SELECT 'a' # x"))
 
 
 class MarkedStatementTestCase(unittest.TestCase):

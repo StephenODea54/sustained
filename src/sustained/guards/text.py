@@ -1,7 +1,9 @@
 """
 The textual guards, which match on the words in each statement and
 never parse SQL. Comments and the text inside quotes are kept out of the
-scan.
+scan. Each guard reads the statement as its dialect does: where a
+comment ends, which characters are whitespace, and whether a MySQL
+`/*! ... */` body runs.
 """
 
 from __future__ import annotations
@@ -62,7 +64,7 @@ def no_drops() -> Guard:
         for statement in statements:
             if any(
                 _DROP_RE.search(form) or _ALTER_DROP_RE.search(form)
-                for form in scannable_forms(statement)
+                for form in scannable_forms(statement, dialect)
             ):
                 found.append(Verdict("no_drops", BLOCK, normalize_statement(statement)))
         return found
@@ -92,9 +94,9 @@ def index_must_be_concurrent() -> Guard:
             return []
         found = []
         for statement in statements:
-            scanned = scannable_statement(statement)
-            if _CREATE_INDEX_RE.search(scanned) and not _CONCURRENTLY_RE.search(
-                scanned
+            if any(
+                _CREATE_INDEX_RE.search(form) and not _CONCURRENTLY_RE.search(form)
+                for form in scannable_forms(statement, dialect)
             ):
                 found.append(
                     Verdict(
@@ -126,19 +128,20 @@ def no_table_rewrite() -> Guard:
     def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
         found = []
         for statement in statements:
-            scanned = scannable_statement(statement)
-            rewrites = bool(
-                _TYPE_CHANGE_RE.search(scanned) or _SET_NOT_NULL_RE.search(scanned)
-            )
-            if not rewrites and _ADD_NOT_NULL_RE.search(scanned):
-                rewrites = not _DEFAULT_RE.search(scanned)
-            if rewrites:
+            if any(_rewrites(form) for form in scannable_forms(statement, dialect)):
                 found.append(
                     Verdict("no_table_rewrite", WARN, normalize_statement(statement))
                 )
         return found
 
     return guard
+
+
+def _rewrites(scanned: str) -> bool:
+    """Whether one scanned form changes a column type or adds a NOT NULL."""
+    if _TYPE_CHANGE_RE.search(scanned) or _SET_NOT_NULL_RE.search(scanned):
+        return True
+    return bool(_ADD_NOT_NULL_RE.search(scanned)) and not _DEFAULT_RE.search(scanned)
 
 
 def no_lock_without_timeout() -> Guard:
@@ -183,12 +186,15 @@ def no_lock_without_timeout() -> Guard:
         for statement in statements:
             migration_id, transactional = statement_scope(statement)
             timeouts.enter(migration_id)
-            scanned = scannable_statement(statement)
+            scanned = scannable_statement(statement, dialect)
             match = _LOCK_TIMEOUT_RE.search(scanned)
             if match:
                 scope = (match.group(1) or "session").strip().lower()
                 timeouts.set(scope, transactional)
-            elif not timeouts.covered and _LOCK_TAKING_RE.search(scanned):
+            elif not timeouts.covered and any(
+                _LOCK_TAKING_RE.search(form)
+                for form in scannable_forms(statement, dialect)
+            ):
                 found.append(
                     Verdict(
                         "no_lock_without_timeout",

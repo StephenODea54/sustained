@@ -75,7 +75,7 @@ word. `classify_default()` (`volatility.py`) rates a column default.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Dict, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence
 
 from sustained.impact.model import UNKNOWN_KIND, ParsedStatement
 from sustained.impact.recognizer import session
@@ -84,7 +84,16 @@ from sustained.impact.recognizer.create_drop import CreateDrop
 from sustained.impact.recognizer.cursor import Unrecognized, frozen
 from sustained.impact.recognizer.statements import Statements
 from sustained.impact.recognizer.volatility import VOLATILITIES, classify_default
-from sustained.impact.tokens import ERROR, PUNCT, WORD, Token, tokenize
+from sustained.impact.tokens import (
+    ERROR,
+    IDENT,
+    OP,
+    PUNCT,
+    STRING,
+    WORD,
+    Token,
+    tokenize,
+)
 
 if TYPE_CHECKING:
     from sustained.dialects import Dialects
@@ -218,14 +227,193 @@ _STATEMENTS: Dict[str, _Handler] = {
 }
 
 
-def _holds_body(tokens: Sequence[Token]) -> bool:
+_ROUTINE_WORDS = ("TRIGGER", "FUNCTION", "PROCEDURE")
+# The words after which a BEGIN is a name or part of an expression, not
+# the opener of a routine body.
+_NOT_BEFORE_BODY = frozenset(
+    {
+        "TRIGGER", "FUNCTION", "PROCEDURE", "EXISTS", "ON", "OF", "FOLLOWS",
+        "PRECEDES", "RETURNS", "SETOF", "WHEN", "AND", "OR", "NOT", "IS",
+        "IN", "LIKE", "GLOB", "MATCH", "REGEXP", "BETWEEN", "ESCAPE",
+        "COLLATE", "THEN", "ELSE", "SET", "TO", "LANGUAGE", "CHARSET", "CASE",
+    }
+)  # fmt: skip
+# The tokens after which a BEGIN inside a body starts a compound statement.
+_BODY_STATEMENT_STARTS = frozenset({"BEGIN", "THEN", "ELSE", "DO", "LOOP", "REPEAT"})
+# The words after END that close a statement other than BEGIN or CASE.
+_END_OF_OTHER = frozenset({"IF", "LOOP", "WHILE", "REPEAT", "FOR"})
+
+
+def _is_semicolon(token: Token) -> bool:
+    return token.kind == PUNCT and token.text == ";"
+
+
+def _routine_word(tokens: Sequence[Token]) -> int:
     """
-    Whether the statement creates a trigger, function, or procedure,
-    whose body may hold statements of its own ended by semicolons.
+    The index of the TRIGGER, FUNCTION, or PROCEDURE word a CREATE
+    statement creates, or -1 when the statement creates something else.
+    The words the index skips are `OR REPLACE`, `OR ALTER`, TEMP,
+    TEMPORARY, CONSTRAINT, and MySQL's `DEFINER = user[@host]`.
     """
     if not tokens[0].is_word("CREATE"):
+        return -1
+    index = 1
+    if index + 1 < len(tokens) and tokens[index].is_word("OR"):
+        if not tokens[index + 1].is_word("REPLACE", "ALTER"):
+            return -1
+        index += 2
+    if index + 2 < len(tokens) and tokens[index].is_word("DEFINER"):
+        if tokens[index + 1].kind != OP or tokens[index + 1].text != "=":
+            return -1
+        index += 2
+        if tokens[index].is_word("CURRENT_USER"):
+            index += 1
+            if index + 1 < len(tokens) and tokens[index].text == "(":
+                if tokens[index + 1].text != ")":
+                    return -1
+                index += 2
+        else:
+            if tokens[index].kind not in (WORD, IDENT, STRING):
+                return -1
+            index += 1
+            if index + 1 < len(tokens) and tokens[index].text == "@":
+                if tokens[index + 1].kind not in (WORD, IDENT, STRING):
+                    return -1
+                index += 2
+    while index < len(tokens) and tokens[index].is_word(
+        "TEMP", "TEMPORARY", "CONSTRAINT"
+    ):
+        index += 1
+    if index < len(tokens) and tokens[index].is_word(*_ROUTINE_WORDS):
+        return index
+    return -1
+
+
+def _named(dialect: Optional["Dialects"], *names: str) -> bool:
+    return dialect is not None and dialect.name in names
+
+
+def _depth_zero(tokens: Sequence[Token], start: int) -> List[bool]:
+    """For each token from `start`, whether it is outside every parenthesis."""
+    depth = 0
+    outside = []
+    for token in tokens[start:]:
+        if token.kind == PUNCT and token.text == ")":
+            depth -= 1
+        outside.append(depth == 0)
+        if token.kind == PUNCT and token.text == "(":
+            depth += 1
+    return outside
+
+
+def _body_opener(tokens: Sequence[Token], kind: int) -> int:
+    """
+    The index of the BEGIN that opens a MySQL or SQLite routine body, or
+    -1 when a `;` comes before one. A BEGIN after an operator, after
+    punctuation other than `)`, after a word in `_NOT_BEFORE_BODY`, or
+    before anything but a word is a name or part of an expression.
+    """
+    outside = _depth_zero(tokens, kind + 1)
+    for index in range(kind + 1, len(tokens)):
+        token = tokens[index]
+        if _is_semicolon(token):
+            return -1
+        if not (token.is_word("BEGIN") and outside[index - kind - 1]):
+            continue
+        before = tokens[index - 1]
+        if before.kind == OP or (before.kind == PUNCT and before.text != ")"):
+            continue
+        if before.kind == WORD and before.value in _NOT_BEFORE_BODY:
+            continue
+        if index + 1 < len(tokens) and tokens[index + 1].kind == WORD:
+            return index
+    return -1
+
+
+def _block_ends_last(tokens: Sequence[Token], opener: int, compound: bool) -> bool:
+    """
+    Whether the BEGIN at `opener` is closed by the statement's last token.
+    CASE opens a level and END closes one. With `compound` (MySQL and
+    SQLite), a BEGIN at the start of a statement in the body opens a
+    level, any other BEGIN fails the check, and an END that closes IF,
+    LOOP, WHILE, REPEAT, or FOR closes no level. The count never exceeds
+    the depth the server reads, so a body that reads as closed early
+    fails the check.
+    """
+    depth = 1
+    last = len(tokens) - 1
+    for index in range(opener + 1, len(tokens)):
+        token = tokens[index]
+        before = tokens[index - 1]
+        if token.is_word("BEGIN"):
+            if not compound:
+                return False
+            label = (
+                before.kind == OP
+                and before.text == ":"
+                and index >= 2
+                and tokens[index - 2].kind in (WORD, IDENT)
+            )
+            starts = (
+                _is_semicolon(before)
+                or label
+                or before.is_word(*_BODY_STATEMENT_STARTS)
+            )
+            if not starts:
+                return False
+            depth += 1
+        elif token.is_word("CASE") and not before.is_word("END"):
+            depth += 1
+        elif token.is_word("END"):
+            following = tokens[index + 1] if index < last else None
+            if compound and following is not None and following.is_word(*_END_OF_OTHER):
+                continue
+            depth -= 1
+            if depth == 0:
+                return index == last or (
+                    index + 1 == last
+                    and following is not None
+                    and following.kind in (WORD, IDENT)
+                )
+    return False
+
+
+def _semicolons_in_body(tokens: Sequence[Token], dialect: Optional["Dialects"]) -> bool:
+    """
+    Whether every `;` in the statement is inside the body of the trigger,
+    function, or procedure the statement creates. On SQL Server the body
+    is every token after the first `AS` outside parentheses, since the
+    server stores the rest of the batch as the body. On Postgres and
+    DuckDB a dollar-quoted body is one string token, and any other body
+    is `BEGIN ATOMIC ... END` ending at the last token. On MySQL, SQLite,
+    and with no dialect, the body is a `BEGIN ... END` block ending at
+    the last token.
+    """
+    kind = _routine_word(tokens)
+    if kind < 0:
         return False
-    return any(t.is_word("TRIGGER", "FUNCTION", "PROCEDURE") for t in tokens[1:8])
+    semicolons = [i for i, t in enumerate(tokens) if _is_semicolon(t)]
+    if not semicolons:
+        return True
+    if _named(dialect, "MSSQL"):
+        outside = _depth_zero(tokens, kind + 1)
+        for index in range(kind + 1, len(tokens)):
+            if tokens[index].is_word("AS") and outside[index - kind - 1]:
+                return semicolons[0] > index
+        return False
+    if _named(dialect, "POSTGRES", "DUCKDB"):
+        outside = _depth_zero(tokens, kind + 1)
+        for index in range(kind + 1, semicolons[0]):
+            if (
+                tokens[index].is_word("BEGIN")
+                and outside[index - kind - 1]
+                and index + 1 < len(tokens)
+                and tokens[index + 1].is_word("ATOMIC")
+            ):
+                return _block_ends_last(tokens, index + 1, False)
+        return False
+    opener = _body_opener(tokens, kind)
+    return opener >= 0 and _block_ends_last(tokens, opener, True)
 
 
 def unknown(reason: str, table: Optional[str] = None) -> ParsedStatement:
@@ -239,7 +427,7 @@ def recognize(sql: str, dialect: Optional["Dialects"] = None) -> ParsedStatement
     the lexical rules, as `tokenize()` reads them, and the few spellings
     that differ between engines, such as SQL Server's `DROP INDEX t.ix`.
 
-    A string that holds more than one statement is unknown: the analysis
+    A string that contains more than one statement is unknown: the analysis
     reads one statement at a time.
     """
     tokens = tokenize(sql, dialect)
@@ -249,10 +437,10 @@ def recognize(sql: str, dialect: Optional["Dialects"] = None) -> ParsedStatement
         tokens.pop()
     if not tokens:
         return unknown("the statement is empty")
-    if any(t.kind == PUNCT and t.text == ";" for t in tokens) and not _holds_body(
-        tokens
+    if any(_is_semicolon(t) for t in tokens) and not _semicolons_in_body(
+        tokens, dialect
     ):
-        return unknown("the text holds more than one statement")
+        return unknown("the text contains more than one statement")
     parser = _Parser(sql, tokens, dialect)
     try:
         parsed = parser.statement()

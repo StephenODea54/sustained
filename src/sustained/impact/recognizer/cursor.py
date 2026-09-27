@@ -96,6 +96,74 @@ LOCK_MODES = (
 )
 
 
+# The words that start a statement on SQL Server, which needs no `;`
+# between statements: `UPDATE t SET a = 1 ALTER TABLE u ...` runs both.
+# A reader stops before one of them outside parentheses, and the text
+# after it makes the statement unknown. `Cursor.starts_statement()`
+# reads the words that start a statement only before certain words, such
+# as WITH, which starts one only as a CTE.
+MSSQL_STATEMENT_WORDS = frozenset(
+    {
+        "ALTER",
+        "BACKUP",
+        "BEGIN",
+        "BREAK",
+        "BULK",
+        "CHECKPOINT",
+        "CLOSE",
+        "COMMIT",
+        "CONTINUE",
+        "CREATE",
+        "DBCC",
+        "DEALLOCATE",
+        "DECLARE",
+        "DELETE",
+        "DENY",
+        "DROP",
+        "EXEC",
+        "EXECUTE",
+        "FETCH",
+        "GOTO",
+        "GRANT",
+        "IF",
+        "INSERT",
+        "KILL",
+        "MERGE",
+        "OPEN",
+        "PRINT",
+        "RAISERROR",
+        "READTEXT",
+        "RECONFIGURE",
+        "RESTORE",
+        "RETURN",
+        "REVERT",
+        "REVOKE",
+        "ROLLBACK",
+        "SAVE",
+        "SELECT",
+        "SET",
+        "SETUSER",
+        "SHUTDOWN",
+        "TRUNCATE",
+        "UPDATE",
+        "UPDATETEXT",
+        "USE",
+        "WAITFOR",
+        "WHILE",
+        "WRITETEXT",
+    }
+)
+# Words that start a SQL Server statement only before one of these.
+_MSSQL_STATEMENT_PAIRS = {
+    "ENABLE": ("TRIGGER",),
+    "DISABLE": ("TRIGGER",),
+    "ADD": ("SIGNATURE", "COUNTER"),
+    "GET": ("CONVERSATION",),
+    "MOVE": ("CONVERSATION",),
+    "SEND": ("ON",),
+}
+
+
 def frozen(options: Mapping[str, object]) -> Mapping[str, object]:
     return MappingProxyType(dict(options))
 
@@ -225,11 +293,82 @@ class Cursor:
                 depth -= 1
         return self.tokens[start : self.pos - 1]
 
-    def rest(self) -> List[Token]:
-        """Every token left, consumed."""
+    def body(self) -> List[Token]:
+        """
+        Every token left, consumed: the body of a view, a routine, or a
+        trigger, which the server stores and does not run.
+        """
         tokens = self.tokens[self.pos :]
         self.pos = len(self.tokens)
         return tokens
+
+    def rest(self) -> List[Token]:
+        """
+        Every token left, consumed, up to a word that starts another
+        statement on SQL Server outside parentheses. The caller's
+        `finish()` reports the text from that word on.
+        """
+        start = self.pos
+        depth = 0
+        while not self.at_end():
+            token = self.tokens[self.pos]
+            if token.kind == PUNCT and token.text == "(":
+                depth += 1
+            elif token.kind == PUNCT and token.text == ")":
+                depth -= 1
+            elif depth == 0 and self.starts_statement(self.pos):
+                break
+            self.pos += 1
+        return self.tokens[start : self.pos]
+
+    def starts_statement(self, index: int) -> bool:
+        """
+        Whether the token at `index` starts another statement, which only
+        SQL Server lets follow a statement with no `;` between the two.
+        WITH starts one as a CTE, `WITH name [(columns)] AS (`, SELECT
+        does not after UNION, EXCEPT, INTERSECT, or ALL, and FETCH does
+        not after the ROWS of an OFFSET.
+        """
+        if not self.mssql:
+            return False
+        token = self.tokens[index]
+        if token.kind != WORD:
+            return False
+        before = self.tokens[index - 1] if index > 0 else None
+        after = self.tokens[index + 1] if index + 1 < len(self.tokens) else None
+        word = token.value
+        if word == "WITH":
+            return self.cte_at(index + 1)
+        if word in _MSSQL_STATEMENT_PAIRS:
+            return after is not None and after.is_word(*_MSSQL_STATEMENT_PAIRS[word])
+        if word == "SELECT" and before is not None:
+            return not before.is_word("UNION", "EXCEPT", "INTERSECT", "ALL")
+        if word == "FETCH" and before is not None:
+            return not before.is_word("ROWS", "ROW")
+        return word in MSSQL_STATEMENT_WORDS
+
+    def cte_at(self, index: int) -> bool:
+        """Whether the tokens from `index` read `name [(columns)] AS (`."""
+        tokens = self.tokens
+        if index >= len(tokens) or tokens[index].name is None:
+            return False
+        index += 1
+        if index < len(tokens) and tokens[index].text == "(":
+            depth = 0
+            while index < len(tokens):
+                if tokens[index].kind == PUNCT and tokens[index].text == "(":
+                    depth += 1
+                elif tokens[index].kind == PUNCT and tokens[index].text == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                index += 1
+            index += 1
+        return (
+            index + 1 < len(tokens)
+            and tokens[index].is_word("AS")
+            and tokens[index + 1].text == "("
+        )
 
     def item(self) -> List[Token]:
         """The tokens up to a comma at this depth or the end, consumed."""
@@ -237,6 +376,8 @@ class Cursor:
         depth = 0
         while not self.at_end():
             token = self.tokens[self.pos]
+            if depth == 0 and self.starts_statement(self.pos):
+                break
             if token.kind == PUNCT and token.text in "([":
                 depth += 1
             elif token.kind == PUNCT and token.text in ")]":
@@ -251,8 +392,8 @@ class Cursor:
     def expression(self, end_words: frozenset[str]) -> List[Token]:
         """
         An expression: the tokens up to a comma, a closing parenthesis,
-        or one of `end_words`, at this depth, consumed. It takes at least
-        one token.
+        one of `end_words`, or a word that starts another statement on SQL
+        Server, at this depth, consumed. It takes at least one token.
         """
         start = self.pos
         depth = 0
@@ -269,6 +410,8 @@ class Cursor:
                     break
                 if token.kind == WORD and token.value in end_words:
                     break
+                if self.starts_statement(self.pos):
+                    break
             elif depth == 0 and token.kind == PUNCT and token.text == ",":
                 break
             self.pos += 1
@@ -277,7 +420,10 @@ class Cursor:
         return self.tokens[start : self.pos]
 
     def up_to_word(self, *words: str) -> List[Token]:
-        """The tokens up to one of the words outside parentheses, consumed."""
+        """
+        The tokens up to one of the words, or a word that starts another
+        statement on SQL Server, outside parentheses, consumed.
+        """
         start = self.pos
         depth = 0
         while not self.at_end():
@@ -287,6 +433,8 @@ class Cursor:
             elif token.kind == PUNCT and token.text == ")":
                 depth -= 1
             elif depth == 0 and token.kind == WORD and token.value in words:
+                break
+            elif depth == 0 and self.starts_statement(self.pos):
                 break
             self.pos += 1
         return self.tokens[start : self.pos]

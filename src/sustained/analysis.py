@@ -9,8 +9,11 @@ and the labels the `plan` command prints.
 The scan is textual: it reads the words in a statement and parses no
 SQL. It knows string literals, comments, and Postgres dollar-quoted
 bodies only well enough to keep them out of the scan, so a drop written
-inside a literal, a comment, or a `$$` function body is not labelled. The label informs the operator, and the rehearsal gate
-in `migrate` reads the same list.
+inside a literal, a comment, or a `$$` function body is not labelled. It
+reads comments as each engine does, so a comment that one engine ends
+early, or a MySQL `/*! ... */` body that MySQL runs, cannot hide a drop.
+The label informs the operator, and the rehearsal gate in `migrate`
+reads the same list.
 """
 
 from __future__ import annotations
@@ -28,24 +31,28 @@ from typing import (
 )
 
 from sustained.impact.model import INTENT_KINDS, Intent, StatementImpact
-from sustained.impact.tokens import BACKSLASH_TOKEN_RE, TOKEN_RE
+from sustained.impact.tokens import (
+    COMMENT,
+    IDENT,
+    SPACE,
+    STRING,
+    WORD,
+    Lexicon,
+    lex,
+    scan_readings,
+)
 from sustained.migrations import Migration, migration_sql
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
+    from sustained.dialects import Dialects
 
-# One pass over a statement finds string literals, quoted identifiers,
-# comments, and Postgres dollar-quoted bodies. The patterns live with the
-# impact tokenizer, so the scan and the recognizer read literals alike.
-# A statement with a backslash is also scanned with the MySQL reading, in
-# which a backslash escapes the next character of a literal.
-_TOKEN_RE = TOKEN_RE
-_BACKSLASH_TOKEN_RE = BACKSLASH_TOKEN_RE
+# The scan reads a statement with the lexer the impact recognizer uses,
+# so the two read literals and comments alike. `scan_readings()` names
+# the readings a scan takes: the dialect's, or with no dialect one for
+# each engine, and each one also with the backslash rule reversed when
+# the statement has a backslash.
 _WHITESPACE_RE = re.compile(r"\s+")
-# A statement that runs a dollar-quoted body at once, and the tag that
-# opens such a body.
-_DO_RE = re.compile(r"\s*DO\b", re.IGNORECASE)
-_DOLLAR_TAG_RE = re.compile(r"\$\w*\$")
 # DROP DATABASE always takes the data with it. DROP SCHEMA needs CASCADE
 # to do so, since a plain DROP SCHEMA refuses a schema that holds
 # anything. A DELETE at the start of a statement, after a CTE, or in a
@@ -177,40 +184,47 @@ def statement_scope(statement: str) -> Tuple[Optional[str], bool]:
     return None, True
 
 
-def _rewrite_tokens(
-    statement: str, blank_literals: bool, tokens: "re.Pattern[str]" = _TOKEN_RE
-) -> str:
+def _rewrite_tokens(statement: str, blank_literals: bool, rules: Lexicon) -> str:
     """
-    Removes the comments from a statement. When `blank_literals` is true,
-    it also empties every string literal, quoted identifier, and
-    dollar-quoted body, so words inside quotes cannot match a scan. A
-    quote that never closes is not a token, so its text stays and reads
-    as plain SQL.
+    Replaces each comment in a statement with a space, as the server
+    reads it. When `blank_literals` is true, it also empties every string
+    literal, quoted identifier, and dollar-quoted body, so words inside
+    quotes cannot match a scan, and replaces each word with a character
+    past ASCII with `_`: no keyword has one, and the scan's patterns
+    would otherwise split the word where the server reads one name. A
+    quote that never closes ends the reading, and the text from it on
+    stays and reads as plain SQL.
 
     A `DO` block is the exception: Postgres runs its body as soon as the
     statement runs, so the body is scanned as SQL of its own. A function
     body runs only when something calls the function, and stays blank.
     """
-    executes_body = blank_literals and _DO_RE.match(
-        _rewrite_tokens(statement, False, tokens)
-    )
-
-    def replace(match: "re.Match[str]") -> str:
-        token = match.group(0)
-        if token.startswith("--") or token.startswith("/*"):
-            return ""
-        if not blank_literals:
-            return token
-        if token.startswith("$"):
+    tokens = lex(statement, rules=rules)
+    executes_body = False
+    if blank_literals:
+        leading = [t for t in tokens if t.kind not in (SPACE, COMMENT)]
+        executes_body = bool(leading) and leading[0].is_word("DO")
+    out: List[str] = []
+    for token in tokens:
+        text = token.text
+        if token.kind in (SPACE, COMMENT):
+            out.append(" ")
+        elif not blank_literals:
+            out.append(text)
+        elif token.kind == STRING and text.startswith("$"):
             if executes_body:
-                tag = _DOLLAR_TAG_RE.match(token)
-                assert tag is not None
-                body = token[tag.end() : len(token) - tag.end()]
-                return f" {_rewrite_tokens(body, True, tokens)} "
-            return "$$"
-        return token[0] + token[-1]
-
-    return tokens.sub(replace, statement)
+                out.append(f" {_rewrite_tokens(token.value, True, rules)} ")
+            else:
+                out.append("$$")
+        elif token.kind == STRING:
+            out.append("''")
+        elif token.kind == IDENT:
+            out.append(text[0] + text[-1])
+        elif token.kind == WORD and not text.isascii():
+            out.append("_")
+        else:
+            out.append(text)
+    return "".join(out)
 
 
 def normalize_statement(statement: str) -> str:
@@ -219,35 +233,49 @@ def normalize_statement(statement: str) -> str:
     ends trimmed. This is the form a statement prints in, so string
     literals keep their text. A '--' inside a literal starts no comment.
     """
-    return _WHITESPACE_RE.sub(" ", _rewrite_tokens(statement, False)).strip()
+    rules = scan_readings(None, False)[0]
+    return _WHITESPACE_RE.sub(" ", _rewrite_tokens(statement, False, rules)).strip()
 
 
-def scannable_statement(statement: str) -> str:
+def scannable_statement(statement: str, dialect: Optional["Dialects"] = None) -> str:
     """
     The form a textual scan reads: `normalize_statement()` with every
     string literal and quoted identifier emptied. A commented-out drop
     and a drop written inside quotes both match nothing. Print
     `normalize_statement()` instead; this form loses text.
+
+    The statement is read as the dialect reads it, or with no dialect
+    with standard literals and comments and Postgres dollar quotes.
     """
-    return _WHITESPACE_RE.sub(" ", _rewrite_tokens(statement, True)).strip()
+    rules = scan_readings(dialect, False)[0]
+    return _WHITESPACE_RE.sub(" ", _rewrite_tokens(statement, True, rules)).strip()
 
 
-def scannable_forms(statement: str) -> Tuple[str, ...]:
+def scannable_forms(
+    statement: str, dialect: Optional["Dialects"] = None
+) -> Tuple[str, ...]:
     """
-    Every form a scan for a drop reads: `scannable_statement()`, and for
-    a statement with a backslash also the form in which a backslash
-    escapes the next character of a literal, as MySQL reads it. A drop
-    found in either form counts, so a literal that one reading ends early
+    Every form a scan for a drop reads, one for each reading
+    `scan_readings()` gives, with repeats left out. A drop found in any
+    form counts, so a literal or a comment that one reading ends early
     cannot hide a drop from the scan.
+
+    With a dialect, the form is the dialect's reading, and for a
+    statement with a backslash also the reading with the backslash rule
+    reversed, as MySQL with NO_BACKSLASH_ESCAPES reads it. With no
+    dialect, the text could be for any engine, so the scan also takes
+    each engine's comment rules: MySQL's `#` and `/*! ... */`, and the
+    nested block comments of Postgres and SQL Server.
     """
-    forms = (scannable_statement(statement),)
-    if "\\" not in statement:
-        return forms
-    backslash = _rewrite_tokens(statement, True, _BACKSLASH_TOKEN_RE)
-    return forms + (_WHITESPACE_RE.sub(" ", backslash).strip(),)
+    forms: List[str] = []
+    for rules in scan_readings(dialect, "\\" in statement):
+        form = _WHITESPACE_RE.sub(" ", _rewrite_tokens(statement, True, rules)).strip()
+        if form not in forms:
+            forms.append(form)
+    return tuple(forms)
 
 
-def _removes_data(statement: str) -> bool:
+def _removes_data(statement: str, dialect: Optional["Dialects"] = None) -> bool:
     """
     Whether one statement removes something the schema cannot give back,
     by the rules `destructive_statements()` gives.
@@ -261,11 +289,13 @@ def _removes_data(statement: str) -> bool:
                 return False
     return any(
         _DESTRUCTIVE_RE.search(form) or _ALTER_DROP_RE.search(form)
-        for form in scannable_forms(statement)
+        for form in scannable_forms(statement, dialect)
     )
 
 
-def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
+def destructive_statements(
+    statements: Union[str, Sequence[str]], dialect: Optional["Dialects"] = None
+) -> List[str]:
     """
     Returns the statements that remove something the schema cannot give
     back: DROP TABLE, DROP COLUMN, DROP TYPE, DROP VIEW, DROP
@@ -289,10 +319,15 @@ def destructive_statements(statements: Union[str, Sequence[str]]) -> List[str]:
     `--` and `/* */` comments are handled. The scan reads no text inside
     quotes or inside a dollar-quoted body, so a statement that names a
     drop in a string literal or a `$$` function body is not labelled.
+
+    The scan reads comments as the dialect does. With no dialect, it
+    reads each statement as every engine would, and labels a drop that
+    any of those readings finds: a MySQL `#` comment, a `/*! ... */`
+    body, and a nested `/* */` comment each read differently elsewhere.
     """
     if isinstance(statements, str):
         statements = [statements]
-    return [normalize_statement(s) for s in statements if _removes_data(s)]
+    return [normalize_statement(s) for s in statements if _removes_data(s, dialect)]
 
 
 class PendingSummary(NamedTuple):

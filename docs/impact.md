@@ -314,7 +314,15 @@ A statement the diff or a `DdlStep` generated has an intent: what the statement 
 
 The analysis recognizes the DDL and DML statements its rules cover. Any other statement, such as `GRANT`, a `DO` block, or a statement written in another engine's syntax, has confidence `unknown` and an `impact.unknown` finding that gives the reason. An unknown statement never counts as safe: every [impact guard](#guards-over-impact) blocks it, and `up(preflight="refuse")` refuses it. A migration string that has more than one statement is also unknown, so write one statement per list entry or per line-ending semicolon in a SQL file.
 
-A default the rules do not recognize as stable counts as volatile, so `ADD COLUMN ... DEFAULT some_function()` reads as a rewrite, with confidence `likely` and a finding that names the function.
+The analysis reads a statement's text as the engine's server reads it. On MySQL and MariaDB, `#` starts a line comment, `--` starts one only before a space or a control character, and the body of a `/*! ... */` or `/*M! ... */` comment is read as SQL, since the server runs it. Postgres, SQL Server, and DuckDB nest block comments. Each engine's own whitespace separates words: on SQL Server a no-break space separates words, and on Postgres it is part of the word.
+
+A `;` inside a statement makes it unknown, except in the body of the trigger, function, or procedure a `CREATE` statement creates. The body is a dollar-quoted string or `BEGIN ATOMIC ... END` on Postgres and DuckDB, a `BEGIN ... END` block that ends the text on MySQL and SQLite, and on SQL Server everything after the first `AS`, which the server stores as the body. A table or column named `trigger` does not open a body, so `CREATE TABLE t (trigger int); ALTER TABLE big ...` is unknown.
+
+SQL Server runs two statements with no `;` between them. A statement that a word such as `ALTER`, `UPDATE`, or `DROP` follows where its grammar ends, as in `UPDATE t SET a = 1 WHERE id = 1 ALTER TABLE big ...`, is unknown.
+
+A MySQL `UPDATE` that joins or lists several tables, or a `DELETE` that names several tables to delete from, is unknown, since it may write any of them. A `DELETE` whose target is an alias, such as `DELETE a FROM items a JOIN ...`, reads as a delete from `items`. `limited` is set by SQL Server's `TOP`, or on MySQL and SQLite by a `LIMIT` with a number or placeholder at the end of the statement, so a table alias named `limit` does not set it.
+
+A default the rules do not recognize as stable counts as volatile, so `ADD COLUMN ... DEFAULT some_function()` reads as a rewrite, with confidence `likely` and a finding that names the function. A quoted name before `(`, such as `"gen_random_uuid"()`, is a call. A call in a schema other than `pg_catalog`, such as `app.now()`, is a function the rules do not know.
 
 ## Annotated scripts
 

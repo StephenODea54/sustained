@@ -96,6 +96,14 @@ class AlterTableTestCase(RecognizerTestCase):
         self.assertUnknown("ALTER TABLE t ADD c int NOT DEFERRABLE", table="t")
         self.assertUnknown("ALTER TABLE t ADD c (int)", table="t")
 
+    def test_serial_default_value_is_an_auto_increment_column(self):
+        options = action("ALTER TABLE t ADD a INT SERIAL DEFAULT VALUE", MYSQL).options
+        self.assertEqual(options["type"], "INT")
+        self.assertTrue(options["identity"])
+        self.assertTrue(options["not_null"])
+        self.assertTrue(options["unique"])
+        self.assertIsNone(options["default"])
+
     def test_malformed_clauses_are_unknown(self):
         for sql, dialect in (
             ("ALTER TABLE t WITH SOMETHING ADD c int", MSSQL),

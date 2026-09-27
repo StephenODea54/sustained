@@ -12,6 +12,7 @@ from typing import (
 )
 
 from sustained.impact.tokens import (
+    IDENT,
     PUNCT,
     WORD,
     Token,
@@ -124,25 +125,35 @@ def classify_default(tokens: Sequence[Token]) -> Tuple[str, Optional[str], bool]
     that decided it, and whether the answer is certain.
 
     A function the recognizer does not know counts as volatile, which is
-    the worst case, and the answer is then not certain.
+    the worst case, and the answer is then not certain. A quoted name
+    followed by `(` is a call, compared as the quotes spell it. A call
+    qualified by a schema other than `pg_catalog`, such as `app.now()`,
+    is a function the recognizer does not know.
     """
     unknown: Optional[str] = None
     stable = False
     for index, token in enumerate(tokens):
-        if token.kind != WORD:
+        if token.kind not in (WORD, IDENT):
             continue
-        after_cast = index > 0 and tokens[index - 1].text == "::"
+        start = _name_start(tokens, index)
+        if start > 0 and tokens[start - 1].text == "::":
+            continue
         is_call = (
             index + 1 < len(tokens)
             and tokens[index + 1].text == "("
             and tokens[index + 1].kind == PUNCT
         )
-        if after_cast:
-            continue
         if not is_call:
-            stable = stable or token.value in _STABLE_WORDS
+            if token.kind == WORD and start == index:
+                stable = stable or token.value in _STABLE_WORDS
             continue
-        name = token.text.lower()
+        name = token.value if token.kind == IDENT else token.text.lower()
+        if start < index and not (
+            start == index - 2 and (tokens[start].name or "").lower() == "pg_catalog"
+        ):
+            if unknown is None:
+                unknown = ".".join(t.name or "" for t in tokens[start : index + 1 : 2])
+            continue
         if name in _VOLATILE_CALLS:
             return "volatile", name, True
         if name in _NON_VOLATILE_CALLS:
@@ -152,3 +163,16 @@ def classify_default(tokens: Sequence[Token]) -> Tuple[str, Optional[str], bool]
     if unknown is not None:
         return "volatile", unknown, False
     return ("stable" if stable else "constant"), None, True
+
+
+def _name_start(tokens: Sequence[Token], index: int) -> int:
+    """The index of the first part of the dotted name that ends at `index`."""
+    start = index
+    while (
+        start >= 2
+        and tokens[start - 1].kind == PUNCT
+        and tokens[start - 1].text == "."
+        and tokens[start - 2].kind in (WORD, IDENT)
+    ):
+        start -= 2
+    return start

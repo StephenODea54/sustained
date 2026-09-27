@@ -5,6 +5,7 @@ DML, maintenance, SET, LOCK, and the other statements.
 from __future__ import annotations
 
 from typing import (
+    Dict,
     List,
     Optional,
     Sequence,
@@ -21,9 +22,24 @@ from sustained.impact.recognizer.cursor import (
 )
 from sustained.impact.recognizer.sources import tables_read
 from sustained.impact.tokens import (
+    IDENT,
+    NUMBER,
+    PARAM,
     PUNCT,
     WORD,
     Token,
+)
+
+# The words that join another table to the target of a MySQL UPDATE.
+_JOIN_WORDS = ("JOIN", "INNER", "LEFT", "RIGHT", "CROSS", "STRAIGHT_JOIN", "NATURAL")
+# The words that end a FROM or USING list.
+_REFS_END = ("WHERE", "ORDER", "LIMIT", "OPTION", "RETURNING", "OUTPUT", "GROUP")
+# The words after a table in a FROM list that are not its alias.
+_NOT_ALIASES = frozenset(
+    _JOIN_WORDS
+    + _REFS_END
+    + ("FULL", "OUTER", "ON", "USING", "WITH", "PARTITION", "USE", "FORCE")
+    + ("IGNORE", "FROM", "SET", "TABLESAMPLE")
 )
 
 
@@ -35,11 +51,19 @@ class Statements(Cursor):
             return self.update_statistics()
         limited = self.top()
         self.accept("ONLY")
+        if self.dialect_named("MYSQL"):
+            self.accept("LOW_PRIORITY")
+            self.accept("IGNORE")
         table = self.target()
-        rest = self.rest()
-        if not self.top_level_word(rest, "SET"):
+        head = self.up_to_word("SET")
+        if self.joins_tables(head):
+            raise Unrecognized("a multi-table UPDATE may write any of its tables")
+        if not self.accept("SET"):
             raise Unrecognized("expected SET in UPDATE")
-        return self.write_statement("update", table, rest, limited)
+        tail = self.rest()
+        if self.mssql:
+            table = self.resolve_alias(table, tail)
+        return self.write_statement("update", table, tail, limited)
 
     def update_statistics(self) -> ParsedStatement:
         """
@@ -68,23 +92,163 @@ class Statements(Cursor):
         return True
 
     def write_statement(
-        self, kind: str, table: str, rest: Sequence[Token], limited: bool
+        self, kind: str, table: str, tail: Sequence[Token], limited: bool
     ) -> ParsedStatement:
+        """
+        An UPDATE or DELETE. `tail` is the text after SET, or after the
+        DELETE target. `where` is a WHERE outside parentheses in it, and
+        `limited` is a TOP, or on MySQL and SQLite a tail that ends with
+        `LIMIT n`, `LIMIT n OFFSET m`, or `LIMIT m, n`.
+        """
         options: Options = {
-            "where": self.top_level_word(rest, "WHERE"),
-            "limited": limited or self.top_level_word(rest, "LIMIT"),
+            "where": self.top_level_word(tail, "WHERE"),
+            "limited": limited or self.ends_with_limit(tail),
         }
+        self.table = table
         return ParsedStatement(kind, table, options=frozen(options))
+
+    def ends_with_limit(self, tail: Sequence[Token]) -> bool:
+        """Whether the tail ends with a MySQL or SQLite LIMIT clause."""
+        if not (self.sqlite or self.dialect_named("MYSQL")):
+            return False
+        counts = (NUMBER, PARAM)
+        for size, middle in ((2, None), (4, "OFFSET"), (4, ",")):
+            clause = tail[-size:]
+            if len(clause) < size or not clause[0].is_word("LIMIT"):
+                continue
+            if any(token.kind not in counts for token in clause[1::2]):
+                continue
+            if middle is None or clause[2].value == middle:
+                return True
+        return False
+
+    def joins_tables(self, tokens: Sequence[Token]) -> bool:
+        """Whether a comma or a JOIN outside parentheses names another table."""
+        depth = 0
+        for token in tokens:
+            if token.kind == PUNCT and token.text == "(":
+                depth += 1
+            elif token.kind == PUNCT and token.text == ")":
+                depth -= 1
+            elif depth == 0 and (
+                (token.kind == PUNCT and token.text == ",")
+                or token.is_word(*_JOIN_WORDS)
+            ):
+                return True
+        return False
+
+    def resolve_alias(self, target: str, tail: Sequence[Token]) -> str:
+        """
+        The table a write target names when the statement's FROM or USING
+        list follows: the table an alias in that list stands for, or the
+        target itself. A target that aliases a derived table is not read.
+        """
+        refs = self.table_refs(tail)
+        key = target.lower()
+        if key not in refs:
+            return target
+        table = refs[key]
+        if table is None:
+            raise Unrecognized(f"the write target {target} is a derived table")
+        return table
+
+    def table_refs(self, tokens: Sequence[Token]) -> Dict[str, Optional[str]]:
+        """
+        The tables of the FROM or USING list in `tokens`, keyed by lower
+        case table name and alias. A derived table maps to None.
+        """
+        refs: Dict[str, Optional[str]] = {}
+        depth = 0
+        index = 0
+        opened = False
+        while index < len(tokens):
+            token = tokens[index]
+            index += 1
+            if token.kind == PUNCT and token.text in "()":
+                depth += 1 if token.text == "(" else -1
+                continue
+            if depth:
+                continue
+            if token.is_word(*_REFS_END):
+                opened = False
+                continue
+            if token.is_word("FROM", "USING"):
+                opened = True
+            elif not (
+                opened
+                and (token.is_word("JOIN") or token.kind == PUNCT and token.text == ",")
+            ):
+                continue
+            table, index = self.table_ref(tokens, index)
+            alias, index = self.table_alias(tokens, index)
+            if table is not None:
+                refs.setdefault(table.lower(), table)
+            if alias is not None:
+                refs[alias.lower()] = table
+        return refs
+
+    def table_ref(
+        self, tokens: Sequence[Token], index: int
+    ) -> Tuple[Optional[str], int]:
+        """The dotted table name at `index`, or None for a derived table."""
+        if index < len(tokens) and tokens[index].text == "(":
+            depth = 0
+            while index < len(tokens):
+                if tokens[index].kind == PUNCT and tokens[index].text in "()":
+                    depth += 1 if tokens[index].text == "(" else -1
+                index += 1
+                if depth == 0:
+                    break
+            return None, index
+        parts: List[str] = []
+        while index < len(tokens) and tokens[index].name is not None:
+            parts.append(tokens[index].name or "")
+            index += 1
+            if not (index < len(tokens) and tokens[index].text == "."):
+                break
+            index += 1
+        return (".".join(parts) if parts else None), index
+
+    @staticmethod
+    def table_alias(tokens: Sequence[Token], index: int) -> Tuple[Optional[str], int]:
+        """The alias after a table in a FROM list, if one follows."""
+        if index < len(tokens) and tokens[index].is_word("AS"):
+            index += 1
+        elif (
+            index < len(tokens)
+            and tokens[index].kind == WORD
+            and (tokens[index].value in _NOT_ALIASES)
+        ):
+            return None, index
+        if index < len(tokens) and tokens[index].kind in (WORD, IDENT):
+            return tokens[index].name, index + 1
+        return None, index
 
     def delete(self) -> ParsedStatement:
         limited = self.top()
+        if self.dialect_named("MYSQL"):
+            while self.accept_any("LOW_PRIORITY", "QUICK", "IGNORE"):
+                pass
+        multiple = "a multi-table DELETE may delete from any of its tables"
         if self.accept("FROM"):
             self.accept("ONLY")
             table = self.target()
+            if self.is_punct(","):
+                raise Unrecognized(multiple)
+            tail = self.rest()
+            if not self.dialect_named("POSTGRES", "DUCKDB", "DEFAULT"):
+                table = self.resolve_alias(table, tail)
         else:
             # SQL Server and MySQL: DELETE t [FROM ...] [WHERE ...].
             table = self.target()
-        return self.write_statement("delete", table, self.rest(), limited)
+            if self.is_punct(","):
+                raise Unrecognized(multiple)
+            tail = self.rest()
+            table = self.resolve_alias(table, tail)
+        return self.write_statement("delete", table, tail, limited)
+
+    def dialect_named(self, *names: str) -> bool:
+        return self.dialect is not None and self.dialect.name in names
 
     def insert(self) -> ParsedStatement:
         self.accept("IGNORE")
@@ -97,20 +261,23 @@ class Statements(Cursor):
         self.accept("OVERRIDING")
         self.accept_any("SYSTEM", "USER")
         self.accept("VALUE")
-        rest = self.rest()
         options: Options = {"source": "select", "rows": None}
-        if rest and rest[0].is_word("VALUES"):
+        if self.accept("VALUES"):
             options["source"] = "values"
-            options["rows"] = self.value_rows(rest[1:])
-        elif rest and rest[0].is_word("DEFAULT"):
+            options["rows"] = self.value_rows(self.rest())
+        elif self.accept("DEFAULT"):
+            self.accept("VALUES")
             options["source"] = "default"
             options["rows"] = 1
-        elif not self.top_level_word(rest[:1], "SELECT", "WITH", "TABLE") and not (
-            rest and rest[0].text == "("
-        ):
-            raise Unrecognized("expected VALUES or SELECT in INSERT")
+        elif self.is_punct("(") or self.is_word("SELECT", "WITH", "TABLE"):
+            # The query's first word would end rest() on SQL Server.
+            start = self.pos
+            if not self.accept_any("SELECT", "WITH", "TABLE"):
+                self.group()
+            self.rest()
+            options["reads"] = tables_read(self.tokens[start : self.pos])
         else:
-            options["reads"] = tables_read(rest)
+            raise Unrecognized("expected VALUES or SELECT in INSERT")
         return ParsedStatement("insert", table, options=frozen(options))
 
     def select_group_follows(self) -> bool:

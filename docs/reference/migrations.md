@@ -559,7 +559,7 @@ warnings_only(verdicts) -> list[Verdict]
 
 The verdicts that only report.
 
-The scan is textual, like the scan behind the destructive labels. Sustained strips comments, empties quoted text, collapses whitespace, and parses no SQL. The verdict prints the statement with its quoted text intact.
+The scan is textual, like the scan behind the destructive labels. Sustained strips comments, empties quoted text, collapses whitespace, and parses no SQL. It reads comments and whitespace by the rules of the dialect the guard receives: MySQL `#` comments and the SQL inside `/*! ... */`, nested block comments on Postgres and SQL Server, and the engine's whitespace, so `CREATE INDEX CONCURRENTLY idx` written with a no-break space (U+00A0) before `idx` blocks on Postgres, which reads `CONCURRENTLY` and `idx` as one index name. A guard blocks or warns when any reading the scan takes matches. The verdict prints the statement with its quoted text intact.
 
 ## `AsyncMigrator`
 
@@ -734,11 +734,11 @@ A migration that includes a drop has no down step, and neither does one that inc
 These names live in `sustained.analysis`, and `sustained plan` uses them.
 
 ```python
-destructive_statements(statements) -> list[str]
+destructive_statements(statements, dialect=None) -> list[str]
 ```
 {: .sig #destructive_statements}
 
-The statements that remove data or an object that contains it: `DROP TABLE`, `DROP COLUMN`, `DROP TYPE`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, `DROP SCHEMA ... CASCADE`, a constraint drop, `TRUNCATE`, and `DELETE FROM`. The returned statements have comments removed and whitespace collapsed. Skips index and key drops, and a plain `DROP SCHEMA`, which refuses a non-empty schema.
+The statements that remove data or an object that contains it: `DROP TABLE`, `DROP COLUMN`, `DROP TYPE`, `DROP VIEW`, `DROP MATERIALIZED VIEW`, `DROP DATABASE`, `DROP SCHEMA ... CASCADE`, a constraint drop, `TRUNCATE`, and `DELETE FROM`. The returned statements have comments removed and whitespace collapsed. `dialect` names the engine whose comment and whitespace rules the scan reads; with none, the scan takes every engine's reading. Skips index and key drops, and a plain `DROP SCHEMA`, which refuses a non-empty schema.
 
 ```python
 summarize(migration, state, compiler=None) -> PendingSummary
@@ -763,4 +763,4 @@ statement_scope(statement) -> tuple[str | None, bool]
 
 The migration id and transaction flag of one statement. A plain `str` gives `(None, True)`.
 
-The scan is textual. It labels a column drop written without the COLUMN keyword, which MySQL allows. It keeps comments and quoted text out of the scan, so a drop named inside a string literal is not labelled. The label is a report for the operator, and `migrate` reads the same list for its rehearsal gate.
+The scan is textual. It labels a column drop written without the COLUMN keyword, which MySQL allows. It keeps comments and quoted text out of the scan, so a drop named inside a string literal is not labelled. It reads comments as the given dialect's server does, including the SQL inside a MySQL `/*! ... */` comment, and with no dialect a drop that any engine's reading finds is labelled. The label is a report for the operator, and `migrate` reads the same list for its rehearsal gate.

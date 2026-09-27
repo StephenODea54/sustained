@@ -92,6 +92,79 @@ class DmlTestCase(RecognizerTestCase):
     def test_update_without_set_is_unknown(self):
         self.assertUnknown("UPDATE t", table="t")
 
+    def test_a_statement_after_a_sql_server_write_is_unread(self):
+        second = "ALTER TABLE big ALTER COLUMN a bigint NOT NULL"
+        self.assertUnknown(f"UPDATE t SET a = 1 WHERE id = 1 {second}", MSSQL, "t")
+        self.assertUnknown(f"CREATE TABLE t (a int) {second}", MSSQL, "t")
+        self.assertUnknown(f"INSERT INTO t (a) SELECT 1 {second}", MSSQL, "t")
+        self.assertUnknown(
+            "ALTER TABLE t ADD c int DEFAULT 1 UPDATE x SET a = 2", MSSQL, "t"
+        )
+
+    def test_sql_server_insert_sources(self):
+        union = recognize(
+            "INSERT INTO t SELECT a FROM u UNION ALL SELECT b FROM v", MSSQL
+        )
+        self.assertEqual((union.kind, union.options["source"]), ("insert", "select"))
+        self.assertEqual(
+            recognize("INSERT INTO t VALUES (1), (2)", MSSQL).options["rows"], 2
+        )
+        self.assertEqual(
+            recognize("INSERT INTO t DEFAULT VALUES", MSSQL).options["source"],
+            "default",
+        )
+
+    def test_multi_table_writes_are_unknown(self):
+        for sql in (
+            "UPDATE a JOIN b ON a.id = b.id SET b.x = 1",
+            "UPDATE a x INNER JOIN b ON x.id = b.id SET b.x = 1",
+            "UPDATE a, b SET b.x = 1",
+            "DELETE a, b FROM a JOIN b ON a.id = b.id",
+            "DELETE FROM a, b USING a JOIN b ON a.id = b.id",
+        ):
+            with self.subTest(sql):
+                self.assertUnknown(sql, MYSQL, table="a")
+
+    def test_a_delete_through_an_alias_reports_its_table(self):
+        for sql, dialect in (
+            ("DELETE a FROM items a JOIN b ON a.id = b.id WHERE b.x = 1", MYSQL),
+            ("DELETE FROM x USING items AS x JOIN y ON x.id = y.id", MYSQL),
+            ("DELETE x FROM items x WITH (NOLOCK) JOIN y ON x.id = y.id", MSSQL),
+            ("DELETE FROM x FROM items x, y WHERE x.id = y.id", MSSQL),
+            ("DELETE items FROM items JOIN y ON items.id = y.id", MYSQL),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(recognize(sql, dialect).table, "items")
+        self.assertEqual(
+            recognize(
+                "UPDATE x SET a = 1 FROM app.items x WHERE x.id = 1", MSSQL
+            ).table,
+            "app.items",
+        )
+        self.assertUnknown("DELETE d FROM (SELECT 1 AS id) d", MSSQL, table="d")
+
+    def test_where_and_limit_are_read_in_their_clause(self):
+        aliased = recognize("UPDATE t limit SET a = 1 WHERE id = 1", SQLITE)
+        self.assertTrue(aliased.options["where"])
+        self.assertFalse(aliased.options["limited"])
+        dotless = recognize("UPDATE t SET a = 1 WHERE id = 1 l\u0131m\u0131t 5", MYSQL)
+        self.assertFalse(dotless.options["limited"])
+        inner = recognize("UPDATE t SET a = (SELECT 1 LIMIT 1)", MYSQL)
+        self.assertFalse(inner.options["limited"])
+        for tail in ("LIMIT 10", "LIMIT ?", "LIMIT 10 OFFSET 5", "LIMIT 5, 10"):
+            with self.subTest(tail):
+                sql = f"DELETE FROM t WHERE a < 5 ORDER BY a {tail}"
+                self.assertTrue(recognize(sql, MYSQL).options["limited"])
+        self.assertFalse(
+            recognize("DELETE FROM t WHERE a < 5 LIMIT a", MYSQL).options["limited"]
+        )
+        self.assertFalse(
+            recognize("DELETE FROM t WHERE a < 5 LIMIT 5 x 1", MYSQL).options["limited"]
+        )
+        self.assertFalse(
+            recognize("UPDATE t SET a = 1 WHERE id = 1 LIMIT 10", PG).options["limited"]
+        )
+
 
 class MaintenanceTestCase(RecognizerTestCase):
     def test_truncate_and_rename(self):

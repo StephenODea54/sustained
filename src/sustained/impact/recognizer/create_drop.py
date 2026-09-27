@@ -53,7 +53,7 @@ class CreateDrop(Cursor):
             return self.create_table(temporary)
         materialized = self.accept("MATERIALIZED")
         if self.accept("VIEW"):
-            self.rest()
+            self.body()
             return ParsedStatement(
                 "create_view", options=frozen({"materialized": materialized})
             )
@@ -63,7 +63,10 @@ class CreateDrop(Cursor):
             return self.create_type()
         found = self.accept_any(*OBJECT_WORDS)
         if found:
-            self.rest()
+            if found in ("FUNCTION", "PROCEDURE"):
+                self.body()
+            else:
+                self.rest()
             return ParsedStatement(
                 "create_object", options=frozen({"object": found.lower()})
             )
@@ -176,7 +179,7 @@ class CreateDrop(Cursor):
     def create_trigger(self) -> ParsedStatement:
         self.accept("IF", "NOT", "EXISTS")
         name = self.name()
-        tokens = self.rest()
+        tokens = self.body()
         depth = 0
         for index, token in enumerate(tokens):
             if token.kind == PUNCT and token.text in "()":

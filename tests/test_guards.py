@@ -29,6 +29,15 @@ class NoDropsTest(unittest.TestCase):
         verdicts = self.run_on(["DROP TABLE users"])
         self.assertEqual(verdicts, [Verdict("no_drops", BLOCK, "DROP TABLE users")])
 
+    def test_blocks_a_drop_in_a_mysql_executable_comment(self):
+        statement = "ALTER TABLE big ADD COLUMN c INT /*!, DROP COLUMN important */"
+        verdicts = self.run_on([statement], Dialects.MYSQL)
+        self.assertEqual([v.verdict for v in verdicts], [BLOCK])
+
+    def test_blocks_a_drop_after_a_no_break_space_on_sql_server(self):
+        verdicts = self.run_on(["DROP\xa0TABLE z"], Dialects.MSSQL)
+        self.assertEqual([v.verdict for v in verdicts], [BLOCK])
+
     def test_blocks_column_drop(self):
         verdicts = self.run_on(["ALTER TABLE users DROP COLUMN bio"])
         self.assertEqual(len(verdicts), 1)
@@ -128,6 +137,13 @@ class IndexMustBeConcurrentTest(unittest.TestCase):
         verdicts = self.guard(["CREATE INDEX i ON users (email)"], Dialects.POSTGRES)
         self.assertEqual(verdicts[0].rule, "index_must_be_concurrent")
         self.assertEqual(verdicts[0].verdict, BLOCK)
+
+    def test_blocks_concurrently_joined_to_the_name_by_a_no_break_space(self):
+        # Postgres reads "CONCURRENTLY\xa0idx" as the index name.
+        verdicts = self.guard(
+            ["CREATE INDEX CONCURRENTLY\xa0idx ON t (a)"], Dialects.POSTGRES
+        )
+        self.assertEqual([v.verdict for v in verdicts], [BLOCK])
 
     def test_passes_concurrent_index(self):
         verdicts = self.guard(

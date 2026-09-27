@@ -449,6 +449,167 @@ class UnknownTestCase(RecognizerTestCase):
         self.assertIn("alter_column_type", ACTION_KINDS)
 
 
+A_REWRITE = {
+    PG: "ALTER TABLE big ALTER COLUMN a TYPE bigint",
+    Dialects.DUCKDB: "ALTER TABLE big ALTER COLUMN a TYPE bigint",
+    MYSQL: "ALTER TABLE big MODIFY a bigint",
+    MSSQL: "ALTER TABLE big ALTER COLUMN a bigint NOT NULL",
+    SQLITE: "ALTER TABLE big DROP COLUMN a",
+    None: "ALTER TABLE big ALTER COLUMN a TYPE bigint",
+}
+
+
+class StatementJoinsTestCase(RecognizerTestCase):
+    """
+    A readable statement joined to a second statement reads as unknown
+    whenever the dialect's lexer sees the second statement's words.
+    """
+
+    READABLE = (
+        "CREATE TABLE t (trigger int)",
+        "CREATE TABLE t (a int, procedure int)",
+        "UPDATE t SET a = 1 WHERE id = 1",
+        "DELETE FROM t WHERE id = 1",
+        "INSERT INTO t VALUES (1)",
+        "UPDATE t SET a = 'it''s' WHERE id = 1",
+    )
+    JOINS = (
+        "{0}; {1}",
+        "{0} -- x\n; {1}",
+        "{0} -- x\r; {1}",
+        "{0} # x\n; {1}",
+        "{0} /* x */; {1}",
+        "{0} /* /* x */ */; {1}",
+        "{0} /* /* */ '; {1} -- '",
+        "{0} /*! ; {1} */",
+        "{0} --x\n; {1}",
+        "{0} {1}",
+    )
+
+    def test_a_second_statement_the_lexer_reads_makes_the_text_unknown(self):
+        for dialect, second in A_REWRITE.items():
+            for first in self.READABLE:
+                for join in self.JOINS:
+                    sql = join.format(first, second)
+                    words = [t.value for t in tokenize(sql, dialect)]
+                    if "BIG" not in words:
+                        continue
+                    with self.subTest(dialect=dialect, sql=sql):
+                        parsed = recognize(sql, dialect)
+                        if dialect is MSSQL or ";" in words:
+                            self.assertEqual(parsed.kind, UNKNOWN_KIND)
+
+    def test_sql_server_needs_no_separator(self):
+        second = A_REWRITE[MSSQL]
+        for first in self.READABLE + (
+            "SET LOCK_TIMEOUT 5000",
+            "CREATE TABLE t (a int)",
+            "ALTER TABLE t ADD c int DEFAULT 1",
+            "INSERT INTO t SELECT 1",
+        ):
+            with self.subTest(first):
+                parsed = recognize(f"{first} {second}", MSSQL)
+                self.assertEqual(parsed.kind, UNKNOWN_KIND)
+
+
+class RoutineBodyTestCase(RecognizerTestCase):
+    """A `;` is read only inside the body of the routine a statement creates."""
+
+    def test_text_the_body_check_cannot_place_is_unknown(self):
+        for sql, dialect in (
+            ("CREATE TABLE t (trigger int); " + A_REWRITE[PG], PG),
+            ("CREATE TABLE function (a int); " + A_REWRITE[PG], PG),
+            (
+                "CREATE TRIGGER tr2 BEFORE INSERT ON begin FOR EACH ROW "
+                "SET NEW.a = 1; " + A_REWRITE[MYSQL] + "; END",
+                MYSQL,
+            ),
+            (
+                "CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW BEGIN "
+                "SET NEW.a = 1; END; " + A_REWRITE[MYSQL],
+                MYSQL,
+            ),
+            (
+                "CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW SET NEW.a = "
+                "begin + 1; " + A_REWRITE[MYSQL] + "; END",
+                MYSQL,
+            ),
+            (
+                "CREATE PROCEDURE p() BEGIN SELECT 1; END lbl; " + A_REWRITE[MYSQL],
+                MYSQL,
+            ),
+            (
+                "CREATE PROCEDURE p() BEGIN SELECT begin FROM t; END",
+                MYSQL,
+            ),
+            (
+                "CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC "
+                "SELECT 1; END; " + A_REWRITE[PG],
+                PG,
+            ),
+            (
+                "CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC "
+                "SELECT 1; BEGIN SELECT 2; END; END",
+                PG,
+            ),
+            ("CREATE FUNCTION f() RETURNS int AS 'x'; " + A_REWRITE[PG], PG),
+            ("CREATE PROCEDURE p; " + A_REWRITE[MSSQL], MSSQL),
+            ("CREATE OR DROP TRIGGER t; " + A_REWRITE[PG], PG),
+            ("CREATE DEFINER = 1 TRIGGER t; " + A_REWRITE[MYSQL], MYSQL),
+            ("CREATE DEFINER => x TRIGGER t; " + A_REWRITE[MYSQL], MYSQL),
+            ("CREATE DEFINER = a@1 TRIGGER t; " + A_REWRITE[MYSQL], MYSQL),
+            ("CREATE DEFINER = CURRENT_USER(1) TRIGGER t; END", MYSQL),
+            ("CREATE TRIGGER t BEGIN; END", MYSQL),
+        ):
+            with self.subTest(sql):
+                parsed = recognize(sql, dialect)
+                self.assertEqual(parsed.kind, UNKNOWN_KIND)
+
+    def test_a_routine_body_may_contain_semicolons(self):
+        for sql, dialect, kind in (
+            (
+                "CREATE TRIGGER rb AFTER INSERT ON rb_items BEGIN "
+                "INSERT INTO rb_log VALUES (new.label); "
+                "SELECT CASE WHEN 1 THEN 2 END; END",
+                SQLITE,
+                "create_trigger",
+            ),
+            (
+                "CREATE DEFINER = 'app'@'%' TRIGGER tr BEFORE INSERT ON t "
+                "FOR EACH ROW BEGIN IF NEW.a > 1 THEN SET NEW.a = 1; END IF; "
+                "CASE NEW.b WHEN 1 THEN SET NEW.c = 1; END CASE; END",
+                MYSQL,
+                "create_trigger",
+            ),
+            (
+                "CREATE DEFINER = CURRENT_USER() PROCEDURE p() BEGIN SELECT 1; "
+                "lbl: BEGIN SELECT 2; END lbl; WHILE 0 DO BEGIN SELECT 3; END; "
+                "END WHILE; END",
+                MYSQL,
+                "create_object",
+            ),
+            (
+                "CREATE DEFINER = CURRENT_USER PROCEDURE p() BEGIN SELECT 1; END",
+                MYSQL,
+                "create_object",
+            ),
+            (
+                "CREATE OR REPLACE FUNCTION f() RETURNS int LANGUAGE sql "
+                "BEGIN ATOMIC SELECT 1; SELECT CASE WHEN true THEN 1 END; END",
+                PG,
+                "create_object",
+            ),
+            (
+                "CREATE TRIGGER tr ON t AFTER INSERT AS BEGIN SELECT 1; END",
+                MSSQL,
+                "create_trigger",
+            ),
+            ("CREATE PROCEDURE p AS SELECT 1; SELECT 2", MSSQL, "create_object"),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(recognize(sql, dialect).kind, kind)
+
+
 class ClassifyDefaultTestCase(unittest.TestCase):
     def classify(self, expression):
         return classify_default(tokenize(expression, PG))
@@ -485,6 +646,20 @@ class ClassifyDefaultTestCase(unittest.TestCase):
 
     def test_a_cast_to_a_sized_type_is_not_a_call(self):
         self.assertEqual(self.classify("'x'::varchar(10)"), ("constant", None, True))
+        self.assertEqual(
+            self.classify("'x'::pg_catalog.varchar(10)"), ("constant", None, True)
+        )
+
+    def test_a_quoted_name_before_a_parenthesis_is_a_call(self):
+        self.assertEqual(
+            self.classify('"gen_random_uuid"()'), ("volatile", "gen_random_uuid", True)
+        )
+        self.assertEqual(self.classify('"NOW"()'), ("volatile", "NOW", False))
+
+    def test_a_call_in_another_schema_is_a_user_function(self):
+        self.assertEqual(self.classify("app.now()"), ("volatile", "app.now", False))
+        self.assertEqual(self.classify("pg_catalog.now()"), ("stable", None, True))
+        self.assertEqual(self.classify('"pg_catalog"."now"()'), ("stable", None, True))
 
 
 if __name__ == "__main__":

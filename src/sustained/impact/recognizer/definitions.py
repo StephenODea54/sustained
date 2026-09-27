@@ -193,6 +193,8 @@ class Definitions(Cursor):
                 break
             elif token.value in COLUMN_CONSTRAINT_WORDS:
                 break
+            elif self.is_words("SERIAL", "DEFAULT", "VALUE"):
+                break
             else:
                 self.pos += 1
         return self.tokens[start : self.pos]
@@ -319,6 +321,11 @@ class Definitions(Cursor):
                 self.group()
         elif self.accept_any("AUTO_INCREMENT", "AUTOINCREMENT"):
             options["identity"] = True
+        elif self.accept("SERIAL", "DEFAULT", "VALUE"):
+            # MySQL: NOT NULL AUTO_INCREMENT UNIQUE.
+            options["identity"] = True
+            options["not_null"] = True
+            options["unique"] = True
         elif self.accept("COMMENT"):
             options["comment"] = self.value()
         elif self.accept("FIRST"):
