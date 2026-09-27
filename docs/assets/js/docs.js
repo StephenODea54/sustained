@@ -76,6 +76,26 @@
     box.appendChild(table);
   });
 
+  /* --- headings link to themselves --------------------------------- */
+
+  /* Clicking a heading puts its anchor in the address bar, so a reader can
+     copy a link to that section. The heading's text moves inside a link to
+     its own id. */
+
+  var anchored = document.querySelectorAll('.prose h2[id], .prose h3[id], .prose h4[id]');
+  Array.prototype.forEach.call(anchored, function (heading) {
+    if (heading.querySelector('a')) {
+      return;
+    }
+    var link = document.createElement('a');
+    link.className = 'heading-link';
+    link.href = '#' + heading.id;
+    while (heading.firstChild) {
+      link.appendChild(heading.firstChild);
+    }
+    heading.appendChild(link);
+  });
+
   /* --- mark what a statement does ---------------------------------- */
 
   /* A migration is safe or it is not, and the difference is a handful of
