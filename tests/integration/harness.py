@@ -121,8 +121,13 @@ def _connect_mssql(name, database=None, autocommit=False):
     pyodbc = driver(name)
     wanted = database or piece.database
     # The image ships with master only, so the test database is made on
-    # first use. CREATE DATABASE cannot run inside a transaction.
-    bootstrap = pyodbc.connect(_odbc_string(piece, "master"), autocommit=True)
+    # first use. CREATE DATABASE cannot run inside a transaction. The
+    # driver manager pools connections by their connection string, so
+    # the APP name keeps a test's own session on master, which may have
+    # been in a transaction, from being handed back here.
+    bootstrap = pyodbc.connect(
+        _odbc_string(piece, "master") + ";APP=sustained-bootstrap", autocommit=True
+    )
     try:
         bootstrap.cursor().execute(
             f"IF DB_ID('{wanted}') IS NULL CREATE DATABASE [{wanted}]"
