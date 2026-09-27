@@ -359,6 +359,33 @@ class RehearseTraceTestCase(unittest.TestCase):
         tracer.ran.append(MigrationStatement("CREATE INDEX ix ON orders (c)", "001"))
         dropped = MigrationStatement("DROP INDEX ix", "002")
         self.assertEqual(tracer.tables(dropped), ["orders"])
+        # A second prediction of the same statement reads the run again.
+        self.assertEqual(tracer.tables(dropped), ["orders"])
+
+    def test_each_statement_is_analyzed_once(self):
+        from sustained.impact.analyzer import _Run
+
+        self.stand_in()
+        migrator = self.migrator(sqlite3.connect(":memory:"), [])
+        tracer = Tracer(migrator)
+        statements = [
+            MigrationStatement("CREATE INDEX ix ON orders (c)", "001"),
+            MigrationStatement("ALTER TABLE orders ADD COLUMN d int", "001"),
+            MigrationStatement("DROP INDEX ix", "002"),
+            MigrationStatement("ALTER TABLE orders RENAME TO sales", "003"),
+            MigrationStatement("ALTER TABLE sales ADD COLUMN e int", "003"),
+        ]
+        predictions = []
+        with mock.patch.object(
+            _Run, "statement", autospec=True, side_effect=_Run.statement
+        ) as spy:
+            for statement in statements:
+                predictions.append(tracer.predicted(statement))
+                tracer.ran.append(statement)
+        self.assertEqual(spy.call_count, len(statements))
+        for position, predicted in enumerate(predictions):
+            report = analyze(statements[: position + 1], Dialects.DEFAULT)
+            self.assertEqual(predicted, report.statements[-1])
 
     def test_refuses_a_dialect_it_cannot_observe(self):
         connection = sqlite3.connect(":memory:")

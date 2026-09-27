@@ -31,7 +31,13 @@ from sustained.guards import (
 )
 from sustained.impact import Blocks, EngineContext, TableStats, attach_impact
 from sustained.migrations import Migration, Migrator
-from tests.test_impact_context import INDEX, ScriptedAdapter, ScriptedConnection
+from tests.test_impact_context import (
+    INDEX,
+    RESTORE_SQL,
+    TIMEOUT_SQL,
+    ScriptedAdapter,
+    ScriptedConnection,
+)
 
 PG = Dialects.POSTGRES
 
@@ -227,6 +233,122 @@ class MigratorImpactGuardTestCase(unittest.TestCase):
         with redirect_stderr(stderr):
             Migrator(ScriptedConnection(), index_run(), dialect=PG).up()
         self.assertIn(f"danger: pg.create_index  {INDEX}: ", stderr.getvalue())
+
+    def logs(self, run, guards=(), refuse=None):
+        """The statements a blocking and an async up() of the run sent."""
+        connection = ScriptedConnection(refuse)
+        adapter = ScriptedAdapter(refuse)
+        for migrator in (
+            Migrator(connection, run, dialect=PG, guards=list(guards)),
+            AsyncMigrator(adapter, run, dialect=PG, guards=list(guards)),
+        ):
+            with redirect_stderr(io.StringIO()):
+                result = migrator.up()
+                if asyncio.iscoroutine(result):
+                    asyncio.run(result)
+        return connection.log, adapter.log
+
+    def test_the_size_read_names_only_the_tables_of_the_run(self):
+        run = index_run() + [Migration("002_items", up="ALTER TABLE items ADD c int")]
+        spelled = [
+            f"convert_from(decode('{name.encode().hex()}', 'hex'), 'UTF8')"
+            for name in ("items", "orders")
+        ]
+        for log in self.logs(run):
+            (sizes,) = [sql for sql in log if "pg_total_relation_size" in sql]
+            self.assertTrue(
+                sizes.endswith(f"AND lower(c.relname) IN ({', '.join(spelled)})")
+            )
+
+    def test_the_size_read_runs_under_a_lock_timeout_it_puts_back(self):
+        for log in self.logs(index_run()):
+            timed = log.index(TIMEOUT_SQL)
+            (sizes,) = [
+                i for i, sql in enumerate(log) if "pg_total_relation_size" in sql
+            ]
+            self.assertLess(timed, sizes)
+            self.assertEqual(log[sizes + 1 :].count(RESTORE_SQL), 1)
+            self.assertLess(sizes, log.index(RESTORE_SQL))
+
+    def test_a_size_the_read_cannot_read_counts_as_over_the_threshold(self):
+        guard = max_blocking("ddl", over_rows=3_000_000)
+        self.logs(index_run(), [guard])
+        with self.assertRaises(GuardBlocked):
+            self.logs(index_run(), [guard], refuse="pg_total_relation_size")
+        with self.assertRaises(GuardBlocked):
+            migrator = AsyncMigrator(
+                ScriptedAdapter("pg_total_relation_size"),
+                index_run(),
+                dialect=PG,
+                guards=[guard],
+            )
+            asyncio.run(migrator.up())
+
+    def test_the_generated_migration_is_read_after_the_registered_apply(self):
+        from sustained.aio import DbApiAsyncAdapter
+        from sustained.impact import context as impact_context
+        from sustained.model import Model
+        from sustained.schema import Integer
+
+        widget = type(
+            "Widget",
+            (Model,),
+            {
+                "tableName": "widgets",
+                "tableColumns": {"id": Integer(primary_key=True)},
+                "_dialect": Dialects.DEFAULT,
+            },
+        )
+        guard = max_blocking("reads_and_writes")
+
+        def run(asynchronous):
+            connection = sqlite3.connect(":memory:", check_same_thread=False)
+            self.addCleanup(connection.close)
+            reads = []
+
+            def seen(statements):
+                tables = connection.execute(
+                    "SELECT name FROM sqlite_schema WHERE name = 't'"
+                ).fetchall()
+                reads.append(([str(s) for s in statements], bool(tables)))
+
+            def blocking(conn, dialect, exact_counts=False, statements=None):
+                seen(statements)
+                return real(conn, dialect, exact_counts, statements)
+
+            async def awaited(adapter, dialect, exact_counts=False, statements=None):
+                seen(statements)
+                return await real_async(adapter, dialect, exact_counts, statements)
+
+            migrations = [Migration("001_t", up="CREATE TABLE t (id INTEGER)")]
+            with (
+                mock.patch("sustained.impact.read_context", blocking),
+                mock.patch("sustained.impact.async_read_context", awaited),
+                redirect_stderr(io.StringIO()),
+            ):
+                if asynchronous:
+                    migrator = AsyncMigrator(
+                        DbApiAsyncAdapter(connection),
+                        migrations,
+                        dialect=Dialects.DEFAULT,
+                        guards=[guard],
+                    )
+                    asyncio.run(migrator.up(models=[widget], unrehearsed=True))
+                else:
+                    Migrator(
+                        connection, migrations, dialect=Dialects.DEFAULT, guards=[guard]
+                    ).up(models=[widget], unrehearsed=True)
+            return reads
+
+        real = impact_context.read_context
+        real_async = impact_context.async_read_context
+        reads = run(False)
+        self.assertEqual(len(reads), 2)
+        self.assertEqual(reads[0], (["CREATE TABLE t (id INTEGER)"], False))
+        generated, applied = reads[1]
+        self.assertTrue(generated and all("widgets" in s for s in generated))
+        self.assertTrue(applied)
+        self.assertEqual(run(True), reads)
 
     def test_prints_no_danger_findings_when_a_guard_reads_impact(self):
         stderr = io.StringIO()

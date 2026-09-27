@@ -39,6 +39,7 @@ from sustained.migrations.migration import (
 if TYPE_CHECKING:
     from sustained.analysis import MigrationStatement
     from sustained.impact import EngineContext, ImpactReport, StatementImpact
+    from sustained.impact.analyzer import _Run
     from sustained.impact.rules import Profile, Trace
 
 
@@ -68,8 +69,9 @@ class Tracer:
     What a traced rehearsal has seen so far. `start()` reads the server
     facts and the tables that exist before the run; `run_step()` runs an
     up step one statement at a time, observing each. `ran` lists the
-    statements observed so far, which the analysis of the next one reads
-    first, so a statement sees the run state before it.
+    statements observed so far. The analysis reads each statement once,
+    in run order, and keeps its run state between them, so a statement
+    sees the run state the statements before it left.
     """
 
     def __init__(self, m: MigratorBase) -> None:
@@ -81,6 +83,10 @@ class Tracer:
         self.existing: Optional[FrozenSet[Any]] = None
         self.ran: List["MigrationStatement"] = []
         self.observations: Dict[Tuple[Optional[str], int], object] = {}
+        # The analysis of the statements in `ran`, and how many of them
+        # it has read.
+        self._analysis: Optional["_Run"] = None
+        self._analyzed = 0
 
     @property
     def profile(self) -> "Profile":
@@ -156,12 +162,41 @@ class Tracer:
     def predicted(self, statement: "MigrationStatement") -> "StatementImpact":
         """
         The statement's impact as the rules predict it, read after the
-        statements the rehearsal already ran.
+        statements the rehearsal already ran. The analysis goes on from
+        the last statement it read, and starts again from the first
+        statement only when it has read past `ran`, as for a second
+        prediction of the same statement.
         """
-        from sustained.impact import analyze
+        if self._analysis is None or self._analyzed > len(self.ran):
+            self._analysis = self._new_analysis()
+            self._analyzed = 0
+        for earlier in self.ran[self._analyzed :]:
+            self._analyze(earlier)
+        self._analyzed = len(self.ran) + 1
+        return self._analyze(statement)
 
-        report = analyze(self.ran + [statement], self.m._dialect, self.context)
-        return report.statements[-1]
+    def _analyze(self, statement: "MigrationStatement") -> "StatementImpact":
+        """
+        The statement's impact from the analysis of the run, with its
+        locks held to commit when its migration's transaction spans DDL,
+        as analyze() reads a migration.
+        """
+        from sustained.analysis import statement_scope
+
+        migration_id, transactional = statement_scope(statement)
+        spans = transactional and self.profile.transactional_ddl
+        assert self._analysis is not None
+        return self._analysis.statement(statement, migration_id, transactional, spans)
+
+    def _new_analysis(self) -> "_Run":
+        """An analysis of the run from its first statement, on the server facts."""
+        from sustained.impact import Evidence, Thresholds
+        from sustained.impact.analyzer import _Run
+        from sustained.impact.context import assumed
+
+        context = self.context or assumed(self.profile.name)
+        evidence = Evidence.CATALOG if context.read else Evidence.STATIC
+        return _Run(self.profile, self.m._dialect, context, Thresholds(), evidence)
 
     def tables(self, statement: "MigrationStatement") -> List[str]:
         """The tables the rules predict the statement touches."""

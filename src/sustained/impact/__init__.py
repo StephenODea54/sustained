@@ -30,6 +30,7 @@ from sustained.impact.context import (
     EngineContext,
     TableStats,
     async_read_context,
+    named_tables,
     read_context,
 )
 from sustained.impact.model import (
@@ -62,6 +63,7 @@ __all__ = [
     "attach_impact",
     "async_preflight",
     "async_read_context",
+    "named_tables",
     "preflight",
     "read_context",
     "supported",

@@ -8,15 +8,19 @@ predicted for that server's version and settings.
 """
 
 import asyncio
+import io
 import time
 import unittest
+from contextlib import redirect_stderr
 
 from sustained.aio_migrations import AsyncMigrator
 from sustained.dialects import Dialects
-from sustained.exceptions import PreflightBlocked
+from sustained.exceptions import GuardBlocked, PreflightBlocked
+from sustained.guards import max_blocking
 from sustained.impact import (
     Evidence,
     Severity,
+    TableStats,
     Work,
     analyze,
     async_preflight,
@@ -317,11 +321,64 @@ class ImpactCase(unittest.TestCase):
         found = asyncio.run(read())
         self.assertIn(pid, [b.session.id for b in found.blockers])
 
-    def migrator(self, migrations):
+    def locker(self, table):
+        """A second session that has locked the table ACCESS EXCLUSIVE."""
+        other = harness.connect(self.NAME)
+        self.addCleanup(other.close)
+        self.addCleanup(other.rollback)
+        other.cursor().execute(f"LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE")
+
+    def bounded(self):
+        """Stops a statement of the test's session that would wait forever."""
+        self.execute("SET statement_timeout = '10s'")
+        self.addCleanup(self.execute, "RESET statement_timeout")
+
+    def test_the_size_read_waits_for_a_locked_table_only_so_long(self):
+        self.orders()
+        self.execute("CREATE TABLE it_impact_notes (id integer)")
+        self.locker("it_impact_orders")
+        self.bounded()
+        statements = [
+            "ALTER TABLE it_impact_notes ADD COLUMN c integer",
+            "ALTER TABLE it_impact_orders ADD COLUMN c integer",
+        ]
+        context = read_context(self.connection, self.DIALECT, statements=statements)
+        self.connection.rollback()
+        self.assertEqual(context.stats("it_impact_orders"), TableStats())
+        self.assertIsNotNone(context.stats("it_impact_notes").bytes)
+        self.assertNotIn("it_impact_parts", context.tables)
+        self.assertEqual(self.fetch("SHOW lock_timeout"), [("0",)])
+
+    def test_up_waits_behind_no_lock_on_a_table_the_run_does_not_name(self):
+        self.orders()
+        self.locker("it_impact_orders")
+        self.bounded()
+        migrator = self.migrator(
+            [
+                Migration("001_notes", up="CREATE TABLE it_impact_notes (id int)"),
+                Migration("002_c", up="ALTER TABLE it_impact_notes ADD c int"),
+            ]
+        )
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(migrator.up(unrehearsed=True), ["001_notes", "002_c"])
+
+    def test_a_guard_blocks_on_a_size_the_lock_left_unread(self):
+        self.orders()
+        self.locker("it_impact_orders")
+        self.bounded()
+        migrator = self.migrator(
+            [Migration("001_c", up="ALTER TABLE it_impact_orders ADD c int")],
+            guards=[max_blocking("writes", over_rows=1_000_000)],
+        )
+        with self.assertRaises(GuardBlocked):
+            migrator.up(unrehearsed=True)
+
+    def migrator(self, migrations, guards=()):
         return Migrator(
             self.connection,
             migrations,
             dialect=self.DIALECT,
+            guards=list(guards),
             table="it_impact_migrations",
             rehearsal_table="it_impact_rehearsals",
         )

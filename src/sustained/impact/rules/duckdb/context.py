@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from types import MappingProxyType
-from typing import Dict, Set, Tuple
+from typing import Collection, Dict, Optional, Set, Tuple
 
 from sustained.impact.context import (
     FLOORS,
@@ -28,6 +28,16 @@ _SIZES_SQL = (
 )
 
 
+def _sized(tables: Optional[Collection[str]]) -> str:
+    """The row count read, for the tables of the given names, or for all."""
+    if tables is None:
+        return _SIZES_SQL
+    listed = ", ".join(
+        "'" + name.replace("'", "''") + "'" for name in sorted(set(tables))
+    )
+    return f"{_SIZES_SQL} AND lower(table_name) IN ({listed or 'NULL'})"
+
+
 def duckdb_version(text: str) -> Tuple[int, ...]:
     """A `version()` value as a version, such as (1, 5, 5) for `v1.5.5`."""
     match = re.match(r"v?(\d+(?:\.\d+)*)", text.strip())
@@ -36,12 +46,15 @@ def duckdb_version(text: str) -> Tuple[int, ...]:
     return tuple(int(part) for part in match.group(1).split("."))
 
 
-def context_plan(exact_counts: bool = False) -> ContextPlan:
+def context_plan(
+    exact_counts: bool = False, tables: Optional[Collection[str]] = None
+) -> ContextPlan:
     """
     Reads the version and the row counts. A statement that fails leaves
     its facts out of `read`, and the rules assume the floor or the worst
     case for them. DuckDB keeps each table's row count, so
-    `exact_counts` changes nothing here.
+    `exact_counts` changes nothing here. With `tables`, lower case table
+    names, only the tables of those names are read.
     """
     version = FLOORS["duckdb"]
     read: Set[str] = set()
@@ -49,16 +62,16 @@ def context_plan(exact_counts: bool = False) -> ContextPlan:
     if rows:
         version = duckdb_version(str(rows[0][0]))
         read.add("version")
-    tables: Dict[str, TableStats] = {}
-    sizes = yield from attempt(_SIZES_SQL)
+    found: Dict[str, TableStats] = {}
+    sizes = yield from attempt(_sized(tables))
     if sizes is not None:
         for schema, name, current, count in sizes:
             stats = TableStats(None if count is None else int(str(count)))
-            common.add_stats(tables, str(schema), str(name), bool(current), stats)
+            common.add_stats(found, str(schema), str(name), bool(current), stats)
         read.add("sizes")
     return EngineContext(
         "duckdb",
         version,
-        tables=MappingProxyType(tables),
+        tables=MappingProxyType(found),
         read=frozenset(read),
     )

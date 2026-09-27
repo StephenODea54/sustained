@@ -231,7 +231,7 @@ class AsyncMigrator(MigratorBase):
         from sustained.impact import async_read_context
 
         return await async_read_context(
-            self._adapter, self._dialect, request.exact_counts
+            self._adapter, self._dialect, request.exact_counts, request.statements
         )
 
     async def _run_step(self, step: MigrationStep) -> None:

@@ -302,21 +302,18 @@ def run_up(
                 if generated:
                     # The generated statements are known only now, after
                     # the registered migrations left the schema they diff
-                    # against, so both gates run a second time before the
-                    # migrations they could not see. The registered
-                    # migrations are already applied and committed by
-                    # then, so a block here reports what it stopped after.
+                    # against, so both gates run a second time over the
+                    # generated migrations alone. The server facts are
+                    # read now, after the registered migrations applied,
+                    # so a table they created or renamed has a size. The
+                    # registered migrations are already applied and
+                    # committed by then, so a block here reports what it
+                    # stopped after.
                     final_run = registered_run + generated
                     checked = yield from guard_run(
-                        m, final_run, warned, dangers, reads.exact_counts
+                        m, generated, warned, dangers, reads.exact_counts
                     )
-                    generated_ids = {g.id for g in generated}
-                    yield from check_preflight(
-                        m,
-                        [s for s in checked if s.migration_id in generated_ids],
-                        reads.preflight,
-                        shown,
-                    )
+                    yield from check_preflight(m, checked, reads.preflight, shown)
                     yield from bookkeeping.require_rehearsal_row(
                         m, records, final_run, unrehearsed, target
                     )
@@ -363,17 +360,18 @@ def guard_run(
     Runs the guards over the statements a run would apply, and returns
     the statements. On a dialect the impact analysis covers, the server
     facts are read first and each statement's impact is attached, so an
-    impact rule reads it. When no guard reads impact, each `danger`
-    finding prints on stderr after the guards pass. `warned` and
-    `dangers` collect what was already printed, for a run checked
-    twice. `exact_counts` passes on to the read.
+    impact rule reads it. The size read covers only the tables the
+    statements name. When no guard reads impact, each `danger` finding
+    prints on stderr after the guards pass. `warned` and `dangers`
+    collect what was already printed, for a run checked twice.
+    `exact_counts` passes on to the read.
     """
     from sustained.guards import reads_impact
     from sustained.impact import attach_impact, supported
 
     statements = run_statements(run, m._compiler)
     if statements and supported(m._dialect):
-        context = yield ReadContext(exact_counts)
+        context = yield ReadContext(exact_counts, tuple(statements))
         statements = attach_impact(statements, m._dialect, context)
         check_statements(m._guards, statements, m._dialect, warned)
         if not any(reads_impact(guard) for guard in m._guards):

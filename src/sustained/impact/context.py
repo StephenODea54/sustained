@@ -15,10 +15,12 @@ case. `assumed()` builds that context. A test keeps `FLOORS` in step
 with `support.json`.
 
 `read_context()` reads a context from a blocking connection, and
-`async_read_context()` from an async adapter. Both run the profile's
-catalog read plan, then read the schema as `introspect_schema()` does.
-A statement that fails, for example on a missing privilege, leaves its
-facts out of `read`, and the read goes on without them.
+`async_read_context()` from an async adapter. Both read the schema as
+`introspect_schema()` does, then run the profile's catalog read plan.
+With `statements`, the plan reads the sizes of the tables
+`named_tables()` finds in them, instead of every table. A statement
+that fails, for example on a missing privilege, leaves its facts out of
+`read`, and the read goes on without them.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
+    Collection,
     FrozenSet,
     Generator,
     List,
@@ -41,6 +44,7 @@ from sustained.types import Connection, RowValue
 if TYPE_CHECKING:
     from sustained.aio import AsyncAdapter
     from sustained.dialects import Dialects
+    from sustained.impact.rules import Profile
     from sustained.introspect.model import IntrospectedTable, Snapshot
 
 # The oldest server version each profile supports, from support.json.
@@ -224,49 +228,107 @@ def attempt(statement: str) -> Generator[str, Rows, Optional[Rows]]:
 
 
 def read_context(
-    connection: Connection, dialect: "Dialects", exact_counts: bool = False
+    connection: Connection,
+    dialect: "Dialects",
+    exact_counts: bool = False,
+    statements: Optional[Sequence[str]] = None,
 ) -> EngineContext:
     """
     The server facts the dialect's rules read, from a blocking
-    connection: the version, the settings, the table sizes, and the
-    schema of the connection's own schema. Raises ValueError for a
-    dialect that has no impact rules yet.
+    connection: the schema of the connection's own schema, the version,
+    the settings, and the table sizes. Raises ValueError for a dialect
+    that has no impact rules yet.
 
     With `exact_counts`, the SQLite read counts the rows of each table
-    `sqlite_stat1` has no row count for. The other profiles read the
-    estimates the server keeps either way.
+    `sqlite_stat1` has no row count for, and reads each table's bytes
+    from `dbstat`. The other profiles read the estimates the server
+    keeps either way.
+
+    With `statements`, the sizes are read only for the tables
+    `named_tables()` finds in them; without, for every table.
     """
     from sustained.introspect.runner import introspect_schema, run_plan
 
-    context = run_plan(connection, dialect, _plan(dialect, exact_counts))
+    _profile(dialect)
     try:
-        schema = introspect_schema(connection, dialect)
+        schema: Optional["Snapshot"] = introspect_schema(connection, dialect)
     except Exception:
-        return context
-    return _with_schema(context, schema)
+        schema = None
+    tables = _named(statements, dialect, schema)
+    context = run_plan(connection, dialect, _plan(dialect, exact_counts, tables))
+    return context if schema is None else _with_schema(context, schema)
 
 
 async def async_read_context(
-    adapter: "AsyncAdapter", dialect: "Dialects", exact_counts: bool = False
+    adapter: "AsyncAdapter",
+    dialect: "Dialects",
+    exact_counts: bool = False,
+    statements: Optional[Sequence[str]] = None,
 ) -> EngineContext:
     """What read_context() reads, through an async adapter."""
     from sustained.introspect.runner import async_introspect_schema, async_run_plan
 
-    context = await async_run_plan(adapter, dialect, _plan(dialect, exact_counts))
+    _profile(dialect)
     try:
-        schema = await async_introspect_schema(adapter, dialect)
+        schema: Optional["Snapshot"] = await async_introspect_schema(adapter, dialect)
     except Exception:
-        return context
-    return _with_schema(context, schema)
+        schema = None
+    tables = _named(statements, dialect, schema)
+    context = await async_run_plan(
+        adapter, dialect, _plan(dialect, exact_counts, tables)
+    )
+    return context if schema is None else _with_schema(context, schema)
 
 
-def _plan(dialect: "Dialects", exact_counts: bool) -> ContextPlan:
+def named_tables(
+    statements: Sequence[str],
+    dialect: "Dialects",
+    schema: Optional["Snapshot"] = None,
+) -> FrozenSet[str]:
+    """
+    The tables the statements act on, as the analysis finds them with
+    the schema and no other server fact: each table a statement names,
+    and each table the schema answers for it, such as the table of an
+    index it drops or the other end of a foreign key. Each name is the
+    last part of a dotted name, in lower case, since a size read
+    matches a table by its name alone. Raises ValueError for a dialect
+    that has no impact rules yet.
+    """
+    from sustained.impact.analyzer import analyze
+
+    profile = _profile(dialect)
+    context = EngineContext(profile.name, FLOORS[profile.name], schema=schema)
+    report = analyze(statements, dialect, context)
+    return frozenset(
+        table.table.rsplit(".", 1)[-1].lower()
+        for statement in report.statements
+        for table in statement.tables
+    )
+
+
+def _named(
+    statements: Optional[Sequence[str]],
+    dialect: "Dialects",
+    schema: Optional["Snapshot"],
+) -> Optional[FrozenSet[str]]:
+    if statements is None:
+        return None
+    return named_tables(statements, dialect, schema)
+
+
+def _profile(dialect: "Dialects") -> "Profile":
     from sustained.impact.rules import engine, profile_for
 
     profile = profile_for(dialect)
     if profile is None:
         raise ValueError(f"Impact analysis does not cover {engine(dialect)} yet.")
-    return profile.context_plan(exact_counts)
+    return profile
+
+
+def _plan(
+    dialect: "Dialects", exact_counts: bool, tables: Optional[Collection[str]]
+) -> ContextPlan:
+    return _profile(dialect).context_plan(exact_counts, tables)
 
 
 def _with_schema(context: EngineContext, schema: "Snapshot") -> EngineContext:

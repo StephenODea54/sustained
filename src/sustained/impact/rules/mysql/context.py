@@ -9,9 +9,11 @@ import re
 from types import MappingProxyType
 from typing import (
     Callable,
+    Collection,
     Dict,
     Generator,
     Mapping,
+    Optional,
     Sequence,
     Set,
     Tuple,
@@ -69,17 +71,20 @@ def server_version(text: str) -> Tuple[str, Tuple[int, ...]]:
     return profile, version
 
 
-def context_plan(exact_counts: bool = False) -> ContextPlan:
+def context_plan(
+    exact_counts: bool = False, tables: Optional[Collection[str]] = None
+) -> ContextPlan:
     """
     Reads the version, the settings, the table sizes, and the storage
     facts. A statement that fails leaves its facts out of `read`, and
     the rules assume the floor or the worst case for them. The sizes are
     the estimates the server keeps, so `exact_counts` changes nothing
-    here.
+    here. With `tables`, lower case table names, only the tables of
+    those names are read.
     """
     profile, version = "mysql", FLOORS["mysql"]
     settings: Dict[str, str] = {}
-    tables: Dict[str, TableStats] = {}
+    found: Dict[str, TableStats] = {}
     read: Set[str] = set()
     rows = yield from attempt(_SETTINGS_SQL)
     if rows:
@@ -90,18 +95,30 @@ def context_plan(exact_counts: bool = False) -> ContextPlan:
             "lock_wait_timeout": str(timeout),
         }
         read |= {"version", "settings"}
-    sizes = yield from attempt(_SIZES_SQL)
+    sizes = yield from attempt(_sized(tables))
     if sizes is not None:
-        tables, current = _sizes(sizes)
+        found, current = _sizes(sizes)
         read.add("sizes")
-        yield from _storage(tables, current, profile, version, read)
+        yield from _storage(found, current, profile, version, read)
     return EngineContext(
         profile,
         version,
         settings=MappingProxyType(settings),
-        tables=MappingProxyType(tables),
+        tables=MappingProxyType(found),
         read=frozenset(read),
     )
+
+
+def _sized(tables: Optional[Collection[str]]) -> str:
+    """
+    The size read, for the tables of the given names, or for all. Each
+    name is a hex literal, so no quote, backslash, or percent sign in it
+    reaches the statement.
+    """
+    if tables is None:
+        return _SIZES_SQL
+    listed = ", ".join(f"X'{name.encode().hex()}'" for name in sorted(set(tables)))
+    return f"{_SIZES_SQL} AND LOWER(TABLE_NAME) IN ({listed or 'NULL'})"
 
 
 _StoragePlan = Generator[str, Rows, None]

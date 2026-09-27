@@ -25,6 +25,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
+    Collection,
     FrozenSet,
     Generator,
     List,
@@ -182,8 +183,10 @@ class Profile(NamedTuple):
     migration commits. `prefix` starts the id of every rule the profile
     owns, such as `pg` in `pg.create_index`. `context_plan()` is the
     catalog read that fills an `EngineContext` from a live server;
-    `context_plan(True)` also counts the rows of tables the engine keeps
-    no estimate for, where the profile can.
+    `context_plan(True, tables)` also counts the rows of tables the
+    engine keeps no estimate for, where the profile can, and reads the
+    sizes of the named tables only, or of every table when `tables` is
+    None.
     `title` is the engine's name as its vendor writes it, such as
     `PostgreSQL`.
     `fixture_schema` creates the objects the rules' fixtures name, for
@@ -216,7 +219,7 @@ class Profile(NamedTuple):
     transactional_ddl: bool
     rules: Tuple[Rule, ...]
     timeout_source: str
-    context_plan: Callable[[bool], ContextPlan]
+    context_plan: Callable[[bool, Optional[Collection[str]]], ContextPlan]
     fixture_schema: Tuple[str, ...] = ()
     queues: Optional[Callable[[Optional[str]], bool]] = None
     bounded: Callable[[str], bool] = sets_a_timeout

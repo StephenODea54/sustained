@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from types import MappingProxyType
-from typing import Dict, Set, Tuple
+from typing import Collection, Dict, Optional, Set, Tuple
 
 from sustained.impact.context import (
     FLOORS,
@@ -49,6 +49,21 @@ JOIN sys.indexes i ON i.object_id = t.object_id AND i.index_id IN (0, 1)"""
 _PAGE_BYTES = 8192
 
 
+def _sized(tables: Optional[Collection[str]]) -> str:
+    """
+    The table read, for the tables of the given names, or for all. Each
+    name is spelled as its UTF-16 bytes, so no quote in it reaches the
+    statement.
+    """
+    if tables is None:
+        return _TABLES_SQL
+    listed = ", ".join(
+        f"CONVERT(nvarchar(128), 0x{name.encode('utf-16-le').hex()})"
+        for name in sorted(set(tables))
+    )
+    return f"{_TABLES_SQL}\nWHERE LOWER(t.name) IN ({listed or 'NULL'})"
+
+
 def server_version(text: str) -> Tuple[int, ...]:
     """A `ProductVersion` value as a version, such as (16, 0, 4135, 4)."""
     match = re.match(r"(\d+(?:\.\d+)*)", text.strip())
@@ -57,17 +72,21 @@ def server_version(text: str) -> Tuple[int, ...]:
     return tuple(int(part) for part in match.group(1).split("."))
 
 
-def context_plan(exact_counts: bool = False) -> ContextPlan:
+def context_plan(
+    exact_counts: bool = False, tables: Optional[Collection[str]] = None
+) -> ContextPlan:
     """
     Reads the version, the edition, the settings, and the tables. A
     statement that fails leaves its facts out of `read`, and the rules
     assume the floor or the worst case for them. `sys.partitions` keeps
-    each table's row count, so `exact_counts` changes nothing here.
+    each table's row count, so `exact_counts` changes nothing here. With
+    `tables`, lower case table names, only the tables of those names are
+    read.
     """
     version = FLOORS["mssql"]
     edition = None
     settings: Dict[str, str] = {}
-    tables: Dict[str, TableStats] = {}
+    stats: Dict[str, TableStats] = {}
     read: Set[str] = set()
     rows = yield from attempt(_SERVER_SQL)
     if rows:
@@ -81,22 +100,22 @@ def context_plan(exact_counts: bool = False) -> ContextPlan:
     if snapshot:
         settings["read_committed_snapshot"] = "on" if snapshot[0][0] else "off"
         read.add("settings")
-    found = yield from attempt(_TABLES_SQL)
+    found = yield from attempt(_sized(tables))
     if found is not None:
         for schema, table, bare, count, pages, index_id, index in found:
-            stats = TableStats(
+            table_stats = TableStats(
                 None if count is None else int(str(count)),
                 None if pages is None else int(str(pages)) * _PAGE_BYTES,
                 heap=int(str(index_id)) == 0,
                 clustered=None if index is None else str(index),
             )
-            common.add_stats(tables, str(schema), str(table), bool(bare), stats)
+            common.add_stats(stats, str(schema), str(table), bool(bare), table_stats)
         read.update({"sizes", "clustered"})
     return EngineContext(
         "mssql",
         version,
         edition,
         MappingProxyType(settings),
-        MappingProxyType(tables),
+        MappingProxyType(stats),
         read=frozenset(read),
     )

@@ -44,14 +44,21 @@ These live in `sustained.impact.rules`. `profile_for()` returns the dialect's ru
 ## `read_context()`
 
 ```python
-read_context(connection, dialect, exact_counts=False) -> EngineContext
-await async_read_context(adapter, dialect, exact_counts=False) -> EngineContext
+read_context(connection, dialect, exact_counts=False, statements=None) -> EngineContext
+await async_read_context(adapter, dialect, exact_counts=False, statements=None) -> EngineContext
 ```
 {: .sig #read_context}
 
-The server facts the dialect's rules read, from a blocking connection or an async adapter. On PostgreSQL that is the version from `server_version_num`, the `TimeZone` and `lock_timeout` settings, each table's estimated rows and total bytes, and the schema of the connection's own schema. On MySQL and MariaDB it is `VERSION()`, which also sets the context's profile to `mysql` or `mariadb`, the `foreign_key_checks` and `lock_wait_timeout` settings, each table's estimated rows, bytes, and row format, which tables have a FULLTEXT index, on MySQL 8.0.29 and later each table's instant row versions, and the schema of the current database. On SQL Server it is `SERVERPROPERTY('ProductVersion')`, the edition from `SERVERPROPERTY('EngineEdition')` and `SERVERPROPERTY('Edition')`, `@@LOCK_TIMEOUT` as the `lock_timeout` setting, `is_read_committed_snapshot_on` from `sys.databases` as the `read_committed_snapshot` setting, each table's rows from `sys.partitions`, its bytes from `sys.allocation_units`, whether it is a heap and the name of its clustered index from `sys.indexes`, and the schema. On SQLite it is `sqlite_version()`, the `journal_mode` setting, each table's estimated rows from `sqlite_stat1` and bytes from the `dbstat` virtual table, the database file's bytes under the name `(database)`, and the schema. On DuckDB it is `version()`, each table's estimated rows from `duckdb_tables()`, with no bytes, and the schema. With `exact_counts=True`, the SQLite read also runs `SELECT COUNT(*)` on each table `sqlite_stat1` has no row count for, leaving out virtual tables, and adds `counts` to `read`; the other profiles ignore it. Nothing is written.
+The server facts the dialect's rules read, from a blocking connection or an async adapter. On PostgreSQL that is the version from `server_version_num`, the `TimeZone` and `lock_timeout` settings, each table's estimated rows and total bytes, read under a `lock_timeout` of `1s` that is set back to the session's own value after, and the schema of the connection's own schema. On MySQL and MariaDB it is `VERSION()`, which also sets the context's profile to `mysql` or `mariadb`, the `foreign_key_checks` and `lock_wait_timeout` settings, each table's estimated rows, bytes, and row format, which tables have a FULLTEXT index, on MySQL 8.0.29 and later each table's instant row versions, and the schema of the current database. On SQL Server it is `SERVERPROPERTY('ProductVersion')`, the edition from `SERVERPROPERTY('EngineEdition')` and `SERVERPROPERTY('Edition')`, `@@LOCK_TIMEOUT` as the `lock_timeout` setting, `is_read_committed_snapshot_on` from `sys.databases` as the `read_committed_snapshot` setting, each table's rows from `sys.partitions`, its bytes from `sys.allocation_units`, whether it is a heap and the name of its clustered index from `sys.indexes`, and the schema. On SQLite it is `sqlite_version()`, the `journal_mode` setting, each table's estimated rows from `sqlite_stat1`, the database file's bytes under the name `(database)`, each table's bytes as the file's bytes times its share of the rows `sqlite_stat1` counts, and the schema. On DuckDB it is `version()`, each table's estimated rows from `duckdb_tables()`, with no bytes, and the schema. With `exact_counts=True`, the SQLite read also runs `SELECT COUNT(*)` on each table `sqlite_stat1` has no row count for, leaving out virtual tables, reads each table's bytes from the `dbstat` virtual table, and adds `counts` to `read`; the other profiles ignore it. With `statements`, the sizes are read only for the tables `named_tables()` returns for them, and on SQLite the counts and the `dbstat` read cover only those tables. Nothing is written.
 
-Each statement runs inside a savepoint. A statement that fails leaves its facts out of `read`, and the read goes on. Both raise `ValueError` for a dialect without impact rules.
+Each statement runs inside a savepoint. A statement that fails leaves its facts out of `read`, and the read goes on. On PostgreSQL, when the size read of the named tables fails, for example on a lock not granted within the timeout, each table is read in a statement of its own, and only the tables whose read failed have unknown sizes. Both raise `ValueError` for a dialect without impact rules.
+
+```python
+named_tables(statements, dialect, schema=None) -> frozenset
+```
+{: .sig #named_tables}
+
+The tables the statements act on, as `analyze()` finds them with the schema `Snapshot` and no other server fact: each table a statement names, and each table the schema answers for it, such as the table of an index a statement drops, or the table at the other end of a foreign key. Each name is the last part of a dotted name, in lower case. Raises `ValueError` for a dialect without impact rules.
 
 ## `Migrator.impact()`
 
@@ -67,7 +74,7 @@ The context comes from `read_context()` on the migrator's connection, or `async_
 
 ## Guards over impact
 
-`up()` reads the context the way `Migrator.impact()` does, with its own `exact_counts`, analyzes the run before the guards run, and sets each `MigrationStatement`'s `impact` attribute to its `StatementImpact`. The impact rules `max_blocking()`, `no_rewrite()`, `lock_timeout_required()`, and `no_unknown_impact()` live in `sustained.guards`; see [Guards](/reference/migrations#guards).
+`up()` reads the context the way `Migrator.impact()` does, with its own `exact_counts` and with `statements` set to the run's statements, so it reads the sizes of the run's tables only. It analyzes the run before the guards run, and sets each `MigrationStatement`'s `impact` attribute to its `StatementImpact`. With `models`, the generated migration is read and analyzed again on its own after the registered migrations apply. The impact rules `max_blocking()`, `no_rewrite()`, `lock_timeout_required()`, and `no_unknown_impact()` live in `sustained.guards`; see [Guards](/reference/migrations#guards).
 
 ## `Migrator.rehearse(trace=True)`
 

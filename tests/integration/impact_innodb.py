@@ -150,6 +150,24 @@ class InnodbImpactCase(unittest.TestCase):
         self.assertEqual(context.stats(f"{database}.it_impact_orders"), orders)
         self.assertEqual(context.column_type("it_impact_orders", "note"), "varchar(20)")
 
+    def test_the_size_read_names_only_the_run_tables(self):
+        self.orders()
+        self.execute(
+            "CREATE TABLE it_impact_texts (id int PRIMARY KEY, body text, "
+            "FULLTEXT KEY it_impact_body (body))",
+            "CREATE TABLE it_impact_notes (id int PRIMARY KEY)",
+        )
+        statements = [
+            "ALTER TABLE IT_IMPACT_ORDERS ADD COLUMN c int",
+            "ALTER TABLE it_impact_texts ADD COLUMN d int",
+        ]
+        context = read_context(self.connection, self.DIALECT, statements=statements)
+        self.connection.rollback()
+        self.assertIn("sizes", context.read)
+        self.assertGreater(context.stats("it_impact_orders").rows, 0)
+        self.assertTrue(context.stats("it_impact_texts").fulltext)
+        self.assertNotIn("it_impact_notes", context.tables)
+
     def test_reads_the_instant_row_versions(self):
         self.orders()
         before = self.context()

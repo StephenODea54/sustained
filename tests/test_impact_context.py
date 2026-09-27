@@ -6,6 +6,7 @@ context changes in a report.
 
 import asyncio
 import unittest
+from unittest import mock
 
 from sustained.aio import AsyncAdapter
 from sustained.aio_migrations import AsyncMigrator
@@ -20,7 +21,7 @@ from sustained.impact import (
     async_read_context,
     read_context,
 )
-from sustained.impact.context import FLOORS
+from sustained.impact.context import FLOORS, named_tables
 from sustained.impact.report import report_data, summary
 from sustained.impact.rules.postgres import context_plan, server_version
 from sustained.migrations import Migration, Migrator
@@ -30,6 +31,16 @@ PG = Dialects.POSTGRES
 INDEX = "CREATE INDEX ix_orders_customer ON orders (customer_id)"
 
 SETTINGS_ROW = ("160004", "UTC", "0")
+# The session's lock timeout before the size read, and the size read's.
+TIMED = ("0", "1s")
+TIMEOUT_SQL = (
+    "SELECT pg_catalog.current_setting('lock_timeout'), "
+    "pg_catalog.set_config('lock_timeout', '1s', false)"
+)
+RESTORE_SQL = (
+    "SELECT pg_catalog.set_config('lock_timeout', "
+    f"convert_from(decode('{b'0'.hex()}', 'hex'), 'UTF8'), false)"
+)
 SIZE_ROWS = [
     ("public", "orders", True, 2_000_000, 3 << 30, False),
     ("audit", "orders", False, 10, 8192, False),
@@ -64,6 +75,10 @@ def answer(sql):
         return [SETTINGS_ROW]
     if "pg_total_relation_size" in sql:
         return SIZE_ROWS
+    if "current_setting('lock_timeout'), " in sql:
+        return [TIMED]
+    if "set_config('lock_timeout'" in sql:
+        return [("0",)]
     return []
 
 
@@ -137,8 +152,12 @@ class ScriptedAdapter(AsyncAdapter):
 
 class PostgresPlanTestCase(unittest.TestCase):
     def test_reads_the_version_settings_and_sizes(self):
-        asked, context = drive(context_plan(), [[SETTINGS_ROW], SIZE_ROWS])
-        self.assertEqual(len(asked), 2)
+        asked, context = drive(
+            context_plan(), [[SETTINGS_ROW], [TIMED], SIZE_ROWS, [("0",)]]
+        )
+        self.assertEqual(len(asked), 4)
+        self.assertEqual(asked[1], TIMEOUT_SQL)
+        self.assertEqual(asked[3], RESTORE_SQL)
         self.assertEqual(context.profile, "postgres")
         self.assertEqual(context.version, (16, 4))
         self.assertEqual(context.settings["TimeZone"], "UTC")
@@ -146,24 +165,32 @@ class PostgresPlanTestCase(unittest.TestCase):
         self.assertEqual(context.read, {"version", "settings", "sizes"})
 
     def test_keys_each_table_by_schema_and_by_its_visible_name(self):
-        _, context = drive(context_plan(), [[SETTINGS_ROW], SIZE_ROWS])
+        _, context = drive(
+            context_plan(), [[SETTINGS_ROW], [TIMED], SIZE_ROWS, [("0",)]]
+        )
         self.assertEqual(context.stats("orders"), TableStats(2_000_000, 3 << 30))
         self.assertEqual(context.stats("public.orders"), TableStats(2_000_000, 3 << 30))
         self.assertEqual(context.stats("audit.orders"), TableStats(10, 8192))
         self.assertEqual(context.stats("ORDERS").rows, 2_000_000)
 
     def test_a_table_never_analyzed_has_no_row_estimate(self):
-        _, context = drive(context_plan(), [[SETTINGS_ROW], SIZE_ROWS])
+        _, context = drive(
+            context_plan(), [[SETTINGS_ROW], [TIMED], SIZE_ROWS, [("0",)]]
+        )
         self.assertEqual(context.stats("fresh"), TableStats(None, 16384))
 
     def test_a_failed_settings_read_assumes_the_floor(self):
-        _, context = drive(context_plan(), [RuntimeError("denied"), SIZE_ROWS])
+        _, context = drive(
+            context_plan(), [RuntimeError("denied"), [TIMED], SIZE_ROWS, [("0",)]]
+        )
         self.assertEqual(context.version, FLOORS["postgres"])
         self.assertEqual(dict(context.settings), {})
         self.assertEqual(context.read, {"sizes"})
 
     def test_a_failed_size_read_leaves_the_sizes_unknown(self):
-        _, context = drive(context_plan(), [[SETTINGS_ROW], RuntimeError("denied")])
+        _, context = drive(
+            context_plan(), [[SETTINGS_ROW], [TIMED], RuntimeError("denied"), [("0",)]]
+        )
         self.assertEqual(context.read, {"version", "settings"})
         self.assertEqual(context.stats("orders"), TableStats())
 
@@ -172,7 +199,7 @@ class PostgresPlanTestCase(unittest.TestCase):
         self.assertEqual(server_version("180000"), (18, 0))
 
     def test_the_size_read_holds_no_percent_sign(self):
-        asked, _ = drive(context_plan(), [[SETTINGS_ROW], SIZE_ROWS])
+        asked, _ = drive(context_plan(), [[SETTINGS_ROW], [TIMED], SIZE_ROWS, [("0",)]])
         self.assertTrue(all("%" not in sql for sql in asked))
 
 
@@ -288,6 +315,158 @@ class MigratorContextTestCase(unittest.TestCase):
         report = asyncio.run(migrator.impact())
         self.assertEqual(report.version, (16, 4))
         self.assertEqual(report.statements[0].tables[0].rows, 2_000_000)
+
+
+class ScopedReadTestCase(unittest.TestCase):
+    """The size read of each profile, scoped to the tables a run names."""
+
+    def test_postgres_names_the_tables_in_one_statement(self):
+        asked, context = drive(
+            context_plan(False, {"orders", "Items"}),
+            [[SETTINGS_ROW], [TIMED], SIZE_ROWS, [("0",)]],
+        )
+        self.assertEqual(len(asked), 4)
+        self.assertIn(
+            "AND lower(c.relname) IN "
+            f"(convert_from(decode('{b'Items'.hex()}', 'hex'), 'UTF8'), "
+            f"convert_from(decode('{b'orders'.hex()}', 'hex'), 'UTF8'))",
+            asked[2],
+        )
+        self.assertEqual(context.stats("orders").rows, 2_000_000)
+        self.assertIn("sizes", context.read)
+
+    def test_postgres_quotes_nothing_from_a_name(self):
+        asked, _ = drive(
+            context_plan(False, ["o'rders%\\"]), [[SETTINGS_ROW], [TIMED], [], [("0",)]]
+        )
+        self.assertTrue(all("%" not in sql and "o'r" not in sql for sql in asked))
+
+    def test_a_table_whose_lock_is_not_granted_is_the_only_one_unknown(self):
+        timeout = RuntimeError("canceling statement due to lock timeout")
+        answers = [[SETTINGS_ROW], [TIMED], timeout, timeout, [SIZE_ROWS[0]], [("0",)]]
+        asked, context = drive(context_plan(False, {"items", "orders"}), answers)
+        self.assertEqual(len(asked), 6)
+        self.assertIn(f"'{b'items'.hex()}'", asked[3])
+        self.assertNotIn(f"'{b'orders'.hex()}'", asked[3])
+        self.assertIn(f"'{b'orders'.hex()}'", asked[4])
+        self.assertEqual(asked[5], RESTORE_SQL)
+        self.assertEqual(context.stats("items"), TableStats())
+        self.assertEqual(context.stats("orders").rows, 2_000_000)
+        self.assertIn("sizes", context.read)
+
+    def test_a_single_table_not_granted_leaves_the_sizes_unread(self):
+        timeout = RuntimeError("canceling statement due to lock timeout")
+        asked, context = drive(
+            context_plan(False, {"orders"}),
+            [[SETTINGS_ROW], [TIMED], timeout, [("0",)]],
+        )
+        self.assertEqual(len(asked), 4)
+        self.assertNotIn("sizes", context.read)
+
+    def test_no_named_table_reads_no_size(self):
+        asked, context = drive(context_plan(False, set()), [[SETTINGS_ROW]])
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(dict(context.tables), {})
+
+    def test_the_timeout_put_back_is_the_one_the_session_had(self):
+        denied = RuntimeError("denied")
+        answers = [denied, [("5s", "1s")], SIZE_ROWS, [("5s",)]]
+        asked, _ = drive(context_plan(), answers)
+        self.assertIn(f"decode('{b'5s'.hex()}', 'hex')", asked[3])
+        self.assertTrue(asked[3].startswith("SELECT pg_catalog.set_config("))
+
+    def test_a_refused_timeout_is_not_put_back(self):
+        denied = RuntimeError("denied")
+        asked, context = drive(context_plan(), [[SETTINGS_ROW], denied, SIZE_ROWS])
+        self.assertEqual(len(asked), 3)
+        self.assertIn("sizes", context.read)
+
+    def test_mysql_names_the_tables_in_hex(self):
+        from sustained.impact.rules import mysql
+
+        asked, _ = drive(
+            mysql.context_plan(False, {"orders"}),
+            [[("8.0.19", 1, 50)], [], []],
+        )
+        self.assertTrue(
+            asked[1].endswith(f"AND LOWER(TABLE_NAME) IN (X'{b'orders'.hex()}')")
+        )
+        asked, _ = drive(
+            mysql.context_plan(False, set()), [[("8.0.19", 1, 50)], [], []]
+        )
+        self.assertTrue(asked[1].endswith("IN (NULL)"))
+
+    def test_mssql_names_the_tables_as_utf16(self):
+        from sustained.impact.rules import mssql
+
+        answers = [[("16.0.1", 3, "Developer", -1)], [(False,)], []]
+        asked, _ = drive(mssql.context_plan(False, {"orders"}), answers)
+        spelled = "orders".encode("utf-16-le").hex()
+        self.assertTrue(
+            asked[2].endswith(
+                f"WHERE LOWER(t.name) IN (CONVERT(nvarchar(128), 0x{spelled}))"
+            )
+        )
+
+    def test_duckdb_reads_the_named_tables_only(self):
+        from sustained.impact.rules.duckdb import context_plan as duckdb_plan
+
+        asked, _ = drive(duckdb_plan(False, {"t", "o'x"}), [[("v1.1.0",)], []])
+        self.assertTrue(asked[1].endswith("AND lower(table_name) IN ('o''x', 't')"))
+
+
+class NamedTablesTestCase(unittest.TestCase):
+    def test_names_each_table_a_statement_acts_on(self):
+        statements = [
+            "ALTER TABLE app.Orders ADD COLUMN c int",
+            "ALTER TABLE items RENAME TO things",
+            "ALTER TABLE things ADD COLUMN d int",
+        ]
+        self.assertEqual(named_tables(statements, PG), {"orders", "items", "things"})
+
+    def test_the_schema_names_the_table_of_an_index(self):
+        import sqlite3
+
+        from sustained.introspect import introspect_schema
+
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        connection.execute("CREATE TABLE t (id INTEGER)")
+        connection.execute("CREATE INDEX ix ON t (id)")
+        schema = introspect_schema(connection, Dialects.DEFAULT)
+        self.assertNotIn("t", named_tables(["DROP INDEX ix"], Dialects.DEFAULT))
+        self.assertEqual(
+            named_tables(["DROP INDEX ix"], Dialects.DEFAULT, schema), {"t"}
+        )
+
+    def test_read_context_sizes_only_the_named_tables(self):
+        connection = ScriptedConnection()
+        context = read_context(connection, PG, statements=[INDEX])
+        sizes = [sql for sql in connection.log if "pg_total_relation_size" in sql]
+        self.assertEqual(len(sizes), 1)
+        self.assertIn(f"'{b'orders'.hex()}'", sizes[0])
+        self.assertIn("schema", context.read)
+        adapter = ScriptedAdapter()
+        asyncio.run(async_read_context(adapter, PG, statements=[INDEX]))
+        self.assertEqual(
+            [sql for sql in adapter.log if "pg_total_relation_size" in sql], sizes
+        )
+
+    def test_a_failed_schema_read_still_reads_the_sizes(self):
+        connection = ScriptedConnection()
+        with mock.patch(
+            "sustained.introspect.runner.introspect_schema",
+            side_effect=RuntimeError("denied"),
+        ):
+            context = read_context(connection, PG, statements=[INDEX])
+        self.assertNotIn("schema", context.read)
+        self.assertIn("sizes", context.read)
+        with mock.patch(
+            "sustained.introspect.runner.async_introspect_schema",
+            side_effect=RuntimeError("denied"),
+        ):
+            context = asyncio.run(async_read_context(ScriptedAdapter(), PG))
+        self.assertNotIn("schema", context.read)
 
 
 if __name__ == "__main__":

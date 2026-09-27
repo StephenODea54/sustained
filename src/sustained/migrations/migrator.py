@@ -247,7 +247,9 @@ class Migrator(MigratorBase):
             return run_plan(self._connection, self._dialect, request.plan)
         from sustained.impact import read_context
 
-        return read_context(self._connection, self._dialect, request.exact_counts)
+        return read_context(
+            self._connection, self._dialect, request.exact_counts, request.statements
+        )
 
     def _execute(
         self, cursor: "Cursor", sql: str, params: Tuple[SqlValue, ...]
@@ -890,8 +892,9 @@ class Migrator(MigratorBase):
         On SQLite, exact_counts=True counts the rows of each table that
         sqlite_stat1 has no row count for, since a table ANALYZE has not
         read, or read while it was empty, has no estimate. Each count
-        reads the whole table. Other dialects read the estimates the
-        server keeps either way.
+        reads the whole table. It also reads each table's bytes from
+        dbstat, which reads every page of the table and its indexes.
+        Other dialects read the estimates the server keeps either way.
 
         live=True also reads what the run would wait behind on the
         server, as preflight() reads it, into the report's `preflight`,

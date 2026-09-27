@@ -369,7 +369,46 @@ class ContextTestCase(unittest.TestCase):
         connection.execute("CREATE TABLE t (id INTEGER)")
         ctx = read_context(connection, SQLITE)
         self.assertIsNone(ctx.stats("t").rows)
+        self.assertNotIn("sizes", ctx.read)
+        ctx = read_context(connection, SQLITE, exact_counts=True)
+        self.assertEqual(ctx.stats("t").rows, 0)
         self.assertIn("sizes", ctx.read)
+
+    def test_without_exact_counts_bytes_are_a_share_of_the_file(self):
+        answers = [[("3.45.1",)], [("wal",)], [("t", 300), ("u", 100)]]
+        answers += [[(10,)], [(4096,)]]
+        asked, ctx = drive(context_plan(), answers)
+        self.assertEqual(len(asked), 5)
+        self.assertFalse(any("dbstat" in sql for sql in asked))
+        self.assertEqual(ctx.stats("t"), TableStats(300, 30720))
+        self.assertEqual(ctx.stats("u"), TableStats(100, 10240))
+        self.assertEqual(ctx.stats(DATABASE).bytes, 40960)
+        _, ctx = drive(context_plan(), answers[:2] + [[("t", 0)]] + answers[3:])
+        self.assertEqual(ctx.stats("t"), TableStats(0, 0))
+
+    def test_exact_counts_reads_only_the_named_tables(self):
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        connection.executescript(
+            "CREATE TABLE t (id INTEGER); CREATE TABLE u (id INTEGER);"
+            "CREATE INDEX ix ON u (id); INSERT INTO t VALUES (1); "
+            "INSERT INTO u VALUES (1), (2);"
+        )
+        asked = []
+        connection.set_trace_callback(asked.append)
+        ctx = read_context(
+            connection,
+            SQLITE,
+            exact_counts=True,
+            statements=["ALTER TABLE u ADD COLUMN c int"],
+        )
+        connection.set_trace_callback(None)
+        self.assertEqual(ctx.stats("u").rows, 2)
+        self.assertGreater(ctx.stats("u").bytes, 0)
+        self.assertEqual(ctx.stats("t"), TableStats())
+        self.assertNotIn('SELECT COUNT(*) FROM "t"', asked)
+        (pages,) = [sql for sql in asked if "dbstat" in sql]
+        self.assertIn("lower(m.tbl_name) IN ('u')", pages)
 
     def test_exact_counts_counts_the_tables_sqlite_stat1_leaves_out(self):
         connection = sqlite3.connect(":memory:")
@@ -408,8 +447,8 @@ class ContextTestCase(unittest.TestCase):
 
     def test_failed_reads_leave_their_facts_out(self):
         failure = RuntimeError("no such table")
-        asked, ctx = drive(context_plan(), [failure] * 6)
-        self.assertEqual(len(asked), 6)
+        asked, ctx = drive(context_plan(), [failure] * 5)
+        self.assertEqual(len(asked), 5)
         self.assertEqual(ctx.version, FLOORS["sqlite"])
         self.assertEqual(ctx.read, frozenset())
         self.assertEqual(dict(ctx.tables), {})
