@@ -61,6 +61,8 @@ class CreateDrop(Cursor):
             return self.create_trigger()
         if self.accept("TYPE"):
             return self.create_type()
+        if self.accept("DOMAIN"):
+            return self.create_domain()
         found = self.accept_any(*OBJECT_WORDS)
         if found:
             if found in ("FUNCTION", "PROCEDURE"):
@@ -205,6 +207,33 @@ class CreateDrop(Cursor):
         self.rest()
         return ParsedStatement("create_type", options=frozen({"enum": enum}))
 
+    def create_domain(self) -> ParsedStatement:
+        """
+        PostgreSQL's `CREATE DOMAIN name [AS] type ...`: its name, the
+        type it is over, and whether it has a NOT NULL or a CHECK. A NOT
+        NULL outside parentheses anywhere after the type counts, so one
+        in a DEFAULT expression counts too.
+        """
+        name = self.name()
+        self.accept("AS")
+        type_tokens = self.up_to_word(
+            "COLLATE", "DEFAULT", "CONSTRAINT", "NOT", "NULL", "CHECK"
+        )
+        if not type_tokens:
+            raise Unrecognized(f"expected a type {self.where()}")
+        tail = self.rest()
+        constrained = self.top_level_word(tail, "CHECK") or any(
+            first.is_word("NOT") and second.is_word("NULL")
+            for first, second in zip(tail, tail[1:])
+        )
+        options = {
+            "object": "domain",
+            "name": name,
+            "type": self.text(type_tokens),
+            "constrained": constrained,
+        }
+        return ParsedStatement("create_object", options=frozen(options))
+
     def drop(self) -> ParsedStatement:
         if self.accept("INDEX"):
             return self.drop_index()
@@ -223,6 +252,14 @@ class CreateDrop(Cursor):
             names = self.names()
             self.accept_any("CASCADE", "RESTRICT")
             return ParsedStatement("drop_type", options=frozen({"names": tuple(names)}))
+        if self.accept("DOMAIN"):
+            self.accept("IF", "EXISTS")
+            names = self.names()
+            self.accept_any("CASCADE", "RESTRICT")
+            return ParsedStatement(
+                "drop_object",
+                options=frozen({"object": "domain", "names": tuple(names)}),
+            )
         found = self.accept_any(*OBJECT_WORDS)
         if found:
             self.rest()

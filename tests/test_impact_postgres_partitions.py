@@ -1038,3 +1038,72 @@ class RunPartitionTestCase(unittest.TestCase):
             context(),
         )
         self.assertNotIn("pt1", {t.table for t in statement.tables})
+
+
+class RunDomainTestCase(unittest.TestCase):
+    """Domains the run creates and drops, read before the types read."""
+
+    def added(self, statements, found=None):
+        run = [MigrationStatement(sql, "m1") for sql in statements]
+        run.append(MigrationStatement("ALTER TABLE t ADD COLUMN x d", "m1"))
+        statement = analyze(run, PG, found or context()).statements[-1]
+        (table,) = statement.tables
+        return table.work, statement.confidence
+
+    def test_a_domain_the_run_created_with_a_check_rewrites(self):
+        for sql in (
+            "CREATE DOMAIN d AS int CHECK (VALUE > 0)",
+            "CREATE DOMAIN d AS int NOT NULL",
+        ):
+            with self.subTest(sql):
+                self.assertEqual(self.added([sql]), (Work.REWRITE, Confidence.KNOWN))
+        # Without the types read, the run's facts still answer.
+        unread = context(read=READ - {"types"}, types={})
+        self.assertEqual(
+            self.added(["CREATE DOMAIN d AS int CHECK (VALUE > 0)"], unread),
+            (Work.REWRITE, Confidence.KNOWN),
+        )
+
+    def test_a_domain_the_run_created_without_a_constraint_checks_nothing(self):
+        unread = context(read=READ - {"types"}, types={})
+        for found in (None, unread):
+            with self.subTest(found=found):
+                self.assertEqual(
+                    self.added(["CREATE DOMAIN d AS int"], found),
+                    (Work.CATALOG, Confidence.KNOWN),
+                )
+
+    def test_a_domain_over_a_constrained_domain_rewrites(self):
+        self.assertEqual(
+            self.added(["CREATE DOMAIN d AS positive"]),
+            (Work.REWRITE, Confidence.KNOWN),
+        )
+        self.assertEqual(
+            self.added(
+                ["CREATE DOMAIN e AS int CHECK (VALUE > 0)", "CREATE DOMAIN d AS e"]
+            ),
+            (Work.REWRITE, Confidence.KNOWN),
+        )
+        self.assertEqual(
+            self.added(["CREATE DOMAIN d AS plain"]), (Work.CATALOG, Confidence.KNOWN)
+        )
+        self.assertEqual(
+            self.added(["CREATE DOMAIN d AS citext"]),
+            (Work.REWRITE, Confidence.LIKELY),
+        )
+
+    def test_a_domain_created_again_replaces_the_read(self):
+        found = context(types=MappingProxyType({"d": False}))
+        self.assertEqual(self.added([], found), (Work.CATALOG, Confidence.KNOWN))
+        self.assertEqual(
+            self.added(
+                ["DROP DOMAIN d", "CREATE DOMAIN d AS int CHECK (VALUE > 0)"], found
+            ),
+            (Work.REWRITE, Confidence.KNOWN),
+        )
+
+    def test_a_domain_the_run_dropped_is_not_found(self):
+        found = context(types=MappingProxyType({"d": False}))
+        self.assertEqual(
+            self.added(["DROP DOMAIN d"], found), (Work.REWRITE, Confidence.LIKELY)
+        )

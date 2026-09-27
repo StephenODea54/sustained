@@ -38,11 +38,14 @@ The rules read each statement against what came before it in the run:
   `INSERT ... SELECT` into a partitioned table fills each partition
   below it that the run created. `DROP TABLE` drops the partitions
   below the table, and a rename keeps the table's place.
+- A domain the run created with `CREATE DOMAIN`, with whether it has a
+  NOT NULL or a CHECK and the type it is over, and a domain it dropped
+  with `DROP DOMAIN`, answer before the types read does (`domain()`).
 - A `ROLLBACK`, or `ROLLBACK TO SAVEPOINT`, in a migration's
   transaction undoes what the migration did to tables, indexes, checks,
-  columns, storage, and partitions, on an engine whose DDL runs in the
-  transaction, so the facts go back to what they were as the migration
-  began (`rollback()`). Outside a transaction there is
+  columns, storage, partitions, and domains, on an engine whose DDL
+  runs in the transaction, so the facts go back to what they were as
+  the migration began (`rollback()`). Outside a transaction there is
   nothing to undo, and on MySQL and MariaDB each DDL statement commits,
   so a ROLLBACK there leaves the facts as they are. A table an `INSERT
   ... SELECT` filled on MySQL then stays filled after a ROLLBACK that
@@ -91,7 +94,8 @@ _UNSET = object()
 _NOT_THE_SESSION = frozenset({"global", "persist", "persist_only", "user"})
 
 # The RunState attributes that hold what the run did to tables, indexes,
-# checks, columns, storage, and partitions, which a ROLLBACK undoes.
+# checks, columns, storage, partitions, and domains, which a ROLLBACK
+# undoes.
 _FACTS = (
     "born",
     "created",
@@ -106,6 +110,7 @@ _FACTS = (
     "links",
     "defaults",
     "partitioned",
+    "domains",
 )
 
 
@@ -248,6 +253,11 @@ class RunState:
         self.defaults: Set[str] = set()
         # The partitioned tables the run created.
         self.partitioned: Set[str] = set()
+        # The domains the run created, by lower case name: whether the
+        # domain has a NOT NULL or a CHECK of its own, and the type it
+        # is over as the statement spells it; None once the run dropped
+        # the domain.
+        self.domains: Dict[str, Optional[Tuple[bool, str]]] = {}
         self._migration: object = _UNSET
         # The facts as the current migration began, which a ROLLBACK in
         # its transaction goes back to.
@@ -322,6 +332,19 @@ class RunState:
         facts stay with the live table across a rename.
         """
         self.storage.setdefault(self.original(table).lower(), {}).update(facts)
+
+    def domain(self, name: str) -> Optional[Tuple[bool, str]]:
+        """
+        A domain the run created and did not drop: whether it has a NOT
+        NULL or a CHECK of its own, and the type it is over. None
+        otherwise.
+        """
+        return self.domains.get(name.lower())
+
+    def domain_dropped(self, name: str) -> bool:
+        """Whether the run dropped the domain and did not create it again."""
+        key = name.lower()
+        return key in self.domains and self.domains[key] is None
 
     def proves_not_null(self, table: str, column: str) -> bool:
         """
@@ -463,6 +486,14 @@ class RunState:
                     self.detach(str(action.options["partition"]))
         elif kind == "set":
             self.record_settings(parsed, transactional)
+        elif kind == "create_object" and options.get("object") == "domain":
+            self.domains[str(options["name"]).lower()] = (
+                bool(options.get("constrained")),
+                str(options["type"]),
+            )
+        elif kind == "drop_object" and options.get("object") == "domain":
+            for name in parsed.items("names"):
+                self.domains[str(name).lower()] = None
 
     def record_create(self, table: str, options: Mapping[str, object]) -> None:
         """Takes in a CREATE TABLE."""

@@ -599,6 +599,25 @@ class PartitionStateTestCase(unittest.TestCase):
         self.assertIsNone(state.relation("big"))
 
 
+class DomainStateTestCase(unittest.TestCase):
+    """The domains the run creates and drops."""
+
+    def test_the_run_records_created_and_dropped_domains(self):
+        state = RunState("lock_timeout", transactional_ddl=True)
+        state.enter("m1")
+        state.record(recognize("CREATE DOMAIN D AS int CHECK (VALUE > 0)", PG), True)
+        self.assertEqual(state.domain("d"), (True, "int"))
+        self.assertFalse(state.domain_dropped("d"))
+        state.record(recognize("DROP DOMAIN d, e", PG), True)
+        self.assertIsNone(state.domain("d"))
+        self.assertTrue(state.domain_dropped("E"))
+        state.record(recognize("CREATE DOMAIN e AS d", PG), True)
+        self.assertEqual(state.domain("e"), (False, "d"))
+        self.assertFalse(state.domain_dropped("e"))
+        state.record(recognize("ROLLBACK", PG), True)
+        self.assertEqual((state.domain("e"), state.domain_dropped("d")), (None, False))
+
+
 class CheckStateTestCase(unittest.TestCase):
     def state(self, *statements):
         state = RunState()

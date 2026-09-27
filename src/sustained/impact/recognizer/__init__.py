@@ -58,7 +58,10 @@ The statement kinds, and the options each one sets:
 - `create_type`: enum; `alter_type_add_value`, `alter_type_rename_value`
 - `create_view`: materialized
 - `create_object`, `drop_object`: object, such as `schema`, `sequence`,
-  `function`, `procedure`, `extension`, or `domain`
+  `function`, `procedure`, `extension`, or `domain`. For a domain,
+  CREATE also sets name, type (the type the domain is over, as the
+  statement spells it), and constrained (whether it has a NOT NULL or
+  a CHECK of its own), and DROP sets names. `ALTER DOMAIN` is unknown
 - `set`: settings, a tuple of (scope, name, value), where scope is
   `session`, `local`, `global`, `persist`, `pragma`, `reset`, or
   `rollback`, and the name is lower case. `RESET`, `DISCARD ALL`,

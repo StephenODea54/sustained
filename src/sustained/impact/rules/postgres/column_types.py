@@ -7,7 +7,7 @@ and rebuild all its indexes.
 from __future__ import annotations
 
 import re
-from typing import List, Mapping, Optional, Tuple
+from typing import FrozenSet, List, Mapping, Optional, Tuple
 
 from sustained.impact.model import (
     Action,
@@ -185,17 +185,39 @@ def _coercible(
     return None
 
 
-def domain_check(facts: Facts, type_text: str) -> Optional[Tuple[str, Confidence]]:
+def domain_check(
+    facts: Facts, type_text: str, seen: FrozenSet[str] = frozenset()
+) -> Optional[Tuple[str, Confidence]]:
     """
     Why a column added with the type rewrites the table, and how sure
     the answer is, or None when the type adds no check. A domain with a
     NOT NULL or a CHECK, of its own or on the domain it is over, is
     checked against every row, which PostgreSQL does by rewriting the
-    table. An array of a domain checks nothing.
+    table. An array of a domain checks nothing. A domain the run
+    created or dropped is read from the run before the types read.
     """
     base, _, array = _pg_type(type_text)
     if not type_text or array or base in _SYSTEM_TYPES or base.startswith("interval"):
         return None
+    created = facts.state.domain(base)
+    if created is not None and base not in seen:
+        own, over = created
+        if own:
+            return (
+                f"{type_text} is a domain with a constraint, which is checked "
+                "against every row",
+                Confidence.KNOWN,
+            )
+        found = domain_check(facts, over, seen | {base})
+        if found is None:
+            return None
+        return (f"{type_text} is a domain over {over}, and {found[0]}", found[1])
+    if facts.state.domain_dropped(base):
+        return (
+            f"the run dropped the domain {type_text}; if a type of that name is a "
+            "domain with a constraint, the constraint is checked against every row",
+            Confidence.LIKELY,
+        )
     if "types" not in facts.context.read:
         return (
             f"no read says whether {type_text} is a domain with a constraint, "

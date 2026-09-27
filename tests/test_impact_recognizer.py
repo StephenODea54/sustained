@@ -258,6 +258,46 @@ class CreateAndDropTestCase(RecognizerTestCase):
                 parsed = recognize(sql, PG)
                 self.assertEqual((parsed.kind, parsed.options["object"]), (kind, obj))
 
+    def test_domains(self):
+        for sql, name, type_text, constrained in (
+            ("CREATE DOMAIN d AS int", "d", "int", False),
+            (
+                'CREATE DOMAIN app."D" varchar(10) COLLATE "C"',
+                "app.D",
+                "varchar(10)",
+                False,
+            ),
+            ("CREATE DOMAIN d AS int DEFAULT 0 NOT NULL", "d", "int", True),
+            ("CREATE DOMAIN d AS int NULL", "d", "int", False),
+            (
+                "CREATE DOMAIN d AS timestamp with time zone "
+                "CONSTRAINT c CHECK (VALUE > now())",
+                "d",
+                "timestamp with time zone",
+                True,
+            ),
+            ("CREATE DOMAIN d2 AS d", "d2", "d", False),
+        ):
+            with self.subTest(sql):
+                parsed = recognize(sql, PG)
+                self.assertEqual(parsed.kind, "create_object")
+                self.assertEqual(
+                    dict(parsed.options),
+                    {
+                        "object": "domain",
+                        "name": name,
+                        "type": type_text,
+                        "constrained": constrained,
+                    },
+                )
+        dropped = recognize("DROP DOMAIN IF EXISTS d, app.e CASCADE", PG)
+        self.assertEqual(
+            (dropped.kind, dict(dropped.options)),
+            ("drop_object", {"object": "domain", "names": ("d", "app.e")}),
+        )
+        self.assertUnknown("ALTER DOMAIN d ADD CHECK (VALUE > 0)")
+        self.assertUnknown("CREATE DOMAIN d NOT NULL")
+
     def test_unread_create_and_drop_are_unknown(self):
         for sql in (
             "CREATE ROLE app",
