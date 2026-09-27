@@ -17,7 +17,7 @@ import unittest
 from unittest import mock
 
 from sustained.cli import main
-from sustained.migrations import Migrator
+from sustained.migrations import Migrator, Rehearsal
 
 CONFIG_TEMPLATE = """
 import os
@@ -1736,10 +1736,12 @@ class ImpactCliTestCase(CliBase):
                 "migrations",
                 "counts",
                 "preflight",
+                "models_diffed",
                 "error",
             },
         )
         self.assertIsNone(payload["preflight"])
+        self.assertIsNone(payload["models_diffed"])
         self.assertEqual(payload["profile"], "postgres")
         self.assertEqual(payload["evidence"], "catalog")
         self.assertEqual(payload["read"], ["schema"])
@@ -1770,6 +1772,115 @@ class ImpactCliTestCase(CliBase):
             code = main(["impact", "--config", name])
         self.assertEqual(code, 0)
         self.assertIn('CREATE TABLE "notes"', stdout.getvalue())
+
+    def _pending_models_config(self, extra=""):
+        """
+        A config whose model is the users table the pending 001_users
+        creates, with one more column.
+        """
+        name = f"impact_pending_{id(self)}_{len(extra)}"
+        with open(os.path.join(self.dir.name, f"{name}.py"), "w") as f:
+            f.write(
+                CONFIG_TEMPLATE + "\nfrom sustained import create_model\n"
+                "from sustained.schema import Integer, Text\n"
+                "Users = create_model('Users', 'users')\n"
+                "Users.tableColumns = {'id': Integer(), 'bio': Text()}\n"
+                "Users.columns = ('id', 'bio')\n"
+                "models = [Users]\n" + extra
+            )
+        self.addCleanup(sys.modules.pop, name, None)
+        return name
+
+    def _run_named(self, name, *argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main([*argv, "--config", name])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    SCRATCH = (
+        "def get_rehearsal_connection():\n"
+        "    return sqlite3.connect(\n"
+        "        os.path.join(os.path.dirname(__file__), 'scratch.db')\n"
+        "    )\n"
+    )
+
+    def test_impact_leaves_the_models_out_while_migrations_are_pending(self):
+        self._postgres_rules()
+        name = self._pending_models_config()
+        code, out, _ = self._run_named(name, "impact")
+        self.assertEqual(code, 0)
+        self.assertIn("001_users", out)
+        self.assertNotIn('CREATE TABLE "users"', out)
+        self.assertNotIn("bio", out)
+        self.assertIn("models not diffed: migrate diffs them after the pending", out)
+        code, out, _ = self._run_named(name, "impact", "--json")
+        payload = json.loads(out)
+        self.assertIs(payload["models_diffed"], False)
+        self.assertEqual(
+            [m["id"] for m in payload["migrations"]], ["001_users", "002_flag"]
+        )
+
+    def test_impact_diffs_the_models_on_the_scratch_database(self):
+        self._postgres_rules()
+        name = self._pending_models_config(self.SCRATCH)
+        code, out, _ = self._run_named(name, "impact", "--json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertIs(payload["models_diffed"], True)
+        ids = [m["id"] for m in payload["migrations"]]
+        self.assertEqual(ids[:2], ["001_users", "002_flag"])
+        self.assertEqual(len(ids), 3)
+        generated = [s["sql"] for s in payload["migrations"][2]["statements"]]
+        self.assertTrue(any("bio" in s for s in generated))
+        self.assertFalse(any('CREATE TABLE "users"' in s for s in generated))
+        # Nothing was applied on either database.
+        self.assertNotIn("users", self.table_names())
+        with contextlib.closing(
+            sqlite3.connect(os.path.join(self.dir.name, "scratch.db"))
+        ) as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        self.assertNotIn("users", {r[0] for r in rows})
+        code, out, _ = self._run_named(name, "impact")
+        self.assertEqual(code, 0)
+        self.assertNotIn("models not diffed", out)
+
+    def test_impact_fails_when_a_pending_migration_fails_on_the_scratch_database(
+        self,
+    ):
+        self._postgres_rules()
+        name = self._pending_models_config(self.SCRATCH)
+        with contextlib.closing(
+            sqlite3.connect(os.path.join(self.dir.name, "scratch.db"))
+        ) as conn:
+            conn.execute("CREATE TABLE flags (id INTEGER)")
+            conn.commit()
+        code, _, err = self._run_named(name, "impact")
+        self.assertEqual(code, 1)
+        self.assertIn("'002_flag' failed on the scratch database", err)
+
+    def test_impact_diffs_the_models_directly_when_nothing_is_pending(self):
+        self._postgres_rules()
+        self.run_cli("migrate")
+        name = self._pending_models_config()
+        code, out, _ = self._run_named(name, "impact", "--json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertIs(payload["models_diffed"], True)
+        (migration,) = payload["migrations"]
+        self.assertTrue(any("bio" in s["sql"] for s in migration["statements"]))
+
+    def test_rehearse_takes_the_config_lock_timeout(self):
+        name = self._pending_models_config("rehearsal_lock_timeout = 0.5\n")
+        with mock.patch.object(Migrator, "rehearse", autospec=True) as rehearse:
+            rehearse.return_value = Rehearsal([], "key")
+            self._run_named(name, "rehearse")
+        self.assertEqual(rehearse.call_args.kwargs["lock_timeout"], 0.5)
+        name = self._pending_models_config("rehearsal_lock_timeout = 0\n")
+        code, _, err = self._run_named(name, "rehearse")
+        self.assertEqual(code, 1)
+        self.assertIn("lock_timeout must be a number of seconds above 0", err)
 
     def test_impact_on_a_dialect_without_rules_exits_one(self):
         self._no_rules()

@@ -187,6 +187,8 @@ class AsyncMigrator(MigratorBase):
         if isinstance(request, (ReadSchema, ReadContext, ReadCatalog)):
             return await self._read(request)
         if isinstance(request, DiffSource):
+            if not request.read:
+                return SchemaRead().connection(), None
             snapshot, read = await self._read_schema(request.schemas)
             return read.connection(), snapshot
         if isinstance(request, RefuseOpenTransaction):
@@ -536,8 +538,9 @@ class AsyncMigrator(MigratorBase):
         60 seconds or longer, and the run goes on; 'refuse' raises
         PreflightBlocked when there is one. PreflightCheck(mode,
         older_than) sets another age. The read is a snapshot: a session
-        may take a lock after it. A dialect without a live preflight
-        reads nothing. No session is ended.
+        may take a lock after it. No session is ended. On a dialect
+        without a live preflight, a preflight raises DialectError before
+        the run starts.
 
         online=True generates and applies the migrations
         Migrator.up(online=True) does.
@@ -559,7 +562,7 @@ class AsyncMigrator(MigratorBase):
                 reads=runs.RunReads(
                     assert_algorithm,
                     exact_counts,
-                    runs.preflight_check(preflight),
+                    runs.preflight_check(preflight, self._dialect),
                     online,
                 ),
             )
@@ -578,6 +581,7 @@ class AsyncMigrator(MigratorBase):
         trace: bool = False,
         assert_algorithm: bool = False,
         online: bool = False,
+        lock_timeout: Optional[float] = None,
     ) -> Rehearsal:
         """
         Runs every pending migration up, then back down, inside one
@@ -614,6 +618,12 @@ class AsyncMigrator(MigratorBase):
 
         online=True rehearses the migrations up(online=True) generates,
         as Migrator.rehearse() describes.
+
+        Every lock a statement takes stays taken until the rollback.
+        lock_timeout=seconds sets the dialect's lock timeout for the
+        rehearsal, as Migrator.rehearse() describes, and the result's
+        `generated` lists the migrations the diff against the models
+        generated.
         """
         return await self._drive(
             rehearsing.rehearse(
@@ -629,6 +639,7 @@ class AsyncMigrator(MigratorBase):
                 trace=trace,
                 assert_algorithm=assert_algorithm,
                 online=online,
+                lock_timeout=lock_timeout,
             )
         )
 
@@ -642,7 +653,9 @@ class AsyncMigrator(MigratorBase):
         table_renames: Optional[Dict[str, str]] = None,
         type_casts: Optional[Dict[str, str]] = None,
         ignore_undeclared: bool = True,
+        snapshot: Optional["Snapshot"] = None,
         assert_algorithm: bool = False,
+        online: bool = False,
     ) -> Optional[Migration]:
         """
         Diffs the database against the models and returns the migration
@@ -661,9 +674,13 @@ class AsyncMigrator(MigratorBase):
         Pass allow_drops=True to generate the drops instead, or
         ignore_undeclared=False to refuse to generate while they exist.
 
+        Pass a snapshot from async_introspect_schema() to plan against it
+        instead of reading the schema again. The plan then runs no
+        statement, and the snapshot is not changed.
+
         assert_algorithm writes the ALGORITHM and LOCK clauses
         Migrator.plan() describes, from the server facts read through the
-        adapter.
+        adapter, and online plans as Migrator.plan() describes.
         """
         return await self._drive(
             runs.plan(
@@ -676,7 +693,9 @@ class AsyncMigrator(MigratorBase):
                 table_renames=table_renames,
                 type_casts=type_casts,
                 ignore_undeclared=ignore_undeclared,
+                snapshot=snapshot,
                 assert_algorithm=assert_algorithm,
+                online=online,
             )
         )
 
@@ -690,6 +709,7 @@ class AsyncMigrator(MigratorBase):
         table_renames: Optional[Dict[str, str]] = None,
         type_casts: Optional[Dict[str, str]] = None,
         ignore_undeclared: bool = True,
+        snapshot: Optional["Snapshot"] = None,
         assert_algorithm: bool = False,
         online: bool = False,
     ) -> List[Migration]:
@@ -697,7 +717,7 @@ class AsyncMigrator(MigratorBase):
         The migrations up(models=[...]) would generate, as a list that is
         empty when the schema is up to date. Mirrors
         Migrator.plan_migrations(), with the schema read plan() makes
-        here.
+        here, or the snapshot plan() takes.
         """
         return await self._drive(
             runs.plan_migrations(
@@ -710,6 +730,7 @@ class AsyncMigrator(MigratorBase):
                 table_renames=table_renames,
                 type_casts=type_casts,
                 ignore_undeclared=ignore_undeclared,
+                snapshot=snapshot,
                 assert_algorithm=assert_algorithm,
                 online=online,
             )
@@ -723,12 +744,19 @@ class AsyncMigrator(MigratorBase):
         live: bool = False,
         older_than: float = 60.0,
         online: bool = False,
+        *,
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[Dict[str, str]] = None,
+        table_renames: Optional[Dict[str, str]] = None,
+        type_casts: Optional[Dict[str, str]] = None,
     ) -> "ImpactReport":
         """
         The impact of the run up() would make, with the server facts read
-        through the adapter. Mirrors Migrator.impact(); the generated
-        migration is diffed as plan() diffs it here, from a replay of one
-        schema read.
+        through the adapter. Mirrors Migrator.impact(), diff options
+        included; the generated migration is diffed as plan() diffs it
+        here, from a replay of one schema read.
         """
         return await self._drive(
             runs.impact(
@@ -739,6 +767,14 @@ class AsyncMigrator(MigratorBase):
                 live,
                 older_than,
                 online=online,
+                diff=runs.DiffOptions(
+                    allow_drops,
+                    ignore_changed_columns,
+                    migration_id,
+                    renames,
+                    table_renames,
+                    type_casts,
+                ),
             )
         )
 
@@ -748,13 +784,35 @@ class AsyncMigrator(MigratorBase):
         older_than: float = 60.0,
         exact_counts: bool = False,
         online: bool = False,
+        *,
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[Dict[str, str]] = None,
+        table_renames: Optional[Dict[str, str]] = None,
+        type_casts: Optional[Dict[str, str]] = None,
     ) -> "Preflight":
         """
         The sessions the run up() would make would wait behind, read
-        through the adapter. Mirrors Migrator.preflight().
+        through the adapter. Mirrors Migrator.preflight(), diff options
+        included.
         """
         return await self._drive(
-            runs.preflight(self, models, older_than, exact_counts, online)
+            runs.preflight(
+                self,
+                models,
+                older_than,
+                exact_counts,
+                online,
+                diff=runs.DiffOptions(
+                    allow_drops,
+                    ignore_changed_columns,
+                    migration_id,
+                    renames,
+                    table_renames,
+                    type_casts,
+                ),
+            )
         )
 
     async def drift(

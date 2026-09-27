@@ -528,8 +528,10 @@ class Migrator(MigratorBase):
         60 seconds or longer, and the run goes on; 'refuse' raises
         PreflightBlocked when there is one. PreflightCheck(mode,
         older_than) sets another age. The read is a snapshot: a session
-        may take a lock after it. A dialect without a live preflight
-        reads nothing. No session is ended.
+        may take a lock after it. No session is ended. On a dialect
+        without a live preflight, SQLite and DuckDB among them, a
+        preflight raises DialectError before the run starts, as
+        impact(live=True) does.
 
         On PostgreSQL, online=True generates the migration in two, as
         plan_migrations() describes: `<id>` in one transaction with the
@@ -555,7 +557,7 @@ class Migrator(MigratorBase):
                 reads=runs.RunReads(
                     assert_algorithm,
                     exact_counts,
-                    runs.preflight_check(preflight),
+                    runs.preflight_check(preflight, self._dialect),
                     online,
                 ),
             )
@@ -574,6 +576,7 @@ class Migrator(MigratorBase):
         trace: bool = False,
         assert_algorithm: bool = False,
         online: bool = False,
+        lock_timeout: Optional[float] = None,
     ) -> Rehearsal:
         """
         Runs every pending migration up, then back down, inside one
@@ -587,11 +590,27 @@ class Migrator(MigratorBase):
         callable step that commits on its own is the exception: that
         commit cannot be taken back.
 
+        The rehearsal transaction runs on the connection's database, the
+        live one unless scratch=True points it elsewhere, and every lock
+        a statement takes stays taken until the rollback at the end of
+        the rehearsal. A statement waiting for a lock waits without a
+        limit, and the sessions queued behind it wait too.
+        lock_timeout=seconds sets the dialect's lock timeout for the
+        rehearsal, so a statement that waits longer fails the rehearsal
+        instead: SET LOCAL lock_timeout on PostgreSQL, SET LOCK_TIMEOUT
+        on SQL Server, lock_wait_timeout and innodb_lock_wait_timeout in
+        whole seconds on MySQL and MariaDB, and PRAGMA busy_timeout on
+        SQLite, each set back to its earlier value after the rollback.
+        DuckDB ignores it, since a conflicting write there fails without
+        waiting. Raises ValueError for a lock_timeout that is not a
+        number above 0.
+
         With models, the run rehearses what up(models=[...]) would apply:
         the generated migration joins the pending list for this run only,
         and its result reports whether the schema then matched the models.
         The remaining arguments are the diff options up() takes, and they
-        should match the ones the real run will use.
+        should match the ones the real run will use. The result's
+        `generated` lists the migrations the diff generated.
 
         The up steps run in the order up() runs them: the versioned
         migrations, then the generated one, then the repeatables. The down
@@ -667,6 +686,7 @@ class Migrator(MigratorBase):
                 trace=trace,
                 assert_algorithm=assert_algorithm,
                 online=online,
+                lock_timeout=lock_timeout,
             )
         )
 
@@ -730,12 +750,19 @@ class Migrator(MigratorBase):
         ignore_undeclared: bool = True,
         snapshot: Optional["Snapshot"] = None,
         assert_algorithm: bool = False,
+        online: bool = False,
     ) -> Optional[Migration]:
         """
         Diffs the database against the models and returns the migration
         up(models=[...]) would generate, without registering or applying
         it. Returns None when the schema is already up to date. The
         tracking table is excluded from the diff.
+
+        online=True plans as plan_migrations(online=True) does. On
+        MySQL and MariaDB it does what assert_algorithm=True does. On
+        PostgreSQL it returns the one migration the split generates, and
+        raises ValueError when the split generates two, which only
+        plan_migrations() can return.
 
         Objects the models do not declare are left alone, since a
         database may hold tables that hand-written migrations created.
@@ -771,6 +798,7 @@ class Migrator(MigratorBase):
                 ignore_undeclared=ignore_undeclared,
                 snapshot=snapshot,
                 assert_algorithm=assert_algorithm,
+                online=online,
             )
         )
 
@@ -831,6 +859,13 @@ class Migrator(MigratorBase):
         live: bool = False,
         older_than: float = 60.0,
         online: bool = False,
+        *,
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[dict[str, str]] = None,
+        table_renames: Optional[dict[str, str]] = None,
+        type_casts: Optional[dict[str, str]] = None,
     ) -> "ImpactReport":
         """
         The impact of the run up() would make: every pending migration,
@@ -846,7 +881,11 @@ class Migrator(MigratorBase):
         dialect's support floor or the worst case. The generated
         migration is diffed against the schema as it is now, before the
         pending migrations run, as plan() is, and assert_algorithm
-        writes the clauses plan() describes on it. Nothing is written.
+        writes the clauses plan() describes on it. allow_drops,
+        ignore_changed_columns, migration_id, renames, table_renames,
+        and type_casts are the diff options up() takes, so the same
+        options analyze the migration up() would generate. Nothing is
+        written.
 
         On SQLite, exact_counts=True counts the rows of each table that
         sqlite_stat1 has no row count for, since a table ANALYZE has not
@@ -863,6 +902,8 @@ class Migrator(MigratorBase):
 
         Raises DialectError on a dialect the analysis does not cover
         yet, and with live=True on a dialect without a live preflight.
+        With live=True, raises ValueError for an older_than that is
+        negative, NaN, or not a number.
         """
         return self._drive(
             runs.impact(
@@ -873,6 +914,14 @@ class Migrator(MigratorBase):
                 live,
                 older_than,
                 online=online,
+                diff=runs.DiffOptions(
+                    allow_drops,
+                    ignore_changed_columns,
+                    migration_id,
+                    renames,
+                    table_renames,
+                    type_casts,
+                ),
             )
         )
 
@@ -882,22 +931,43 @@ class Migrator(MigratorBase):
         older_than: float = 60.0,
         exact_counts: bool = False,
         online: bool = False,
+        *,
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[dict[str, str]] = None,
+        table_renames: Optional[dict[str, str]] = None,
+        type_casts: Optional[dict[str, str]] = None,
     ) -> "Preflight":
         """
         The sessions the run up() would make would wait behind on the
         server now: each other session whose table lock, granted or
         asked for, conflicts with a lock a statement of the run takes,
         and each other transaction open older_than seconds or longer.
-        The run is the one impact() analyzes, with models and online as
-        there. See
-        sustained.impact.preflight. Nothing is written, and no session is
-        ended.
+        The run is the one impact() analyzes, with models, online, and
+        the diff options as there. See sustained.impact.preflight.
+        Nothing is written, and no session is ended.
 
         Raises DialectError on a dialect without a live preflight, which
-        PostgreSQL, MySQL, MariaDB, and SQL Server have.
+        PostgreSQL, MySQL, MariaDB, and SQL Server have, and ValueError
+        for an older_than that is negative, NaN, or not a number.
         """
         return self._drive(
-            runs.preflight(self, models, older_than, exact_counts, online)
+            runs.preflight(
+                self,
+                models,
+                older_than,
+                exact_counts,
+                online,
+                diff=runs.DiffOptions(
+                    allow_drops,
+                    ignore_changed_columns,
+                    migration_id,
+                    renames,
+                    table_renames,
+                    type_casts,
+                ),
+            )
         )
 
     def read_schema(self, models: List[Type["Model"]]) -> "Snapshot":

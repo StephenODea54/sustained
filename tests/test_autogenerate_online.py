@@ -1,8 +1,10 @@
 """Tests for autogenerate_migrations() and its online split on PostgreSQL."""
 
+import asyncio
 import json
 import unittest
 
+from sustained.aio_migrations import AsyncMigrator
 from sustained.analysis import destructive_statements, with_intent
 from sustained.autogenerate import autogenerate, autogenerate_migrations
 from sustained.dialects import Dialects
@@ -14,7 +16,7 @@ from sustained.introspect.model import (
     IntrospectedTable,
     Snapshot,
 )
-from sustained.migrations import Migration
+from sustained.migrations import Migration, Migrator
 from sustained.migrations.checks import run_statements
 from sustained.migrations.migration import _restore_migration, _stored_steps
 from sustained.schema import Check, ForeignKey, Index, Integer, String
@@ -391,6 +393,96 @@ class GroupsTestCase(unittest.TestCase):
                 'CREATE INDEX CONCURRENTLY "ix_mail" ON "orders" ("email")',
             ],
         )
+
+
+class NoAdapter:
+    """An adapter that refuses every call, for a plan that reads nothing."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"the plan asked the adapter for {name}")
+
+
+def notes():
+    """A model whose table exists and whose one index does not."""
+    model = make_model("OnlineNotes", "notes", {"id": Integer(primary_key=True)})
+    model.indexes = [Index("ix_notes_id", "id")]
+    model.set_dialect(PG)
+    found = Snapshot(
+        {
+            "notes": IntrospectedTable(
+                {"id": IntrospectedColumn("integer", False, True)},
+                primary_key=("id",),
+                name="notes",
+            )
+        }
+    )
+    return model, found
+
+
+class MigratorPlanTestCase(unittest.TestCase):
+    """plan(online=True), and a snapshot handed to either migrator."""
+
+    def test_plan_refuses_a_split_into_two(self):
+        migrator = Migrator(Rows(), [], dialect=PG)
+        with self.assertRaises(ValueError) as caught:
+            migrator.plan(models(), migration_id="m1", snapshot=snapshot(), online=True)
+        self.assertIn("m1, m1_online", str(caught.exception))
+        self.assertIn("plan_migrations(online=True)", str(caught.exception))
+        self.assertEqual(
+            [
+                m.id
+                for m in migrator.plan_migrations(
+                    models(), migration_id="m1", snapshot=snapshot(), online=True
+                )
+            ],
+            ["m1", "m1_online"],
+        )
+
+    def test_plan_returns_the_one_migration_a_split_generates(self):
+        model, found = notes()
+        planned = Migrator(Rows(), [], dialect=PG).plan(
+            [model], migration_id="m1", snapshot=found, online=True
+        )
+        self.assertEqual(planned.id, "m1_online")
+        self.assertFalse(planned.transactional)
+        self.assertTrue(planned.up[-1].startswith("CREATE INDEX CONCURRENTLY"))
+        self.assertIn('"ix_notes_id" ON "notes" ("id")', planned.up[-1])
+        self.assertIsNone(
+            Migrator(Rows(), [], dialect=PG).plan(
+                [model],
+                snapshot=Snapshot(
+                    {
+                        "notes": IntrospectedTable(
+                            {"id": IntrospectedColumn("integer", False, True)},
+                            primary_key=("id",),
+                            indexes={"ix_notes_id": IntrospectedIndex(("id",), False)},
+                            name="notes",
+                        )
+                    }
+                ),
+                online=True,
+            )
+        )
+
+    def test_the_async_migrator_plans_a_snapshot_without_reading(self):
+        migrator = AsyncMigrator(NoAdapter(), [], dialect=PG)
+        planned = asyncio.run(
+            migrator.plan_migrations(
+                models(), migration_id="m1", snapshot=snapshot(), online=True
+            )
+        )
+        expected = generate(True)
+        self.assertEqual(
+            [(m.id, m.up, m.transactional) for m in planned],
+            [(m.id, m.up, m.transactional) for m in expected],
+        )
+        model, found = notes()
+        single = asyncio.run(
+            migrator.plan([model], migration_id="m1", snapshot=found, online=True)
+        )
+        self.assertEqual(single.id, "m1_online")
+        without = asyncio.run(migrator.plan([model], migration_id="m1", snapshot=found))
+        self.assertEqual(without.up, ['CREATE INDEX "ix_notes_id" ON "notes" ("id")'])
 
 
 class TrackingRowTestCase(unittest.TestCase):

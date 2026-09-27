@@ -31,6 +31,7 @@ _JSON_KEYS: Dict[str, Tuple[str, ...]] = {
         "migrations",
         "counts",
         "preflight",
+        "models_diffed",
     ),
     "rehearse": ("rehearsed", "scratch", "key", "recorded", "ok", "impact"),
     "validate": ("ok", "problems"),

@@ -8,7 +8,10 @@ from __future__ import annotations
 import argparse
 from types import ModuleType
 from typing import (
+    Callable,
+    List,
     Optional,
+    Type,
 )
 
 from sustained.cli.config import (
@@ -19,6 +22,7 @@ from sustained.cli.config import (
     _older_than,
     _online,
     _preflight,
+    _rehearsal_lock_timeout,
 )
 from sustained.cli.output import (
     _print_json,
@@ -29,10 +33,13 @@ from sustained.impact.report import (
     report_data,
 )
 from sustained.migrations import (
+    Migration,
     Migrator,
     Rehearsal,
     RehearsalResult,
 )
+from sustained.model import Model
+from sustained.types import Connection
 
 
 def _cmd_status(
@@ -54,11 +61,64 @@ def _cmd_status(
     return 0
 
 
+def _generated_on_scratch(
+    config: ModuleType,
+    factory: Callable[[], Connection],
+    models: List[Type[Model]],
+    args: argparse.Namespace,
+) -> List[Migration]:
+    """
+    The migrations the models generate once the pending migrations have
+    applied: a rehearsal on the scratch database applies them, diffs the
+    models, and takes both back, as `rehearse` does there. Raises
+    ValueError when a pending migration fails there, since the diff then
+    never ran. A generated migration that fails there is still returned.
+    """
+    connection = factory()
+    try:
+        results = _migrator_on(connection, config).rehearse(
+            scratch=True,
+            models=models,
+            assert_algorithm=_assert_algorithm(config, args),
+            online=_online(config, args),
+            lock_timeout=_rehearsal_lock_timeout(config),
+        )
+    finally:
+        _close_quietly(connection)
+    generated = {g.id for g in results.generated}
+    failed = [r for r in results if r.up_ok is False and r.id not in generated]
+    if failed:
+        raise ValueError(
+            f"'{failed[0].id}' failed on the scratch database, so the models "
+            f"were not diffed after the pending migrations: {failed[0].error}"
+        )
+    return results.generated
+
+
 def _cmd_impact(
     migrator: Migrator, args: argparse.Namespace, config: ModuleType
 ) -> int:
+    """
+    Prints the impact of the run `migrate` would make. `migrate` diffs
+    the models after the pending migrations apply, so with pending
+    migrations the diff runs where `rehearse` would run it: on the
+    scratch database of get_rehearsal_connection(), after they apply
+    there. Without a scratch database the diff is left out, since only
+    applying the pending migrations shows the schema it would read, and
+    the report says so.
+    """
     models = list(getattr(config, "models", None) or []) or None
-    report = migrator.impact(
+    analyzed = migrator
+    diffed: Optional[bool] = None if models is None else True
+    if models is not None and migrator.pending():
+        factory = getattr(config, "get_rehearsal_connection", None)
+        if factory is None:
+            models, diffed = None, False
+        else:
+            generated = _generated_on_scratch(config, factory, models, args)
+            analyzed = _migrator_on(migrator.connection, config, generated)
+            models = None
+    report = analyzed.impact(
         models,
         assert_algorithm=_assert_algorithm(config, args),
         exact_counts=_exact_counts(config, args),
@@ -67,9 +127,15 @@ def _cmd_impact(
         online=_online(config, args),
     )
     if args.json:
-        _print_json(report_data(report))
-    else:
-        print(render(report))
+        _print_json({**report_data(report), "models_diffed": diffed})
+        return 0
+    print(render(report))
+    if diffed is False:
+        print(
+            "models not diffed: migrate diffs them after the pending "
+            "migrations apply; define get_rehearsal_connection() in the "
+            "config module to diff them on a scratch database"
+        )
     return 0
 
 
@@ -180,6 +246,7 @@ def _cmd_rehearse(
             trace=args.trace,
             assert_algorithm=_assert_algorithm(config, args),
             online=_online(config, args),
+            lock_timeout=_rehearsal_lock_timeout(config),
         )
         key, recorded = results.key, results.recorded
         if recorded and results.ok:
@@ -193,6 +260,7 @@ def _cmd_rehearse(
                 trace=args.trace,
                 assert_algorithm=_assert_algorithm(config, args),
                 online=_online(config, args),
+                lock_timeout=_rehearsal_lock_timeout(config),
             )
         finally:
             _close_quietly(connection)

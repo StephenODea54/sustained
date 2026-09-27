@@ -744,16 +744,58 @@ class MigratorPreflightTestCase(unittest.TestCase):
         self.assertIn("would queue behind pid 4121", stderr.getvalue())
         self.assertNotIn("pid 5003", stderr.getvalue())
 
-    def test_up_skips_a_dialect_without_a_preflight(self):
-        connection = sqlite3.connect(":memory:")
-        migrator = Migrator(
-            connection,
+    def test_up_refuses_a_preflight_on_a_dialect_without_one(self):
+        for mode in ("warn", "refuse"):
+            connection = sqlite3.connect(":memory:")
+            migrator = Migrator(
+                connection,
+                [Migration("001_t", up="CREATE TABLE t (id INTEGER)")],
+                dialect=Dialects.DEFAULT,
+            )
+            with self.assertRaises(DialectError):
+                migrator.up(preflight=mode)
+            tables = connection.execute("SELECT name FROM sqlite_master").fetchall()
+            self.assertEqual(tables, [])
+
+    def test_the_async_up_refuses_a_preflight_on_a_dialect_without_one(self):
+        from sustained.aio import DbApiAsyncAdapter
+
+        connection = sqlite3.connect(":memory:", check_same_thread=False)
+        migrator = AsyncMigrator(
+            DbApiAsyncAdapter(connection),
             [Migration("001_t", up="CREATE TABLE t (id INTEGER)")],
-            dialect=Dialects.DEFAULT,
+            dialect=Dialects.DUCKDB,
         )
-        with redirect_stderr(io.StringIO()) as stderr:
-            migrator.up(preflight="refuse")
-        self.assertNotIn("preflight", stderr.getvalue())
+        with self.assertRaises(DialectError):
+            asyncio.run(migrator.up(preflight="refuse"))
+        self.assertEqual(
+            connection.execute("SELECT name FROM sqlite_master").fetchall(), []
+        )
+
+    def test_a_check_refuses_an_age_that_is_not_one(self):
+        for age in (-1, -0.5, float("nan"), "60", None, True):
+            with self.assertRaises(ValueError):
+                PreflightCheck("warn", age)
+        self.assertEqual(PreflightCheck("warn", 0).older_than, 0)
+        self.assertEqual(PreflightCheck("warn", float("inf")).mode, "warn")
+
+    def test_impact_and_preflight_refuse_an_age_that_is_not_one(self):
+        connection = ScriptedConnection()
+        migrator = Migrator(connection, run(), dialect=PG)
+        with self.assertRaises(ValueError):
+            migrator.impact(live=True, older_than=-1)
+        with self.assertRaises(ValueError):
+            migrator.preflight(older_than=float("nan"))
+        self.assertEqual(connection.log, [])
+        self.assertIsNone(migrator.impact(older_than=-1).preflight)
+        with self.assertRaises(ValueError):
+            asyncio.run(
+                AsyncMigrator(Adapter(), run(), dialect=PG).preflight(older_than=-5)
+            )
+        with self.assertRaises(ValueError):
+            preflight(ScriptedConnection(), PG, [ADD], older_than=-1)
+        with self.assertRaises(ValueError):
+            asyncio.run(async_preflight(Adapter(), PG, [ADD], older_than=float("nan")))
 
     def test_a_run_with_models_checks_only_the_generated_migration_again(self):
         from sustained.migrations.core import runs
@@ -762,8 +804,10 @@ class MigratorPreflightTestCase(unittest.TestCase):
         real = runs.check_preflight
 
         def spy(m, statements, check, shown):
+            # SQLite has no preflight to read, so the spy records what
+            # would be read and reads nothing.
             seen.append([str(s) for s in statements])
-            return real(m, statements, check, shown)
+            return real(m, statements, None, shown)
 
         from sustained.model import Model
         from sustained.schema import Integer
@@ -784,7 +828,10 @@ class MigratorPreflightTestCase(unittest.TestCase):
             [Migration("001_t", up="CREATE TABLE t (id INTEGER)")],
             dialect=Dialects.DEFAULT,
         )
-        with mock.patch.object(runs, "check_preflight", spy):
+        with (
+            mock.patch.object(runs, "check_preflight", spy),
+            mock.patch("sustained.impact.preflight.covered", return_value=True),
+        ):
             with redirect_stderr(io.StringIO()):
                 migrator.up(models=[widget], preflight="warn")
         self.assertEqual(len(seen), 2)

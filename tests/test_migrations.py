@@ -418,6 +418,46 @@ class TestRehearse(MigrationTestCase):
         self.assertIn("open transaction()", str(caught.exception))
 
 
+class TestRehearsalLockTimeout(unittest.TestCase):
+    def test_each_dialect_sets_its_own_timeout(self):
+        from sustained.migrations.core.rehearsing import lock_timeout
+
+        postgres = lock_timeout(Dialects.POSTGRES, 1.5)
+        self.assertIsNone(postgres.read)
+        self.assertEqual(postgres.set, ["SET LOCAL lock_timeout = '1500ms'"])
+        self.assertEqual(postgres.restore((0,)), [])
+        mssql = lock_timeout(Dialects.MSSQL, 0.0001)
+        self.assertEqual(mssql.read, "SELECT @@LOCK_TIMEOUT")
+        self.assertEqual(mssql.set, ["SET LOCK_TIMEOUT 1"])
+        self.assertEqual(mssql.restore((-1,)), ["SET LOCK_TIMEOUT -1"])
+        self.assertEqual(
+            lock_timeout(Dialects.DEFAULT, 2).set, ["PRAGMA busy_timeout = 2000"]
+        )
+        self.assertIsNone(lock_timeout(Dialects.DUCKDB, 2))
+        self.assertIsNone(lock_timeout(Dialects.PRESTO, 2))
+
+    def test_a_restore_that_fails_is_dropped(self):
+        from sustained.migrations.core.rehearsing import restore_lock_timeout
+
+        steps = restore_lock_timeout(["SET a", "SET b"])
+        self.assertEqual(next(steps).sql, "SET a")
+        self.assertEqual(steps.throw(RuntimeError("refused")).sql, "SET b")
+        with self.assertRaises(StopIteration):
+            steps.send(None)
+
+    @unittest.skipUnless(HAS_DUCKDB, "duckdb not installed")
+    def test_duckdb_ignores_the_timeout(self):
+        conn = duckdb.connect(":memory:")
+        self.addCleanup(conn.close)
+        migration = Migration(
+            "001_t", up="CREATE TABLE t (id INTEGER)", down="DROP TABLE t"
+        )
+        results = Migrator(conn, [migration], dialect=Dialects.DUCKDB).rehearse(
+            lock_timeout=1
+        )
+        self.assertTrue(results.ok)
+
+
 class TestGeneratedRows(MigrationTestCase):
     """
     A migration generated from the models is recorded as generated, so a

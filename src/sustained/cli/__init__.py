@@ -17,7 +17,12 @@ The config module names the pieces the migrator needs:
 - `rehearsal_table`: the rehearsal table name (optional)
 - `tracking_table_options`: TableOptions for the tracking table (optional)
 - `get_rehearsal_connection()`: a connection to a scratch database, which
-  `rehearse` then uses instead of the real one (optional)
+  `rehearse` then uses instead of the real one, and on which `impact`
+  diffs the models after the pending migrations apply (optional)
+- `rehearsal_lock_timeout`: the seconds a statement of `rehearse`, or of
+  the rehearsal `impact` runs on the scratch database, waits for a lock
+  before the rehearsal fails, as `Migrator.rehearse(lock_timeout=...)`
+  sets it (optional)
 - `guards`: a list of rules over the statements a run would apply; see
   sustained.guards (optional)
 - `assert_algorithm`: True to write the predicted ALGORITHM and LOCK

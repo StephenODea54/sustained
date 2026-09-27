@@ -17,7 +17,7 @@ The analysis covers PostgreSQL 12 and later, InnoDB tables on MySQL 8.0.19 and l
 
 ## Running it
 
-`sustained impact` prints the report for the run `migrate` would make: every pending migration, then the migration the config module's `models` generate.
+`sustained impact` prints the report for the run `migrate` would make: every pending migration, then the migration the config module's `models` generate. `migrate` diffs the models after the pending migrations apply, so while migrations are pending `impact` diffs them where `rehearse` would: on the scratch database `get_rehearsal_connection()` returns, after a rehearsal there applies the pending migrations and takes them back. Without a scratch database it leaves the models' migration out and prints `models not diffed` under the report, since only applying the pending migrations shows the schema the diff would read.
 
 ```console
 $ sustained impact
@@ -41,7 +41,7 @@ On MySQL and MariaDB the same report names the algorithm and lock level the serv
 
 `sustained impact` exits 0 when it prints the report and 1 on a failure, including a dialect the analysis does not cover. It never blocks a run. `--json` prints the report as one object; see [JSON output](/reference/cli#json-output). `--live` adds the sessions each statement would wait behind now; see [Live preflight](#live-preflight).
 
-From Python, `Migrator.impact(models=None)` returns the same report as an `ImpactReport`, and `await AsyncMigrator.impact(models=None)` does the same on an async adapter. `sustained.impact.analyze(statements, dialect)` analyzes any list of statements, with no connection at all:
+From Python, `Migrator.impact(models=None)` returns the same report as an `ImpactReport`, and `await AsyncMigrator.impact(models=None)` does the same on an async adapter. It takes the diff options `up()` takes, such as `allow_drops` and `renames`, and diffs the models against the schema as it is now. `sustained.impact.analyze(statements, dialect)` analyzes any list of statements, with no connection at all:
 
 ```python
 from sustained.dialects import Dialects
@@ -256,7 +256,7 @@ The NOT NULL example from [Transaction windows](#transaction-windows) becomes:
 
 The backfill stays one `UPDATE`, which keeps its row locks until it ends. On a large table its `pg.write_rows` finding stays `danger`, and a batched backfill is still a migration you write. A statement of `<id>_online` that fails leaves the statements before it committed, and the migration's failed row stops the next `up()` until `repair()`. A failed `CREATE INDEX CONCURRENTLY` also leaves an invalid index behind, which has to be dropped before a retry.
 
-`up()`, `rehearse()`, `impact()`, and `preflight()` on either migrator take `online=True` with `models`, and `plan_migrations()` returns the list of migrations the models generate. `plan()` and `autogenerate()` return one migration and take no `online`. For the command line, pass `--online` to `plan`, `impact`, `rehearse`, or `migrate`, or set `online = True` in the config module. The flag exits 1 on a dialect other than PostgreSQL, MySQL, and MariaDB.
+`up()`, `rehearse()`, `impact()`, and `preflight()` on either migrator take `online=True` with `models`, and `plan_migrations()` returns the list of migrations the models generate. `plan(online=True)` returns the one migration the split generates, and raises `ValueError` when the split generates two. `autogenerate()` returns one migration and takes no `online`. For the command line, pass `--online` to `plan`, `impact`, `rehearse`, or `migrate`, or set `online = True` in the config module. The flag exits 1 on a dialect other than PostgreSQL, MySQL, and MariaDB.
 
 ```python
 migrations = migrator.plan_migrations([Order], online=True)
@@ -402,7 +402,7 @@ preflight: ALTER TABLE orders ADD COLUMN note text would queue behind pid 4121 (
 preflight: pid 5003 has had a transaction open for 12m (active, user=report, app=metabase)
 ```
 
-`refuse` raises `PreflightBlocked` when there is a blocker, and prints the transaction lines otherwise. The error's `preflight` attribute is the whole read, and `sustained migrate` exits 5 for it. `up(preflight=PreflightCheck("warn", older_than=300))` sets another age; `PreflightCheck` lives in `sustained.migrations`. A read that failed prints `preflight: could not read locks` in either mode, and the run goes on, since the preflight refuses only for a blocker it has seen. With `models`, the generated migration is read again once the registered migrations have applied, as the guards read it. The read is a snapshot: a session may take a lock after it and before the statement runs, so `refuse` goes well with a `lock_timeout`. On a dialect without a preflight, `up()` reads nothing.
+`refuse` raises `PreflightBlocked` when there is a blocker, and prints the transaction lines otherwise. The error's `preflight` attribute is the whole read, and `sustained migrate` exits 5 for it. `up(preflight=PreflightCheck("warn", older_than=300))` sets another age; `PreflightCheck` lives in `sustained.migrations`. A read that failed prints `preflight: could not read locks` in either mode, and the run goes on, since the preflight refuses only for a blocker it has seen. With `models`, the generated migration is read again once the registered migrations have applied, as the guards read it. The read is a snapshot: a session may take a lock after it and before the statement runs, so `refuse` goes well with a `lock_timeout`. On a dialect without a preflight, SQLite and DuckDB among them, `up()` with a preflight raises `DialectError` before the run starts, as `impact(live=True)` does.
 
 From the command line, `migrate --preflight refuse` or the config module's `preflight = "refuse"` does the same, and `preflight_older_than` sets the age, as `impact --older-than` does:
 
@@ -425,6 +425,8 @@ for blocker in found.blockers:
 ## Observed impact
 
 `sustained rehearse --trace` runs the rehearsal and records what the server did for each statement, and prints the impact report with those facts in place of the prediction. `Migrator.rehearse(trace=True)` puts the report on the result's `impact` attribute, and `await AsyncMigrator.rehearse(trace=True)` does the same. Tracing works on PostgreSQL, MySQL, MariaDB, and SQL Server.
+
+A rehearsal without `scratch=True` runs every pending migration in one transaction on the live database. Every lock a statement takes is kept until the rollback at the end of the rehearsal, the trace's reads included, so a rehearsal of a migration that takes `ACCESS EXCLUSIVE` on a table stops every query on that table for the whole rehearsal. A statement that waits for a lock waits without a limit, and the queries queued behind it wait with it. `rehearse(lock_timeout=seconds)`, or `rehearsal_lock_timeout` in the config module for `sustained rehearse`, sets the dialect's lock timeout for the rehearsal, and a statement that waits longer fails the rehearsal. On PostgreSQL that is `SET LOCAL lock_timeout`, which the rollback ends.
 
 ### On PostgreSQL
 

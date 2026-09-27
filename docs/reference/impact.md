@@ -56,14 +56,14 @@ Each statement runs inside a savepoint. A statement that fails leaves its facts 
 ## `Migrator.impact()`
 
 ```python
-Migrator.impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0, online=False) -> ImpactReport
-await AsyncMigrator.impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0, online=False) -> ImpactReport
+Migrator.impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0, online=False, *, allow_drops=False, ignore_changed_columns=False, migration_id=None, renames=None, table_renames=None, type_casts=None) -> ImpactReport
+await AsyncMigrator.impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0, online=False, *, allow_drops=False, ...) -> ImpactReport
 ```
 {: .sig #migrator-impact}
 
-The impact of the run `up()` would make: every pending migration, then the migration the models generate when `models` is given. The generated migration is diffed against the schema as it is now, before the pending migrations run, as `plan()` diffs it, and `assert_algorithm` writes the clauses `plan()` writes on it. With `online=True`, the models generate the migrations `plan_migrations(models, online=True)` returns, and each is analyzed in turn. A callable step renders no SQL and is left out. Nothing is written.
+The impact of the run `up()` would make: every pending migration, then the migration the models generate when `models` is given. The generated migration is diffed against the schema as it is now, before the pending migrations run, as `plan()` diffs it, and `assert_algorithm` writes the clauses `plan()` writes on it. The keyword-only arguments are the diff options `up()` takes, so a call with the options of the `up()` it precedes analyzes the migration that run generates. With `online=True`, the models generate the migrations `plan_migrations(models, online=True)` returns, and each is analyzed in turn. A callable step renders no SQL and is left out. Nothing is written.
 
-The context comes from `read_context()` on the migrator's connection, or `async_read_context()` on its adapter, with `exact_counts` passed on. With `live=True`, the report's `preflight` is the [live preflight](#preflight) of the analyzed statements, with `older_than` passed on. Both raise `DialectError` on a dialect the analysis does not cover, and with `live=True` on a dialect without a preflight, before any statement runs.
+The context comes from `read_context()` on the migrator's connection, or `async_read_context()` on its adapter, with `exact_counts` passed on. With `live=True`, the report's `preflight` is the [live preflight](#preflight) of the analyzed statements, with `older_than` passed on. Both raise `DialectError` on a dialect the analysis does not cover, and with `live=True` on a dialect without a preflight, before any statement runs. With `live=True`, an `older_than` that is negative, NaN, or not a number raises `ValueError`, also before any statement runs.
 
 ## Guards over impact
 
@@ -151,15 +151,15 @@ await async_preflight(adapter, dialect, statements, older_than=60.0, context=Non
 ```
 {: .sig #preflight}
 
-The sessions the statements would wait behind on the server now, and the other transactions open at least `older_than` seconds, from a blocking connection or an async adapter. A statement with `impact` attached is read from it. The others are analyzed with `context`, which is read from the connection when it is not given. The connection's own session is never listed, and no session is ended. Both raise `ValueError` for a dialect without a preflight: `Dialects.POSTGRES`, `Dialects.MYSQL`, and `Dialects.MSSQL` have one.
+The sessions the statements would wait behind on the server now, and the other transactions open at least `older_than` seconds, from a blocking connection or an async adapter. A statement with `impact` attached is read from it. The others are analyzed with `context`, which is read from the connection when it is not given. The connection's own session is never listed, and no session is ended. Both raise `ValueError` for a dialect without a preflight: `Dialects.POSTGRES`, `Dialects.MYSQL`, and `Dialects.MSSQL` have one. Both also raise `ValueError` for an `older_than` that is negative, NaN, or not a number, and so does `preflight_plan()`.
 
 ```python
-Migrator.preflight(models=None, older_than=60.0, exact_counts=False, online=False) -> Preflight
-await AsyncMigrator.preflight(models=None, older_than=60.0, exact_counts=False, online=False) -> Preflight
+Migrator.preflight(models=None, older_than=60.0, exact_counts=False, online=False, *, allow_drops=False, ...) -> Preflight
+await AsyncMigrator.preflight(models=None, older_than=60.0, exact_counts=False, online=False, *, allow_drops=False, ...) -> Preflight
 ```
 {: .sig #migrator-preflight}
 
-The preflight of the run `Migrator.impact()` analyzes, with `models` and `exact_counts` as there. Both raise `DialectError` on a dialect without a preflight.
+The preflight of the run `Migrator.impact()` analyzes, with `models`, `exact_counts`, `online`, and the diff options as there. Both raise `DialectError` on a dialect without a preflight, and `ValueError` for an `older_than` that is negative, NaN, or not a number.
 
 ```python
 Migrator.up(..., preflight=None) -> list[str]
@@ -168,7 +168,7 @@ PreflightCheck(mode, older_than=60.0)
 ```
 {: .sig #up-preflight}
 
-With `preflight="warn"` or `"refuse"`, or a `PreflightCheck` with one of them as its `mode`, `up()` reads the preflight of the run's statements after the guards pass and before any migration applies, and again for the generated migration with `models`. `warn` prints each blocker, each transaction open `older_than` seconds or longer, 60 for a plain mode, and each read that failed on stderr as `preflight: <line>`, once per run. `refuse` raises `PreflightBlocked` when there is a blocker, and prints the other lines otherwise. Any other mode raises `ValueError` before the run starts. `PreflightCheck` lives in `sustained.migrations`. On a dialect without a preflight, `up()` reads nothing.
+With `preflight="warn"` or `"refuse"`, or a `PreflightCheck` with one of them as its `mode`, `up()` reads the preflight of the run's statements after the guards pass and before any migration applies, and again for the generated migration with `models`. `warn` prints each blocker, each transaction open `older_than` seconds or longer, 60 for a plain mode, and each read that failed on stderr as `preflight: <line>`, once per run. `refuse` raises `PreflightBlocked` when there is a blocker, and prints the other lines otherwise. Any other mode raises `ValueError` before the run starts. `PreflightCheck` lives in `sustained.migrations`, and raises `ValueError` for an `older_than` that is negative, NaN, or not a number. On a dialect without a preflight, SQLite and DuckDB among them, `up()` with a preflight raises `DialectError` before the run starts, as `impact(live=True)` does.
 
 `PreflightBlocked` lives in `sustained.exceptions` and in `sustained`. It is a `SustainedError` whose `preflight` attribute is the `Preflight` that stopped the run, and whose message lists each blocker's line.
 

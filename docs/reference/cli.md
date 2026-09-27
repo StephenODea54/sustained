@@ -60,7 +60,7 @@ A `migrate` that fails part way leaves the migrations it already applied in plac
 
 `impact` exits 0 when it prints the report, whatever the report says, and 1 on a failure, including a dialect the analysis does not cover. Blocking a run on impact is the job of guards. `impact --live` also exits 1 on a dialect without a [live preflight](/impact#live-preflight), which SQLite and DuckDB lack.
 
-`migrate --preflight refuse` reads the sessions the run would wait behind after the guards pass, and exits 5 when there is one, with each blocker on stderr. The first read comes before any migration applies. A run with `models` reads the generated migration a second time, once the registered migrations have applied, and a refusal on that read leaves them applied, with their ids on stdout as `applied  <id>` lines. `--preflight warn` prints the same lines on stderr as `preflight: ...` and the run goes on. The flag takes precedence over the config module's `preflight` attribute.
+`migrate --preflight refuse` reads the sessions the run would wait behind after the guards pass, and exits 5 when there is one, with each blocker on stderr. The first read comes before any migration applies. A run with `models` reads the generated migration a second time, once the registered migrations have applied, and a refusal on that read leaves them applied, with their ids on stdout as `applied  <id>` lines. `--preflight warn` prints the same lines on stderr as `preflight: ...` and the run goes on. The flag takes precedence over the config module's `preflight` attribute. On a dialect without a [live preflight](/impact#live-preflight), SQLite and DuckDB among them, `migrate` with either mode, from the flag or the config, exits 1 before the run starts.
 
 ## The config module
 
@@ -78,6 +78,7 @@ A `migrate` that fails part way leaves the migrations it already applied in plac
 | `tracking_table_options` | no | `TableOptions` | `None` |
 | `guards` | no | `list[Guard]` from `sustained.guards` | `[]` |
 | `get_rehearsal_connection` | no | `() -> Connection`, a scratch database | `None` |
+| `rehearsal_lock_timeout` | no | `float`, seconds; `rehearse`, and the rehearsal `impact` runs on the scratch database, pass it to `rehearse(lock_timeout=...)`, so a statement that waits longer for a lock fails the rehearsal. A value that is not a number above 0 exits 1 | `None` |
 | `assert_algorithm` | no | `bool`; `plan`, `impact`, `migrate`, and `rehearse` pass it to the diff of `models`, as `--assert-algorithm` does | `False` |
 | `online` | no | `bool`; `plan`, `impact`, `migrate`, and `rehearse` generate the online form of the migrations the models need, as `--online` does. See [Online migrations](/impact#online-migrations) | `False` |
 | `exact_counts` | no | `bool`; `plan`, `impact`, `migrate`, and `script --annotate` count the rows of each SQLite table `sqlite_stat1` has no row count for, as `--exact-counts` does | `False` |
@@ -129,6 +130,8 @@ When the config defines `get_rehearsal_connection()`, `rehearse` builds a second
 
 The rehearsal row goes on the real database rather than the scratch one, keyed against the real database's applied history and pending set. Sustained writes the row only when the scratch run applied every migration pending on the real database. Otherwise the output says the row was not recorded.
 
+`impact` uses the same connection when the config names `models` and migrations are pending. It rehearses the pending migrations and the diff of the models on the scratch database, as `rehearse` does there, and analyzes the pending migrations with the migrations that diff generated, with the facts of the real database. Neither database keeps a change. A pending migration that fails on the scratch database exits 1, since the diff then never ran.
+
 ## Output
 
 Output is plain text, one record per line, with no colour.
@@ -173,7 +176,13 @@ impact
   info    GRANT SELECT ON orders TO reporting  [impact.unknown]
 ```
 
-`impact` prints the report for the run `migrate` would make: the pending migrations, then the migration the config's `models` generate.
+`impact` prints the report for the run `migrate` would make: the pending migrations, then the migration the config's `models` generate. `migrate` diffs the models after the pending migrations apply, so while migrations are pending `impact` diffs them on the scratch database of `get_rehearsal_connection()`; see [Rehearsal connection](#rehearsal-connection). Without a scratch database it leaves the models' migration out and prints this line after the report:
+
+```console
+models not diffed: migrate diffs them after the pending migrations apply; define get_rehearsal_connection() in the config module to diff them on a scratch database
+```
+
+With nothing pending, `impact` diffs the models against the real database.
 
 ```console
 $ sustained impact
@@ -284,7 +293,7 @@ $ sustained plan --json
 
 Every place a command reports SQL uses that statement object, including `drift`. When the config names no models, `drift` is `null` rather than `[]`, so a caller can tell "nothing was compared" from "compared and found no gap". `statements` is `null` for a callable step, which renders no SQL; before version 2.13.0 `statements` was a count. A guard verdict appears on the statement it flags, as `{"rule", "verdict"}`, and a statement no guard flagged has `[]`. The `guards` key is present from version 2.15.0 onward. `impact` is the statement's impact in the form [`statement_data()`](/reference/impact#statement_data) gives, and is `null` on a dialect the analysis does not cover.
 
-`impact --json` prints the report in the form [`report_data()`](/reference/impact#report_data) gives, with the top-level keys `profile`, `version`, `evidence`, `read`, `migrations`, `counts`, `preflight`, and `error`. `preflight` is `null` without `--live`, and otherwise has the keys [`preflight_data()`](/reference/impact#render_preflight) gives. Each statement in a migration has `sql` and the keys of the plan's `impact` object.
+`impact --json` prints the report in the form [`report_data()`](/reference/impact#report_data) gives, with the top-level keys `profile`, `version`, `evidence`, `read`, `migrations`, `counts`, `preflight`, and `error`, and the key `models_diffed`. `preflight` is `null` without `--live`, and otherwise has the keys [`preflight_data()`](/reference/impact#render_preflight) gives. `models_diffed` is `null` when the config names no `models`, `true` when the report includes the migrations they generate, and `false` when `impact` left them out, as the `models not diffed` line says. Each statement in a migration has `sql` and the keys of the plan's `impact` object.
 
 `rehearse --json` prints:
 

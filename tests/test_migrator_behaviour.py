@@ -1811,6 +1811,148 @@ class PlanAndDriftCases(BothMigrators):
         self.assertIsNone(await migrator.plan(self.models(), allow_drops=True))
 
 
+class RunOptionsCases(BothMigrators):
+    """
+    impact() and preflight() take the diff options up() takes, and
+    rehearse() takes a lock timeout.
+    """
+
+    def models(self):
+        from sustained.model import Model
+        from sustained.schema import Integer, Text
+
+        return [
+            type(
+                "OptionUser",
+                (Model,),
+                {
+                    "tableName": "option_users",
+                    "tableColumns": {
+                        "id": Integer(primary_key=True),
+                        "name": Text(),
+                    },
+                },
+            )
+        ]
+
+    def existing(self):
+        self.conn.execute(
+            "CREATE TABLE option_users (id INTEGER PRIMARY KEY, full_name TEXT)"
+        )
+        self.conn.execute("CREATE TABLE option_leftover (id INTEGER)")
+
+    def sql(self, report):
+        return [s.statement for s in report.statements]
+
+    async def test_impact_takes_the_diff_options_up_takes(self):
+        self.existing()
+        migrator = self.migrator([])
+        plain = await migrator.impact(self.models(), migration_id="opt")
+        self.assertEqual([m.migration_id for m in plain.migrations], ["opt"])
+        self.assertFalse(any("RENAME" in s for s in self.sql(plain)))
+        self.assertFalse(any("option_leftover" in s for s in self.sql(plain)))
+        hinted = await migrator.impact(
+            self.models(),
+            migration_id="opt",
+            renames={"option_users.full_name": "name"},
+            allow_drops=True,
+        )
+        self.assertTrue(any("RENAME COLUMN" in s for s in self.sql(hinted)))
+        self.assertTrue(
+            any("DROP TABLE" in s and "option_leftover" in s for s in self.sql(hinted))
+        )
+        # The report analyzes the migration up() generates with the same
+        # options.
+        generated = await migrator.plan(
+            self.models(),
+            migration_id="opt",
+            renames={"option_users.full_name": "name"},
+            allow_drops=True,
+        )
+        self.assertEqual(self.sql(hinted), list(generated.up))
+        self.assertEqual(table_names(self.conn), {"option_users", "option_leftover"})
+
+    async def test_impact_leaves_a_changed_column_out_on_request(self):
+        self.conn.execute(
+            "CREATE TABLE option_users (id INTEGER PRIMARY KEY, name INTEGER)"
+        )
+        migrator = self.migrator([])
+        self.assertTrue((await migrator.impact(self.models())).migrations)
+        quiet = await migrator.impact(self.models(), ignore_changed_columns=True)
+        self.assertEqual(quiet.migrations, ())
+
+    async def test_impact_passes_the_table_renames_and_casts_on(self):
+        self.conn.execute(
+            "CREATE TABLE option_people (id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        migrator = self.migrator([])
+        report = await migrator.impact(
+            self.models(),
+            table_renames={"option_people": "option_users"},
+            type_casts={},
+        )
+        self.assertTrue(any("RENAME TO" in s for s in self.sql(report)))
+
+    async def test_preflight_takes_the_diff_options(self):
+        from sustained.impact import Preflight
+        from sustained.impact.rules import postgres
+
+        seen = []
+
+        def read(impacts, older_than):
+            seen.append([i.statement for i in impacts])
+            yield "SELECT 1"
+            return Preflight("postgres", (), (), older_than, frozenset())
+
+        self.existing()
+        migrator = self.migrator([])
+        profile = postgres.PROFILE._replace(preflight=read)
+        with mock.patch(
+            "sustained.impact.rules._profiles",
+            return_value={"DEFAULT": (profile,)},
+        ):
+            await migrator.preflight(self.models())
+            await migrator.preflight(self.models(), allow_drops=True)
+        self.assertFalse(any("option_leftover" in s for s in seen[0]))
+        self.assertTrue(any("option_leftover" in s for s in seen[1]))
+
+    async def test_a_rehearsal_sets_the_lock_timeout_and_puts_it_back(self):
+        self.conn.execute("PRAGMA busy_timeout = 1234")
+        seen = []
+
+        def read(_):
+            seen.append(self.conn.execute("PRAGMA busy_timeout").fetchone()[0])
+
+        migrator = self.migrator(
+            [Migration("001_read", up=read, down=read, checksum="read")]
+        )
+        results = await migrator.rehearse(lock_timeout=0.25)
+        self.assertTrue(results.ok)
+        self.assertEqual(seen, [250, 250])
+        self.assertEqual(self.conn.execute("PRAGMA busy_timeout").fetchone()[0], 1234)
+        seen.clear()
+        await migrator.rehearse()
+        self.assertEqual(seen, [1234, 1234])
+
+    async def test_a_rehearsal_refuses_a_lock_timeout_that_is_not_one(self):
+        migrator = self.migrator(
+            [Migration("001_t", up="CREATE TABLE t (id INTEGER)", down="DROP TABLE t")]
+        )
+        for seconds in (0, -1, float("nan"), float("inf"), "5", True):
+            with self.assertRaises(ValueError):
+                await migrator.rehearse(lock_timeout=seconds)
+        self.assertNotIn("sustained_migrations", table_names(self.conn))
+
+    async def test_a_rehearsal_returns_the_generated_migrations(self):
+        migrator = self.migrator(
+            [Migration("001_t", up="CREATE TABLE t (id INTEGER)", down="DROP TABLE t")]
+        )
+        results = await migrator.rehearse(models=self.models(), migration_id="gen")
+        self.assertEqual([m.id for m in results.generated], ["gen"])
+        self.assertTrue(any("option_users" in s for s in results.generated[0].up))
+        self.assertEqual((await migrator.rehearse()).generated, [])
+
+
 class ModelRunsCases(BothMigrators):
     """up(models=...) and rehearse(models=...) on the async migrator."""
 
@@ -2046,6 +2188,16 @@ class TestPlanAndDrift(OnMigrator, PlanAndDriftCases, unittest.IsolatedAsyncioTe
 
 class TestAsyncPlanAndDrift(
     OnAsyncMigrator, PlanAndDriftCases, unittest.IsolatedAsyncioTestCase
+):
+    pass
+
+
+class TestRunOptions(OnMigrator, RunOptionsCases, unittest.IsolatedAsyncioTestCase):
+    pass
+
+
+class TestAsyncRunOptions(
+    OnAsyncMigrator, RunOptionsCases, unittest.IsolatedAsyncioTestCase
 ):
     pass
 

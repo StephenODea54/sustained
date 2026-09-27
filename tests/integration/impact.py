@@ -8,6 +8,7 @@ predicted for that server's version and settings.
 """
 
 import asyncio
+import time
 import unittest
 
 from sustained.aio_migrations import AsyncMigrator
@@ -278,6 +279,26 @@ class ImpactCase(unittest.TestCase):
             "WHERE table_name = 'it_impact_orders'"
         )
         self.assertNotIn(("extra",), columns)
+
+    def test_a_rehearsal_stops_waiting_at_its_lock_timeout(self):
+        self.orders()
+        self.reader()
+        migrator = self.migrator(
+            [
+                Migration(
+                    "001_extra",
+                    up="ALTER TABLE it_impact_orders ADD extra int",
+                    down="ALTER TABLE it_impact_orders DROP COLUMN extra",
+                )
+            ]
+        )
+        started = time.monotonic()
+        (result,) = migrator.rehearse(lock_timeout=0.2)
+        self.assertLess(time.monotonic() - started, 10.0)
+        self.assertFalse(result.up_ok)
+        self.assertIn("lock timeout", result.error)
+        # SET LOCAL ends with the rehearsal transaction.
+        self.assertEqual(self.fetch("SHOW lock_timeout"), [("0",)])
 
     def test_async_preflight_reads_the_same_blocker(self):
         if self.NAME not in aio_lifecycle.ADAPTERS:

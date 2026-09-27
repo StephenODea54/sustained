@@ -117,12 +117,12 @@ statuses() -> list[tuple[str, str]]
 `(id, state)`, where state is `applied`, `pending`, or `changed`. `changed` marks a repeatable whose contents differ from its last run.
 
 ```python
-impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0, online=False) -> ImpactReport
-preflight(models=None, older_than=60.0, exact_counts=False, online=False) -> Preflight
+impact(models=None, assert_algorithm=False, exact_counts=False, live=False, older_than=60.0, online=False, *, allow_drops=False, ...) -> ImpactReport
+preflight(models=None, older_than=60.0, exact_counts=False, online=False, *, allow_drops=False, ...) -> Preflight
 ```
 {: .sig #impact}
 
-The impact of the run `up()` would make on a live database: the locks each statement takes, what they block, the work each does, and findings with safer forms. With `models`, the migrations they generate are analyzed after the pending ones, and `online` splits them as `plan_migrations()` does. The analysis writes nothing. `exact_counts=True` counts the rows of each SQLite table `sqlite_stat1` has no row count for. `live=True` adds the report's `preflight`: the sessions each statement would wait behind now, and the transactions open `older_than` seconds or longer. `preflight()` returns that read alone. Raises `DialectError` on a dialect the analysis does not cover, which is Presto and Athena, and with `live=True`, or from `preflight()`, on SQLite and DuckDB too. See [Impact reference](/reference/impact#migrator-impact) and [Live preflight](/reference/impact#preflight).
+The impact of the run `up()` would make on a live database: the locks each statement takes, what they block, the work each does, and findings with safer forms. With `models`, the migrations they generate are analyzed after the pending ones, and `online` splits them as `plan_migrations()` does. Both take the keywords `allow_drops`, `ignore_changed_columns`, `migration_id`, `renames`, `table_renames`, and `type_casts`, the [diff options](#generating-from-models) `up()` takes, so the same options analyze the migration `up()` would generate. The diff reads the schema as it is now, before the pending migrations apply, where `up()` diffs after them; `sustained impact` diffs after them on a scratch database. The analysis writes nothing. `exact_counts=True` counts the rows of each SQLite table `sqlite_stat1` has no row count for. `live=True` adds the report's `preflight`: the sessions each statement would wait behind now, and the transactions open `older_than` seconds or longer. `preflight()` returns that read alone. Raises `DialectError` on a dialect the analysis does not cover, which is Presto and Athena, and with `live=True`, or from `preflight()`, on SQLite and DuckDB too. With `live=True`, or from `preflight()`, an `older_than` that is negative, NaN, or not a number raises `ValueError` before anything is read. See [Impact reference](/reference/impact#migrator-impact) and [Live preflight](/reference/impact#preflight).
 
 `pending()`, `status()`, `statuses()`, and `validate()` read the tracking table without creating or upgrading it, on `Migrator` and `AsyncMigrator` alike, so they run on a read-only replica. A database with no tracking table reads as one with nothing applied.
 
@@ -133,7 +133,7 @@ up(target=None, validate=True, allow_out_of_order=False, models=None, unrehearse
 ```
 {: .sig #up}
 
-Validates, then applies pending migrations in order. `target` stops after that id and skips the repeatables. With `models`, the diff against them runs after the versioned migrations and before the repeatables, and you cannot combine `models` with `target`. `unrehearsed=True` waives the rehearsal gate below. `exact_counts=True` passes on to the server facts the guards read, as `impact()` takes it. `preflight='warn'` prints, after the guards pass, the sessions the run would wait behind on stderr, and `preflight='refuse'` raises `PreflightBlocked` when there is one. `preflight=PreflightCheck(mode, older_than)` also sets the age from which an open transaction is printed; see [Live preflight](/impact#preflight-before-a-run). The remaining options are the [diff options](#generating-from-models) below.
+Validates, then applies pending migrations in order. `target` stops after that id and skips the repeatables. With `models`, the diff against them runs after the versioned migrations and before the repeatables, and you cannot combine `models` with `target`. `unrehearsed=True` waives the rehearsal gate below. `exact_counts=True` passes on to the server facts the guards read, as `impact()` takes it. `preflight='warn'` prints, after the guards pass, the sessions the run would wait behind on stderr, and `preflight='refuse'` raises `PreflightBlocked` when there is one. `preflight=PreflightCheck(mode, older_than)` also sets the age from which an open transaction is printed; see [Live preflight](/impact#preflight-before-a-run). A preflight on a dialect without one, SQLite and DuckDB among them, raises `DialectError` before the run starts. The remaining options are the [diff options](#generating-from-models) below.
 
 ```python
 down(steps=1) -> list[str]
@@ -196,14 +196,14 @@ plan(models, ...) -> Migration | None
 
 The migration that `up(models=[...])` would generate, or `None` when the schema is current. `plan()` records nothing and applies nothing.
 
-`plan()` also takes `snapshot`, a schema that `read_schema()` returned. The plan then diffs that snapshot and does not read the schema again, and the snapshot is left unchanged. The `plan` command reads the schema once this way and diffs it twice: once with drops for the drift section, and once without them for the guards and the rehearsal check. The connection still answers the check for rows in a table that gets a new NOT NULL column.
+`plan()` also takes `snapshot`, a schema that `read_schema()` returned, or on `AsyncMigrator` one that `async_introspect_schema()` returned. The plan then diffs that snapshot and does not read the schema again, and the snapshot is left unchanged. The `plan` command reads the schema once this way and diffs it twice: once with drops for the drift section, and once without them for the guards and the rehearsal check. The connection still answers the check for rows in a table that gets a new NOT NULL column.
 
 ```python
 plan_migrations(models, ..., online=False) -> list[Migration]
 ```
 {: .sig #plan_migrations}
 
-The migrations that `up(models=[...])` would generate, as a list that is empty when the schema is current. It takes `plan()`'s arguments, `snapshot` included on `Migrator`, and without `online` the list has the one migration `plan()` returns. `AsyncMigrator.plan_migrations()` takes no `snapshot`.
+The migrations that `up(models=[...])` would generate, as a list that is empty when the schema is current. It takes `plan()`'s arguments, `snapshot` included, and without `online` the list contains the one migration `plan()` returns.
 
 ```python
 read_schema(models) -> dict[str, IntrospectedTable]
@@ -244,7 +244,7 @@ These methods take the same options:
 | `table_renames` | `None` | `{'old': 'new'}`. |
 | `type_casts` | `None` | `{'table.col': 'col::integer'}`, a `USING` hint. Postgres only. |
 | `ignore_undeclared` | `True` | Leave objects the models do not declare alone. `False` refuses to generate while any exist. |
-| `online` | `False` | On PostgreSQL, split the work into `<id>`, which runs in one transaction and changes only the catalog, and `<id>_online`, which has `transactional=False` and runs the backfills, `CREATE INDEX CONCURRENTLY`, `VALIDATE CONSTRAINT`, the check route to `SET NOT NULL`, and the drops. On MySQL and MariaDB, it turns on `assert_algorithm`. Other dialects ignore it. `plan()` and `sync()` do not take it; `plan_migrations()` does. See [Online migrations](/impact#online-migrations). |
+| `online` | `False` | On PostgreSQL, split the work into `<id>`, which runs in one transaction and changes only the catalog, and `<id>_online`, which has `transactional=False` and runs the backfills, `CREATE INDEX CONCURRENTLY`, `VALIDATE CONSTRAINT`, the check route to `SET NOT NULL`, and the drops. On MySQL and MariaDB, it turns on `assert_algorithm`. Other dialects ignore it. `sync()` does not take it. `plan(online=True)` returns the one migration the split generates, and raises `ValueError` when it generates two, which only `plan_migrations()` returns. See [Online migrations](/impact#online-migrations). |
 | `assert_algorithm` | `False` | On MySQL and MariaDB, write the `ALGORITHM` and `LOCK` clause the impact rules predict on each generated ALTER TABLE, CREATE INDEX, and DROP INDEX whose prediction is `INSTANT`, `NOCOPY, LOCK=NONE`, or `INPLACE, LOCK=NONE` with confidence `known`, on a table that existed before the migration. The server facts are read after the diff. Changes the SQL text, so a rehearsal without it does not cover a run with it. See [Asserting the algorithm](/impact#asserting-the-algorithm). |
 
 Pass every model you manage, because these methods compare the whole database against the whole list, and nothing keeps a table up to date when its model is missing from the list. The comparison always excludes the tracking table.
@@ -252,11 +252,13 @@ Pass every model you manage, because these methods compare the whole database ag
 ### Rehearsing
 
 ```python
-rehearse(scratch=False, models=None, ..., trace=False, online=False) -> Rehearsal
+rehearse(scratch=False, models=None, ..., trace=False, online=False, lock_timeout=None) -> Rehearsal
 ```
 {: .sig #rehearse}
 
 `rehearse()` applies every pending migration, runs the down steps back down, and rolls the whole run back. It returns an empty `Rehearsal` when nothing is pending. With `models`, the migration generated from those models joins the run without being registered, and the remaining arguments are the diff options above. With `online=True` on PostgreSQL, the statements of `<id>_online` run inside the rehearsal transaction with `CONCURRENTLY` removed, and a traced rehearsal leaves them untraced.
+
+The rehearsal transaction runs on the database the connection points at, which is the live one unless `scratch=True` points it at a scratch database. Every lock a statement takes stays taken until the rollback at the end of the rehearsal, and a statement that waits for a lock waits without a limit while the sessions queued behind it wait too. `lock_timeout=seconds` sets the dialect's lock timeout for the rehearsal, so a statement that waits longer fails the rehearsal instead: `SET LOCAL lock_timeout` on PostgreSQL, `SET LOCK_TIMEOUT` on SQL Server, `lock_wait_timeout` and `innodb_lock_wait_timeout` in whole seconds on MySQL and MariaDB, and `PRAGMA busy_timeout` on SQLite. The session's earlier values are set again after the rollback. DuckDB ignores it, because a conflicting write there fails without waiting. A `lock_timeout` that is not a number above 0 raises `ValueError`. `sustained rehearse` passes the config module's `rehearsal_lock_timeout`.
 
 `rehearse()` reads the schema before the run and again after the down sweep, so it reports a down step that runs without taking its change back. The comparison covers tables and columns, but not indexes, constraints, or column defaults.
 
@@ -347,6 +349,7 @@ With `annotate=True`, the migration statements are analyzed as one run, as `impa
 | `recorded` | `bool` | Whether the row was written. `False` after `scratch=True`. |
 | `ok` | `bool` | Whether every result passed. |
 | `impact` | `ImpactReport` or `None` | The run's observed impact, after `trace=True`. `None` otherwise. |
+| `generated` | `list[Migration]` | The migrations the diff against `models` generated after the pending migrations applied. `[]` without `models`. |
 
 `ok` uses the module function `rehearsal_failed(result)`. A result fails when its up step raised, when its down step failed, when the models did not land, or when the schema did not come back. A down step the rehearsal could not prove is not a failure.
 
@@ -599,7 +602,7 @@ Both migrators compute the key the same way, so a row written by one migrator op
 
 `await migrator.script('up')` renders the same text `Migrator.script('up')` renders, with `annotate=True` too, and writes nothing, not even the tracking table. `read_applied_records()` and `read_applied()` read the rows the same way.
 
-`await migrator.plan(models)` and `await migrator.drift(models)` diff the models against the database and return what `Migrator.plan()` and `Migrator.drift()` return. Both read the schema through the adapter and write nothing. The schema read is the only statement `plan()` runs, so it cannot ask whether a table contains rows. A table it cannot read counts as one that contains rows, so a new NOT NULL column with no `default` and no `backfill` is refused here even on an empty table, where `Migrator.plan()` adds it.
+`await migrator.plan(models)` and `await migrator.drift(models)` diff the models against the database and return what `Migrator.plan()` and `Migrator.drift()` return. Both read the schema through the adapter and write nothing. The schema read is the only statement `plan()` runs, and with `snapshot` it runs none, so it cannot ask whether a table contains rows. A table it cannot read counts as one that contains rows, so a new NOT NULL column with no `default` and no `backfill` is refused here even on an empty table, where `Migrator.plan()` adds it.
 
 `up(models=[...])` and `rehearse(models=[...])` take the same arguments the synchronous ones take, and behave the same way: the generated migration runs last of the versioned ones, its statements go on its tracking row rather than into the migrations directory, and it joins the registered list only after it applied.
 

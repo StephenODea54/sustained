@@ -27,6 +27,8 @@ class FakeCursor:
             raise RuntimeError(f"forced failure on: {sql}")
         if "GET_LOCK(" in sql:
             self._rows = [(self._conn.lock_result,)]
+        elif sql.startswith("SELECT @@SESSION.lock_wait_timeout"):
+            self._rows = [(31536000, 50)]
         elif sql.startswith("SELECT") and "checksum" in sql:
             self._rows = [
                 (i, n, None, ok, False)
@@ -170,6 +172,20 @@ class TestMysqlRehearsal(unittest.TestCase):
         self.assertEqual([(r.up_ok, r.down_ok) for r in results], [(True, True)])
         self.assertIn("CREATE TABLE t1 (id INT)", conn.log)
         self.assertIn("DROP TABLE t1", conn.log)
+
+    def test_a_scratch_rehearsal_sets_the_lock_timeout_and_puts_it_back(self):
+        conn = FakeMysqlConnection()
+        migration = Migration(
+            "one", up="CREATE TABLE t1 (id INT)", down="DROP TABLE t1"
+        )
+        migrator(conn, [migration]).rehearse(scratch=True, lock_timeout=2.5)
+        log = conn.log
+        set_at = log.index("SET SESSION lock_wait_timeout = 3")
+        self.assertEqual(log[set_at + 1], "SET SESSION innodb_lock_wait_timeout = 3")
+        self.assertLess(set_at, log.index("CREATE TABLE t1 (id INT)"))
+        restored = log.index("SET SESSION lock_wait_timeout = 31536000")
+        self.assertLess(log.index("DROP TABLE t1"), restored)
+        self.assertEqual(log[restored + 1], "SET SESSION innodb_lock_wait_timeout = 50")
 
     def test_a_scratch_rehearsal_records_no_row(self):
         conn = FakeMysqlConnection()

@@ -385,11 +385,17 @@ def guard_run(
 
 def preflight_check(
     preflight: Union[None, str, PreflightCheck],
+    dialect: Dialects,
 ) -> Optional[PreflightCheck]:
     """
     up()'s preflight argument as a PreflightCheck, or None for no check.
-    Raises ValueError for a mode other than 'warn' and 'refuse'.
+    Raises ValueError for a mode other than 'warn' and 'refuse', and
+    DialectError for a dialect without a live preflight, as impact()
+    raises it with live=True. up() calls this before the run starts.
     """
+    from sustained.exceptions import DialectError
+    from sustained.impact.preflight import covered
+
     if preflight is None:
         return None
     check = (
@@ -401,6 +407,8 @@ def preflight_check(
         raise ValueError(
             f"preflight must be None, 'warn', or 'refuse', not {check.mode!r}."
         )
+    if not covered(dialect):
+        raise DialectError(f"The live preflight does not cover {dialect.name}.")
     return check
 
 
@@ -625,22 +633,50 @@ def plan(
     ignore_undeclared: bool = True,
     snapshot: Optional["Snapshot"] = None,
     assert_algorithm: bool = False,
+    online: bool = False,
 ) -> Core[Optional[Migration]]:
     """
     The migration a diff of the models produces. The async driver's
     source is a replay of a schema read, which writes nothing and cannot
     ask whether a table holds a row, so a table it cannot read counts as
     one that holds rows there. The snapshot read for the replay is not
-    passed on: the diff reads the replay itself.
+    passed on: the diff reads the replay itself. A caller's snapshot
+    asks for no read, and the async driver's replay then answers no
+    statement.
 
     With assert_algorithm, the server facts are read after the diff, and
     the migration's statements take the ALGORITHM and LOCK clause the
     impact rules predict from them (asserted_migration()).
+
+    With online, the diff is plan_migrations()'s, and a split into two
+    migrations raises ValueError, since plan() returns one migration.
     """
     from sustained.autogenerate import declared_schemas
 
+    if online:
+        split = yield from plan_migrations(
+            m,
+            models,
+            allow_drops=allow_drops,
+            ignore_changed_columns=ignore_changed_columns,
+            migration_id=migration_id,
+            renames=renames,
+            table_renames=table_renames,
+            type_casts=type_casts,
+            ignore_undeclared=ignore_undeclared,
+            snapshot=snapshot,
+            assert_algorithm=assert_algorithm,
+            online=True,
+        )
+        if len(split) > 1:
+            raise ValueError(
+                f"plan(online=True) generated {len(split)} migrations, "
+                f"{', '.join(g.id for g in split)}. Call "
+                "plan_migrations(online=True) to get each of them."
+            )
+        return split[0] if split else None
     source: Tuple[Connection, Optional["Snapshot"]] = yield DiffSource(
-        declared_schemas(models)
+        declared_schemas(models), read=snapshot is None
     )
     generated = plan_migration(
         source[0],
@@ -685,7 +721,7 @@ def plan_migrations(
     from sustained.autogenerate import declared_schemas
 
     source: Tuple[Connection, Optional["Snapshot"]] = yield DiffSource(
-        declared_schemas(models)
+        declared_schemas(models), read=snapshot is None
     )
     generated = planning.plan_migrations(
         source[0],
@@ -709,6 +745,20 @@ def plan_migrations(
     return [asserted_migration(g, m._dialect, m._compiler, context) for g in generated]
 
 
+class DiffOptions(NamedTuple):
+    """
+    The diff options up() takes for the migration the models generate,
+    which impact() and preflight() take to analyze that same migration.
+    """
+
+    allow_drops: bool = False
+    ignore_changed_columns: bool = False
+    migration_id: Optional[str] = None
+    renames: Optional[Dict[str, str]] = None
+    table_renames: Optional[Dict[str, str]] = None
+    type_casts: Optional[Dict[str, str]] = None
+
+
 def impact(
     m: MigratorBase,
     models: Optional[List[Type["Model"]]] = None,
@@ -717,27 +767,44 @@ def impact(
     live: bool = False,
     older_than: float = OLDER_THAN,
     online: bool = False,
+    diff: DiffOptions = DiffOptions(),
 ) -> Core["ImpactReport"]:
     """
-    The pending run, plus the migration the models generate, analyzed
-    with the server facts read from the connection, and with `live`, the
-    preflight of the analyzed statements. The dialect is checked before
-    anything is read, so a dialect without rules costs no round trip.
+    The pending run, plus the migration the models generate with the
+    `diff` options, analyzed with the server facts read from the
+    connection, and with `live`, the preflight of the analyzed
+    statements. The dialect and `older_than` are checked before anything
+    is read, so a dialect without rules costs no round trip.
     """
     from sustained.exceptions import DialectError
     from sustained.impact import analyze, supported
-    from sustained.impact.preflight import covered, preflight_plan
+    from sustained.impact.preflight import (
+        checked_older_than,
+        covered,
+        preflight_plan,
+    )
     from sustained.impact.rules import engine
 
     if not supported(m._dialect):
         raise DialectError(f"Impact analysis does not cover {engine(m._dialect)} yet.")
     if live and not covered(m._dialect):
         raise DialectError(f"The live preflight does not cover {engine(m._dialect)}.")
+    if live:
+        checked_older_than(older_than)
     run = yield from bookkeeping.pending(m)
     if models:
         run = run + (
             yield from plan_migrations(
-                m, list(models), assert_algorithm=assert_algorithm, online=online
+                m,
+                list(models),
+                allow_drops=diff.allow_drops,
+                ignore_changed_columns=diff.ignore_changed_columns,
+                migration_id=diff.migration_id,
+                renames=diff.renames,
+                table_renames=diff.table_renames,
+                type_casts=diff.type_casts,
+                assert_algorithm=assert_algorithm,
+                online=online,
             )
         )
     context = yield ReadContext(exact_counts)
@@ -754,6 +821,7 @@ def preflight(
     older_than: float = OLDER_THAN,
     exact_counts: bool = False,
     online: bool = False,
+    diff: DiffOptions = DiffOptions(),
 ) -> Core["Preflight"]:
     """The preflight of the run impact() analyzes."""
     report = yield from impact(
@@ -763,6 +831,7 @@ def preflight(
         live=True,
         older_than=older_than,
         online=online,
+        diff=diff,
     )
     assert report.preflight is not None
     return report.preflight

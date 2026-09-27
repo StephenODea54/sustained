@@ -100,7 +100,9 @@ class Rehearsal(List[RehearsalResult]):
     ran. `recorded` says whether the row reached the tracking
     database, which a scratch rehearsal leaves to the caller. `impact`
     is the run's impact as the server showed it, from a rehearsal run
-    with trace=True, and None otherwise.
+    with trace=True, and None otherwise. `generated` lists the
+    migrations the diff against the models generated after the pending
+    migrations applied, which is empty without models.
     """
 
     def __init__(
@@ -109,11 +111,13 @@ class Rehearsal(List[RehearsalResult]):
         key: str,
         recorded: bool = False,
         impact: Optional["ImpactReport"] = None,
+        generated: Iterable[Migration] = (),
     ) -> None:
         super().__init__(results)
         self.key = key
         self.recorded = recorded
         self.impact = impact
+        self.generated: List[Migration] = list(generated)
 
     @property
     def ok(self) -> bool:

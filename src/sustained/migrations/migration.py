@@ -122,7 +122,12 @@ def _derived_down(
     return inverses
 
 
-class PreflightCheck(NamedTuple):
+class _PreflightFields(NamedTuple):
+    mode: str
+    older_than: float = 60.0
+
+
+class PreflightCheck(_PreflightFields):
     """
     How up(preflight=...) reads the live preflight. `mode` is 'warn',
     which prints what the run would wait behind and goes on, or
@@ -130,10 +135,18 @@ class PreflightCheck(NamedTuple):
     way. `older_than` is the age in seconds from which another open
     transaction is printed. up() takes the mode alone as shorthand for
     a check with the default age.
+
+    Raises ValueError for an `older_than` that is negative, NaN, or not
+    a number. up() checks the mode.
     """
 
-    mode: str
-    older_than: float = 60.0
+    __slots__ = ()
+
+    def __new__(cls, mode: str, older_than: float = 60.0) -> "PreflightCheck":
+        from sustained.impact.preflight import checked_older_than
+
+        checked_older_than(older_than)
+        return super().__new__(cls, mode, older_than)
 
 
 class Callbacks(NamedTuple):

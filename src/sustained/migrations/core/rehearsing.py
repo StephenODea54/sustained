@@ -10,14 +10,28 @@ docstring in Migrator; the notes here are about how.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Type, cast
+import math
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Dict,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    Type,
+    cast,
+)
 
+from sustained.dialects import Dialects
 from sustained.migrations.core import bookkeeping, runs
 from sustained.migrations.core.base import MigratorBase
 from sustained.migrations.core.requests import (
     BeginPinned,
     Core,
     Execute,
+    Fetch,
     PinnedTransaction,
     ReadSchema,
     RefuseRehearsal,
@@ -42,6 +56,7 @@ from sustained.migrations.rehearsal import (
     rehearsal_key,
 )
 from sustained.migrations.tracking import _next_seq
+from sustained.types import RowValue
 
 if TYPE_CHECKING:
     from sustained.autogenerate import IntrospectedTable
@@ -51,6 +66,116 @@ if TYPE_CHECKING:
 
 # What each migration's down step proved: down_ok and the error, if any.
 Outcomes = Dict[str, Tuple[Optional[bool], Optional[str]]]
+
+
+class LockTimeout(NamedTuple):
+    """
+    How a rehearsal sets a dialect's lock timeout. `read` fetches the
+    session's current values, or is None where the setting ends with the
+    rehearsal transaction. `set` lists the statements that set the
+    timeout, and `restore` builds, from the row `read` returned, the
+    statements that put the session's values back after the rollback.
+    """
+
+    read: Optional[str]
+    set: List[str]
+    restore: Callable[[Sequence[RowValue]], List[str]]
+
+
+def lock_timeout(dialect: Dialects, seconds: float) -> Optional[LockTimeout]:
+    """
+    The statements that make each lock wait of a rehearsal give up after
+    `seconds`, or None on a dialect without one. PostgreSQL takes SET
+    LOCAL lock_timeout, which the rollback ends. SQL Server takes SET
+    LOCK_TIMEOUT, MySQL and MariaDB take lock_wait_timeout for metadata
+    locks and innodb_lock_wait_timeout for row locks, in whole seconds,
+    and SQLite takes PRAGMA busy_timeout. Those last past the
+    transaction, so their earlier values are read first and set again.
+    DuckDB never waits for a lock: a conflicting write fails at once.
+    """
+    ms = max(1, math.ceil(seconds * 1000))
+    if dialect is Dialects.POSTGRES:
+        return LockTimeout(None, [f"SET LOCAL lock_timeout = '{ms}ms'"], lambda row: [])
+    if dialect is Dialects.MSSQL:
+        return LockTimeout(
+            "SELECT @@LOCK_TIMEOUT",
+            [f"SET LOCK_TIMEOUT {ms}"],
+            lambda row: [f"SET LOCK_TIMEOUT {int(str(row[0]))}"],
+        )
+    if dialect is Dialects.MYSQL:
+        whole = max(1, math.ceil(seconds))
+        return LockTimeout(
+            "SELECT @@SESSION.lock_wait_timeout, @@SESSION.innodb_lock_wait_timeout",
+            [
+                f"SET SESSION lock_wait_timeout = {whole}",
+                f"SET SESSION innodb_lock_wait_timeout = {whole}",
+            ],
+            lambda row: [
+                f"SET SESSION lock_wait_timeout = {int(str(row[0]))}",
+                f"SET SESSION innodb_lock_wait_timeout = {int(str(row[1]))}",
+            ],
+        )
+    if dialect is Dialects.DEFAULT:
+        return LockTimeout(
+            "PRAGMA busy_timeout",
+            [f"PRAGMA busy_timeout = {ms}"],
+            lambda row: [f"PRAGMA busy_timeout = {int(str(row[0]))}"],
+        )
+    return None
+
+
+def checked_lock_timeout(seconds: Optional[float]) -> Optional[float]:
+    """
+    rehearse()'s lock_timeout, or None for none. Raises ValueError for a
+    value that is not a number above 0 and finite.
+    """
+    if seconds is None:
+        return None
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not math.isfinite(seconds)
+        or seconds <= 0
+    ):
+        raise ValueError(
+            f"lock_timeout must be a number of seconds above 0, not {seconds!r}."
+        )
+    return float(seconds)
+
+
+def set_lock_timeout(
+    m: MigratorBase, seconds: Optional[float]
+) -> Core[Optional[List[str]]]:
+    """
+    Sets the lock timeout inside the rehearsal transaction, and returns
+    the statements that restore the session after the rollback, or None
+    when there is nothing to restore.
+    """
+    if seconds is None:
+        return None
+    timeout = lock_timeout(m._dialect, seconds)
+    if timeout is None:
+        return None
+    restore: Optional[List[str]] = None
+    if timeout.read is not None:
+        rows: List[Sequence[RowValue]] = yield Fetch(timeout.read)
+        restore = timeout.restore(rows[0])
+    for statement in timeout.set:
+        yield Execute(statement, pinned=True)
+    return restore
+
+
+def restore_lock_timeout(restore: Optional[List[str]]) -> Core[None]:
+    """
+    Puts back the session's lock timeout after the rollback. A statement
+    that fails is dropped, since the rehearsal's own outcome is the one
+    worth reporting.
+    """
+    for statement in restore or []:
+        try:
+            yield Execute(statement)
+        except Exception:
+            pass
 
 
 def rehearse(
@@ -66,7 +191,9 @@ def rehearse(
     trace: bool = False,
     assert_algorithm: bool = False,
     online: bool = False,
+    lock_timeout: Optional[float] = None,
 ) -> Core[Rehearsal]:
+    lock_timeout = checked_lock_timeout(lock_timeout)
     if not scratch:
         _check_rehearsable(m._dialect)
     if trace:
@@ -110,6 +237,7 @@ def rehearse(
                 trace=trace,
                 assert_algorithm=assert_algorithm,
                 online=online,
+                lock_timeout=lock_timeout,
             ),
         )
         results, drifts, report = pinned
@@ -133,7 +261,7 @@ def rehearse(
             else:
                 yield from bookkeeping.record_rehearsals(m, [key], REHEARSAL_FAILED)
             recorded = True
-        return Rehearsal(results, key, recorded, report)
+        return Rehearsal(results, key, recorded, report, drifts)
 
     # The lock sits outside the rehearsal transaction, so the rollback
     # runs before the lock is released. The state reads sit inside it,
@@ -160,18 +288,22 @@ def _rehearse_pinned(
     trace: bool,
     assert_algorithm: bool = False,
     online: bool = False,
+    lock_timeout: Optional[float] = None,
 ) -> Core[Tuple[List[RehearsalResult], List[Migration], Optional["ImpactReport"]]]:
     """
     The run inside the rehearsal transaction, which it takes back itself
     at the end whatever happened. Returns the results, the migrations the
     diff against the models generated, and with `trace` the run's impact
-    as the server showed it.
+    as the server showed it. `lock_timeout` is set first, and a session
+    setting it changed is set back after the rollback.
     """
     records = {r.id: r for r in record_list}
     seq = _next_seq(record_list)
     m._rehearsing = True
+    restore: Optional[List[str]] = None
     try:
         yield BeginPinned()
+        restore = yield from set_lock_timeout(m, lock_timeout)
         tracer: Optional[Tracer] = None
         if trace:
             tracer = Tracer(m)
@@ -279,6 +411,7 @@ def _rehearse_pinned(
         m._rehearsing = False
         m._tracer = None
         yield from roll_back_rehearsal(m)
+        yield from restore_lock_timeout(restore)
 
 
 def _apply_generated(

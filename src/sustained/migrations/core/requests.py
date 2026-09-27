@@ -152,10 +152,14 @@ class DiffSource(NamedTuple):
     so the diffing code reads the schema itself and can ask whether a
     table holds rows. The async driver reads the schema through its
     adapter, covering `schemas` on top of the connection's own, and
-    answers with a connection that replays that recording.
+    answers with a connection that replays that recording. With `read`
+    False, the caller diffs a snapshot it already has, and the async
+    driver reads nothing and answers with a replay of an empty
+    recording and no snapshot.
     """
 
     schemas: Sequence[str]
+    read: bool = True
 
 
 class ReadContext(NamedTuple):

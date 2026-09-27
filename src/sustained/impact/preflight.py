@@ -29,6 +29,7 @@ sessions to wait behind in the same way.
 
 from __future__ import annotations
 
+import math
 from typing import (
     TYPE_CHECKING,
     Callable,
@@ -237,6 +238,24 @@ def number(value: object) -> Optional[int]:
     return None if value is None else int(str(value))
 
 
+def checked_older_than(older_than: object) -> float:
+    """
+    `older_than` as seconds. Raises ValueError for a value that is not a
+    number, is negative, or is NaN, any of which would list every open
+    transaction or none of them without saying so. Infinity lists none.
+    """
+    if (
+        isinstance(older_than, bool)
+        or not isinstance(older_than, (int, float))
+        or math.isnan(older_than)
+        or older_than < 0
+    ):
+        raise ValueError(
+            f"older_than must be a number of seconds, 0 or more, not {older_than!r}."
+        )
+    return float(older_than)
+
+
 def covered(dialect: "Dialects") -> bool:
     """Whether the dialect's profile has a preflight."""
     from sustained.impact.rules import profile_for
@@ -252,14 +271,16 @@ def preflight_plan(
 ) -> PreflightPlan:
     """
     The dialect's preflight read for the statements' impacts. Raises
-    ValueError for a dialect that has no preflight.
+    ValueError for a dialect that has no preflight, and for an
+    `older_than` checked_older_than() refuses.
     """
     from sustained.impact.rules import engine, profile_for
 
+    seconds = checked_older_than(older_than)
     profile = profile_for(dialect)
     if profile is None or profile.preflight is None:
         raise ValueError(f"The live preflight does not cover {engine(dialect)}.")
-    return profile.preflight(impacts, older_than)
+    return profile.preflight(impacts, seconds)
 
 
 def _impacts(
@@ -295,11 +316,13 @@ def preflight(
     A statement with `impact` attached is read from it; the others are
     analyzed with `context`, read from the connection when it is not
     given. The connection's own session is never listed. Raises
-    ValueError for a dialect that has no preflight.
+    ValueError for a dialect that has no preflight, and for an
+    `older_than` that is negative, NaN, or not a number.
     """
     from sustained.introspect.runner import run_plan
 
     covered_or_raise(dialect)
+    checked_older_than(older_than)
     impacts = _impacts(statements, dialect, context)
     if impacts is None:
         impacts = _impacts(statements, dialect, read_context(connection, dialect))
@@ -319,6 +342,7 @@ async def async_preflight(
     from sustained.introspect.runner import async_run_plan
 
     covered_or_raise(dialect)
+    checked_older_than(older_than)
     impacts = _impacts(statements, dialect, context)
     if impacts is None:
         read = await async_read_context(adapter, dialect)

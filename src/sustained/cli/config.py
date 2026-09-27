@@ -15,6 +15,7 @@ from typing import (
     Callable,
     List,
     Optional,
+    Sequence,
     Tuple,
 )
 
@@ -192,8 +193,21 @@ def _close_quietly(connection: object) -> None:
             pass
 
 
-def _migrator_on(connection: Connection, config: ModuleType) -> Migrator:
-    """Builds a migrator for the config module on the given connection."""
+def _rehearsal_lock_timeout(config: ModuleType) -> Optional[float]:
+    """
+    The config module's rehearsal_lock_timeout, in seconds, or None when
+    it sets none. rehearse() checks the value.
+    """
+    return getattr(config, "rehearsal_lock_timeout", None)
+
+
+def _migrator_on(
+    connection: Connection, config: ModuleType, extra: Sequence[Migration] = ()
+) -> Migrator:
+    """
+    Builds a migrator for the config module on the given connection.
+    `extra` joins the registered migrations after the config's own.
+    """
     migrations: List[Migration] = list(getattr(config, "migrations", []))
     directory = getattr(config, "migrations_dir", None)
     if directory is not None:
@@ -202,6 +216,7 @@ def _migrator_on(connection: Connection, config: ModuleType) -> Migrator:
                 directory, placeholders=getattr(config, "placeholders", None)
             )
         )
+    migrations.extend(extra)
     return Migrator(
         connection,
         migrations,
