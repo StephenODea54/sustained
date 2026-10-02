@@ -17,6 +17,9 @@ Version numbers follow semantic versioning. A major version marks a change that 
 
 ### Fixed
 
+- On SQL Server, an `UPDATE` or `DELETE` whose subquery defines a CTE renders one `WITH` clause in front of the statement, where the subquery rendered its own `WITH` inside parentheses and the server refused it. Other dialects keep the `WITH` inside the subquery.
+- Athena execution parameters travel as SQL literals: a string is quoted with its inner quotes doubled, a date renders as `DATE '...'`, a datetime as `TIMESTAMP '...'`, and a boolean as `TRUE` or `FALSE`, where a string or date was sent bare and the engine read it as an identifier or refused it.
+- On SQL Server, the impact analysis drops `GO` batch separators before it reads a statement, so a statement that ends in `GO` is recognized instead of reported as unknown. Text with more than one batch still reads as unknown.
 - `ddl.drop_column()` and the generated drop of an extra column on SQL Server first drop the default constraint the engine keeps for the column, by looking its name up in `sys.default_constraints`, so the `DROP COLUMN` no longer fails on a column that has a default. A `ddl` step hashes its operation and arguments, not the SQL it renders, so the checksum of a migration that already uses `ddl.drop_column()` does not change. A migration written as SQL text that drops the constraint by hand keeps working and keeps its checksum.
 - A SQLite table rebuild writes back each index the model does not declare from the `CREATE INDEX` statement in `sqlite_master`, so an expression index such as `CREATE INDEX ix ON t (lower(name))` and the `WHERE` clause of a partial index come through the rebuild as written.
 - Autogenerate reports a difference in an index's partial predicate, key part direction, or prefix length as drift when the introspection read reports those details on `IntrospectedIndex`.
