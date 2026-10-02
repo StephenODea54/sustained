@@ -207,6 +207,47 @@ class TestEagerKeyBatches(unittest.TestCase):
         self.assertEqual([p.pets[0].id for p in parents], list(range(count)))
 
 
+class _RefusingBeginCursor:
+    def __init__(self):
+        self.closed = False
+
+    def execute(self, sql, params=()):
+        raise RuntimeError("cannot begin")
+
+    def close(self):
+        self.closed = True
+
+
+class _RefusingBeginConnection:
+    autocommit = True
+
+    def __init__(self):
+        self.cursors = []
+
+    def cursor(self):
+        cursor = _RefusingBeginCursor()
+        self.cursors.append(cursor)
+        return cursor
+
+
+class TestFailedBeginClosesItsCursor(unittest.TestCase):
+    def test_transaction_closes_the_cursor_when_begin_fails(self):
+        connection = _RefusingBeginConnection()
+        with self.assertRaises(RuntimeError):
+            with transaction(connection):
+                pass  # pragma: no cover - the block never opens
+        self.assertTrue(connection.cursors[0].closed)
+
+    def test_pinned_transaction_closes_the_cursor_when_begin_fails(self):
+        from sustained.execution import pinned_transaction
+
+        connection = _RefusingBeginConnection()
+        with self.assertRaises(RuntimeError):
+            with pinned_transaction(connection, Dialects.DEFAULT):
+                pass  # pragma: no cover - the block never opens
+        self.assertTrue(connection.cursors[0].closed)
+
+
 class _CountingCursor:
     """A cursor that reports one affected row per execute."""
 

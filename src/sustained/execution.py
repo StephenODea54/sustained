@@ -297,10 +297,17 @@ def needs_explicit_begin(connection: Connection) -> bool:
     return True
 
 
-def _begin_where_ddl_autocommits(connection: Connection, cursor: Cursor) -> None:
-    """Runs the BEGIN that needs_explicit_begin() asks for, if any."""
-    if needs_explicit_begin(connection):
-        cursor.execute("BEGIN")
+def _execute_or_close(cursor: Cursor, sql: str) -> None:
+    """
+    Runs the statement that opens a transaction. When it fails, no block
+    owns the cursor yet, so the cursor is closed here before the error
+    propagates.
+    """
+    try:
+        cursor.execute(sql)
+    except BaseException:
+        cursor.close()
+        raise
 
 
 def in_transaction(connection: Connection) -> bool:
@@ -381,7 +388,7 @@ def pinned_transaction(connection: Connection, dialect: "Dialects") -> Iterator[
     cursor = connection.cursor()
     begin_sql = compiler.begin_transaction_sql()
     if begin_sql is not None:
-        cursor.execute(begin_sql)
+        _execute_or_close(cursor, begin_sql)
     with _TRANSACTION_LOCK:
         _ACTIVE_TRANSACTIONS[key] = (connection, 0, cursor, threading.get_ident())
     try:
@@ -528,9 +535,9 @@ def transaction(
         # and closed in SQL on this one cursor.
         begin_sql = compiler.begin_transaction_sql()
         if begin_sql is not None:
-            cursor.execute(begin_sql)
-    else:
-        _begin_where_ddl_autocommits(connection, cursor)
+            _execute_or_close(cursor, begin_sql)
+    elif needs_explicit_begin(connection):
+        _execute_or_close(cursor, "BEGIN")
     with _TRANSACTION_LOCK:
         _ACTIVE_TRANSACTIONS[key] = (connection, 0, cursor, threading.get_ident())
     try:
