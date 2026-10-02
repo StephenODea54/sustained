@@ -10,18 +10,34 @@ class TestFunctionValidation(unittest.TestCase):
         class User(Model):
             tableName = "users"
 
-        # STRING_AGG is not supported by MSSQL
-        User.set_dialect(Dialects.MSSQL)
+        # Presto and Trino have no STRING_AGG; they spell it LISTAGG or
+        # array_join(array_agg(...)).
+        User.set_dialect(Dialects.PRESTO)
         query = User.query()
 
         with self.assertRaisesRegex(
             DialectError,
-            "Function 'STRING_AGG' is not supported by the 'MSSQL' dialect.",
+            "Function 'STRING_AGG' is not supported by the 'PRESTO' dialect.",
         ):
             query.select_func("STRING_AGG", "name")
 
         # Reset dialect
         User.set_dialect(Dialects.DEFAULT)
+
+    def test_string_agg_on_athena_raises(self):
+        Athena = create_model("FuncAthenaUser", "users")
+        Athena.set_dialect(Dialects.ATHENA)
+        with self.assertRaises(DialectError):
+            Athena.query().select_func("STRING_AGG", "name")
+
+    def test_string_agg_renders_on_mssql(self):
+        # SQL Server 2017 and later have STRING_AGG(expression, separator).
+        from sustained.expressions import Literal
+
+        Ms = create_model("FuncMsUser", "users")
+        Ms.set_dialect(Dialects.MSSQL)
+        query = Ms.query().select_func("STRING_AGG", "name", Literal(", "))
+        self.assertIn("STRING_AGG([name], N', ')", str(query))
 
     def test_unregistered_function_passes_through(self):
         class User(Model):

@@ -74,15 +74,16 @@ class _FunctionRegistry:
         # MySQL is left off STRING_AGG on purpose. Its GROUP_CONCAT takes
         # the separator as a SEPARATOR keyword rather than a second
         # argument, so an alternate name would produce SQL that does not
-        # parse. Write GROUP_CONCAT through raw SQL there.
+        # parse. Write GROUP_CONCAT through raw SQL there. Presto, Trino,
+        # and Athena have no STRING_AGG either; they spell it LISTAGG or
+        # array_join(array_agg(...)), which raw SQL also reaches.
         self.register(
             "STRING_AGG",
             FunctionMetadata(
                 supported_dialects=[
-                    Dialects.PRESTO,
-                    Dialects.ATHENA,
                     Dialects.POSTGRES,
                     Dialects.DUCKDB,
+                    Dialects.MSSQL,
                 ]
             ),
         )
