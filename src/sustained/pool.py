@@ -190,8 +190,13 @@ class ConnectionPool:
             self._created -= len(drained)
             # Every waiting thread wakes to find the pool closed and raises.
             self._lock.notify_all()
+        # A close that fails would otherwise leave the rest of the idle
+        # connections open. The async pool drops the error the same way.
         for conn in drained:
-            self._close_connection(conn)
+            try:
+                self._close_connection(conn)
+            except Exception:
+                pass
 
     @staticmethod
     def _close_connection(connection: Connection) -> None:

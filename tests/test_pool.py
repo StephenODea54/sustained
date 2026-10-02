@@ -224,6 +224,20 @@ class TestPoolHygiene(unittest.TestCase):
         pool.close()
         self.assertEqual(pool.size, 0)
 
+    def test_close_closes_every_idle_connection_past_a_failing_one(self):
+        class FailingClose(FakeConnection):
+            def close(self):
+                raise RuntimeError("the server went away")
+
+        made = iter([FailingClose(), FakeConnection()])
+        pool = ConnectionPool(lambda: next(made), max_size=2)
+        first, second = pool.acquire_raw(), pool.acquire_raw()
+        pool.release(first)
+        pool.release(second)
+        pool.close()
+        self.assertTrue(second.closed)
+        self.assertEqual(pool.size, 0)
+
 
 class TestPoolExecution(PoolTestCase):
     def test_run_checks_out_and_releases(self):
