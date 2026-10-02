@@ -186,8 +186,7 @@ class AsyncConnectionPool(AsyncAdapter):
                 await self._discard(adapter)
                 return
         if self._closed:
-            self._created -= 1
-            await adapter.close()
+            await self._discard(adapter)
             return
         self._idle.append(adapter)
         self._wake_one()

@@ -282,6 +282,20 @@ class TestPoolClose(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(adapter.closed)
         self.assertEqual(pool.size, 0)
 
+    async def test_a_failing_close_after_pool_close_does_not_fail_the_release(self):
+        class FailingClose(CountingAdapter):
+            async def close(self):
+                raise RuntimeError("the server went away")
+
+        async def factory():
+            return FailingClose("a")
+
+        pool = AsyncConnectionPool(factory)
+        adapter = await pool.acquire()
+        await pool.close()
+        await pool.release(adapter)
+        self.assertEqual(pool.size, 0)
+
 
 class TestPoolRunsQueries(unittest.IsolatedAsyncioTestCase):
     """A bound pool is what arun() and async_transaction() run on."""
