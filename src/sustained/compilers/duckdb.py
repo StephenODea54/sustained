@@ -84,10 +84,13 @@ class DuckDbCompiler(Compiler):
         using: "str | None" = None,
     ) -> "list[str]":
         column_sql = self.quote_identifier(column_name)
-        return [
+        statement = (
             f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} "
             f"SET DATA TYPE {column.type_sql}"
-        ]
+        )
+        if using:
+            statement += f" USING {using}"
+        return [statement]
 
     def compile_alter_column_nullability(
         self,

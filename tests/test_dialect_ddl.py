@@ -117,6 +117,17 @@ class TestDuckDbAlter(unittest.TestCase):
             ['ALTER TABLE "t" ALTER COLUMN "n" SET DATA TYPE INTEGER'],
         )
 
+    def test_alter_type_with_using(self):
+        self.assertEqual(
+            self.c.compile_alter_column_type(
+                '"t"', "n", ColumnState("INTEGER", True), 'CAST("n" AS INTEGER)'
+            ),
+            [
+                'ALTER TABLE "t" ALTER COLUMN "n" SET DATA TYPE INTEGER '
+                'USING CAST("n" AS INTEGER)'
+            ],
+        )
+
     def test_alter_nullability(self):
         self.assertEqual(
             self.c.compile_alter_column_nullability(
