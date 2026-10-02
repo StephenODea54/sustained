@@ -17,6 +17,7 @@ Version numbers follow semantic versioning. A major version marks a change that 
 ### Fixed
 
 - Autogenerate reports a difference in an index's partial predicate, key part direction, or prefix length as drift when the introspection read reports those details on `IntrospectedIndex`.
+- A PostgreSQL type change on a column that has a default drops the default before `ALTER COLUMN ... TYPE` and sets the model's default after it, where the server refused the change when the stored default did not cast to the new type. A column without a default generates the same statements as before.
 
 ## 2.x
 

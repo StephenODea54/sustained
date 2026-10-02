@@ -257,6 +257,39 @@ class SchemaChangeTests:
         migrator.down()
         self.assertIsNone(migrator.plan([widget(Integer)]))
 
+    def test_a_postgres_type_change_recasts_the_default(self):
+        # Postgres casts a column's default to the new type itself and
+        # refuses the change when no assignment cast exists, as from
+        # text to integer. The generated migration drops the default
+        # before the change and writes the model's default after it.
+        if self.DIALECT != Dialects.POSTGRES:
+            self.skipTest("only Postgres casts the default itself")
+        self.execute(
+            "CREATE TABLE it_widgets (id INTEGER PRIMARY KEY, "
+            "size TEXT NULL DEFAULT '5')"
+        )
+        widget = type(
+            "WidgetRecast",
+            (Model,),
+            {
+                "tableName": "it_widgets",
+                "tableColumns": {
+                    "id": Integer(primary_key=True),
+                    "size": Integer(nullable=True, default=5),
+                },
+                "_dialect": self.DIALECT,
+            },
+        )
+        migrator = self.migrator()
+        migrator.up(
+            models=[widget],
+            type_casts={"it_widgets.size": "size::integer"},
+            unrehearsed=True,
+        )
+        self.assertIsNone(migrator.plan([widget]))
+        self.execute("INSERT INTO it_widgets (id) VALUES (1)")
+        self.assertEqual(self.fetch("SELECT size FROM it_widgets"), [(5,)])
+
     def test_a_mysql_restatement_keeps_on_update_and_collation(self):
         # MODIFY COLUMN drops an ON UPDATE clause and resets the collation
         # to the table's own unless the statement restates them.

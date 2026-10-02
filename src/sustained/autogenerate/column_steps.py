@@ -157,7 +157,10 @@ def _changed_column_steps(state: _Generation) -> None:
                 )
                 restated_states[(table.lower(), name.lower())] = changed_state
                 # SQL Server refuses a type change on a column that has a
-                # default, so the default comes off around it both ways.
+                # default, and Postgres refuses one whose default does not
+                # cast to the new type, so the default comes off around
+                # it both ways. The compiler picks the text the up step
+                # writes back.
                 default_sql = actual_col.restated_default()
                 lift_default = (
                     default_sql is not None and not compiler.alter_type_keeps_default()
@@ -188,15 +191,30 @@ def _changed_column_steps(state: _Generation) -> None:
                 )
                 if lift_default:
                     assert default_sql is not None
-                    add_default = compiler.compile_add_column_default(
-                        table_sql, name, default_sql
+                    new_default_sql = compiler.lifted_default_sql(
+                        (
+                            None
+                            if coldef.default is None
+                            else compiler.format_value(coldef.default)
+                        ),
+                        default_sql,
                     )
                     up_steps.append(
                         with_intent(
-                            add_default, "set_column_default", intent_table, name
+                            compiler.compile_add_column_default(
+                                table_sql, name, new_default_sql
+                            ),
+                            "set_column_default",
+                            intent_table,
+                            name,
                         )
                     )
-                    down_steps.insert(0, add_default)
+                    down_steps.insert(
+                        0,
+                        compiler.compile_add_column_default(
+                            table_sql, name, default_sql
+                        ),
+                    )
                 for statement in reversed(
                     compiler.compile_alter_column_type(
                         table_sql,

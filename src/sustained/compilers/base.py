@@ -979,10 +979,22 @@ class Compiler:
         """
         Reports whether a column keeps its default through a change of
         its type. SQL Server keeps a default as a constraint of its own
-        and refuses to change the type of a column that has one, so the
-        default comes off before the change and goes back on after it.
+        and refuses to change the type of a column that has one, and
+        Postgres refuses the change when the default does not cast to
+        the new type on its own, so on both the default comes off before
+        the change and goes back on after it.
         """
         return True
+
+    def lifted_default_sql(
+        self, model_default_sql: Optional[str], live_default_sql: str
+    ) -> str:
+        """
+        The DEFAULT text a type change writes back after a lifted
+        default. The text the table has goes back as it is, since the
+        engine reports it as SQL for the column.
+        """
+        return live_default_sql
 
     def compile_drop_column_default(self, table_sql: str, column_name: str) -> str:
         """Renders a statement that takes a column's default off."""

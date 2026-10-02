@@ -85,6 +85,20 @@ class PostgresCompiler(Compiler):
     def supports_alter_column(self) -> bool:
         return True
 
+    def alter_type_keeps_default(self) -> bool:
+        # The server casts the default to the new type itself and
+        # refuses the change when that cast is not automatic, so the
+        # default comes off before the change and goes back on after it.
+        return False
+
+    def lifted_default_sql(
+        self, model_default_sql: Optional[str], live_default_sql: str
+    ) -> str:
+        # pg_attrdef spells a default with a cast to the old type, as in
+        # '7'::text, so the model's default goes back on when the model
+        # declares one.
+        return live_default_sql if model_default_sql is None else model_default_sql
+
     def compile_alter_column_type(
         self,
         table_sql: str,

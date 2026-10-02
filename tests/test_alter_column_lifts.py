@@ -1,8 +1,9 @@
 """
 Indexes and defaults that stop an ALTER COLUMN statement. DuckDB refuses
 to change any column of a table that has an index, SQL Server refuses
-to change a column in an index or a UNIQUE constraint, and SQL Server
-refuses to change the type of a column that has a default. A generated
+to change a column in an index or a UNIQUE constraint, SQL Server
+refuses to change the type of a column that has a default, and Postgres
+refuses one whose default does not cast to the new type. A generated
 migration takes them off before the change and puts them back after it,
 on the way up and on the way down.
 """
@@ -244,12 +245,62 @@ class TestMssqlRestatesTheCollation(unittest.TestCase):
         self.assertIsNone(columns["n"].collation)
 
 
-class TestPostgresLiftsNothing(unittest.TestCase):
+class TestPostgresLiftsTheDefault(unittest.TestCase):
     def test_the_engine_rebuilds_its_own_indexes(self):
-        migration = generate(widgets(), Dialects.POSTGRES, snapshot(default="5"))
+        migration = generate(widgets(), Dialects.POSTGRES, snapshot(default=None))
         self.assertEqual(
             migration.up,
             ['ALTER TABLE "widgets" ALTER COLUMN "size" TYPE BIGINT'],
+        )
+        self.assertEqual(
+            migration.down,
+            ['ALTER TABLE "widgets" ALTER COLUMN "size" TYPE int'],
+        )
+
+    def test_the_default_comes_off_a_type_change_and_back(self):
+        migration = generate(widgets(), Dialects.POSTGRES, snapshot(default="5"))
+        self.assertEqual(
+            migration.up,
+            [
+                'ALTER TABLE "widgets" ALTER COLUMN "size" DROP DEFAULT',
+                'ALTER TABLE "widgets" ALTER COLUMN "size" TYPE BIGINT',
+                'ALTER TABLE "widgets" ALTER COLUMN "size" SET DEFAULT 5',
+            ],
+        )
+        self.assertEqual(
+            migration.down,
+            [
+                'ALTER TABLE "widgets" ALTER COLUMN "size" DROP DEFAULT',
+                'ALTER TABLE "widgets" ALTER COLUMN "size" TYPE int',
+                'ALTER TABLE "widgets" ALTER COLUMN "size" SET DEFAULT 5',
+            ],
+        )
+
+    def test_the_up_step_writes_the_model_default_for_the_new_type(self):
+        model = widgets(size=lambda **kw: Integer(**{**kw, "default": 7}))
+        schema = snapshot(default="'7'::text")
+        columns = schema["widgets"].columns
+        columns["size"] = columns["size"]._replace(raw_type="text")
+        migration = generate(model, Dialects.POSTGRES, schema)
+        self.assertEqual(
+            migration.up,
+            [
+                'ALTER TABLE "widgets" ALTER COLUMN "size" DROP DEFAULT',
+                'ALTER TABLE "widgets" ALTER COLUMN "size" TYPE INTEGER',
+                'ALTER TABLE "widgets" ALTER COLUMN "size" SET DEFAULT 7',
+            ],
+        )
+        self.assertEqual(
+            migration.down[-1],
+            'ALTER TABLE "widgets" ALTER COLUMN "size" SET DEFAULT \'7\'::text',
+        )
+
+    def test_the_table_default_goes_back_when_the_model_declares_none(self):
+        model = widgets(size=lambda **kw: BigInteger(**{**kw, "default": None}))
+        migration = generate(model, Dialects.POSTGRES, snapshot(default="5"))
+        self.assertEqual(
+            migration.up[-1],
+            'ALTER TABLE "widgets" ALTER COLUMN "size" SET DEFAULT 5',
         )
 
 
