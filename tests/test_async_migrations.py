@@ -544,6 +544,44 @@ class TestAsyncPlanAndDrift(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(generated.up, expected.up)
         self.assertEqual(generated.down, expected.down)
 
+    async def test_sync_still_works_and_warns(self):
+        from sustained.autogenerate import diff_schema
+
+        migrator = AsyncMigrator(self.adapter, [])
+        with self.assertWarns(DeprecationWarning) as caught:
+            applied = await migrator.sync(self.models())
+        self.assertEqual(len(applied), 1)
+        self.assertIn("AsyncMigrator.sync()", str(caught.warning))
+        self.assertIn("up(models=[...])", str(caught.warning))
+        self.assertTrue(diff_schema(self.conn, self.models()).is_empty())
+
+    async def test_read_schema_feeds_a_plan(self):
+        from sustained.model import Model
+        from sustained.schema import Integer, Text
+
+        self.conn.execute("CREATE TABLE async_plan_users (id INTEGER PRIMARY KEY)")
+        grown = type(
+            "AsyncPlanGrown",
+            (Model,),
+            {
+                "tableName": "async_plan_users",
+                "tableColumns": {
+                    "id": Integer(primary_key=True),
+                    "bio": Text(),
+                },
+            },
+        )
+        migrator = AsyncMigrator(self.adapter, [])
+        snapshot = await migrator.read_schema([grown])
+        self.assertEqual(snapshot, Migrator(self.conn, []).read_schema([grown]))
+        self.conn.execute("ALTER TABLE async_plan_users ADD COLUMN bio TEXT")
+        # The plan diffs the snapshot, which predates the new column.
+        migration = await migrator.plan([grown], snapshot=snapshot)
+        self.assertEqual(
+            migration.up, ['ALTER TABLE "async_plan_users" ADD COLUMN "bio" TEXT']
+        )
+        self.assertIsNone(await migrator.plan([grown]))
+
     async def test_plan_refuses_a_not_null_column_it_cannot_probe(self):
         # plan() runs the schema read and nothing else on the async path,
         # so it cannot ask whether the table holds a row. An unprobeable

@@ -5,6 +5,7 @@
 ### Added
 
 - `Index` takes `where=` for a partial index predicate and accepts `IndexColumn(name, desc=False, prefix_length=None)` in place of a column name, so a model can declare a partial index, a DESC key part, or a MySQL prefix index. The compilers render them, and refuse a WHERE predicate on MySQL or a prefix length outside MySQL with `DialectError`.
+- `AsyncMigrator.read_schema(models)` and `AsyncMigrator.sync(models)` mirror the `Migrator` methods of the same names. `sync()` gives the same deprecation warning on both migrators.
 
 ### Fixed
 

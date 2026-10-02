@@ -4,6 +4,7 @@ The state both migrators hold, which the core's generators read and set.
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple
 
 from sustained.dialects import Dialects
@@ -58,6 +59,18 @@ class MigratorBase:
     def dialect(self) -> Dialects:
         """The dialect this migrator compiles for."""
         return self._dialect
+
+    def _warn_sync_deprecated(self) -> None:
+        """
+        The warning sync() on either migrator gives before it calls
+        up(models=[...]). The stack level names the caller of sync().
+        """
+        warnings.warn(
+            f"{type(self).__name__}.sync() is deprecated and will be removed "
+            "in 3.0. Call up(models=[...]) instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
     @property
     def compiler(self) -> "Compiler":

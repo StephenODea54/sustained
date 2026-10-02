@@ -9,7 +9,6 @@ blocking connection.
 
 from __future__ import annotations
 
-import warnings
 from contextlib import closing
 from typing import (
     TYPE_CHECKING,
@@ -1001,12 +1000,7 @@ class Migrator(MigratorBase):
         up(models=[...]) instead, which does the same work under the verb
         the CLI and the docs already use.
         """
-        warnings.warn(
-            "Migrator.sync() is deprecated and will be removed in 3.0. "
-            "Call up(models=[...]) instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        self._warn_sync_deprecated()
         return self.up(
             models=models,
             allow_drops=allow_drops,

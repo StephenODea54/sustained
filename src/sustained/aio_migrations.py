@@ -699,6 +699,45 @@ class AsyncMigrator(MigratorBase):
             )
         )
 
+    async def read_schema(self, models: List[Type["Model"]]) -> "Snapshot":
+        """
+        Reads the schema plan() diffs the models against: the adapter's
+        own schema plus every schema the models name. Mirrors
+        Migrator.read_schema().
+        """
+        from sustained.autogenerate import declared_schemas
+        from sustained.introspect import async_introspect_schema
+
+        return await async_introspect_schema(
+            self._adapter, self._dialect, declared_schemas(models)
+        )
+
+    async def sync(
+        self,
+        models: List[Type["Model"]],
+        allow_drops: bool = False,
+        ignore_changed_columns: bool = False,
+        migration_id: Optional[str] = None,
+        renames: Optional[Dict[str, str]] = None,
+        table_renames: Optional[Dict[str, str]] = None,
+        type_casts: Optional[Dict[str, str]] = None,
+    ) -> List[str]:
+        """
+        Deprecated since 2.13.0, removed in 3.0: call
+        up(models=[...]) instead, which does the same work under the verb
+        the CLI and the docs already use. Mirrors Migrator.sync().
+        """
+        self._warn_sync_deprecated()
+        return await self.up(
+            models=models,
+            allow_drops=allow_drops,
+            ignore_changed_columns=ignore_changed_columns,
+            migration_id=migration_id,
+            renames=renames,
+            table_renames=table_renames,
+            type_casts=type_casts,
+        )
+
     async def plan_migrations(
         self,
         models: List[Type["Model"]],
