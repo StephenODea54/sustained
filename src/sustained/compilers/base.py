@@ -705,6 +705,16 @@ class Compiler:
         quoted = self.quote_ddl_identifier(column_name)
         return f"ALTER TABLE {table_sql} DROP COLUMN {quoted}"
 
+    def compile_drop_column_statements(
+        self, table_sql: str, column_name: str, has_default: bool
+    ) -> "list[str]":
+        """
+        Renders the statements that drop one column. `has_default` tells
+        a dialect that keeps a default in its own constraint to drop
+        that constraint first.
+        """
+        return [self.compile_drop_column(table_sql, column_name)]
+
     def compile_rename_column(
         self, table_sql: str, old_name: str, new_name: str
     ) -> str:

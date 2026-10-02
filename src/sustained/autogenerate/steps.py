@@ -876,15 +876,19 @@ def _drop_steps(state: _Generation) -> None:
             if table.lower() in rebuild_tables:
                 continue
             table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
+            intent_table = _reported_intent_table(models_by_table, actual, table)
+            actual_column = actual[table.lower()].columns.get(name)
+            drops = compiler.compile_drop_column_statements(
+                table_sql,
+                name,
+                actual_column is not None and actual_column.default is not None,
+            )
+            up_steps.extend(
+                with_intent(drop, "drop_column_default", intent_table, name)
+                for drop in drops[:-1]
+            )
             up_steps.append(
-                dropped(
-                    with_intent(
-                        compiler.compile_drop_column(table_sql, name),
-                        "drop_column",
-                        _reported_intent_table(models_by_table, actual, table),
-                        name,
-                    )
-                )
+                dropped(with_intent(drops[-1], "drop_column", intent_table, name))
             )
             _irreversible(state)
         if diff.extra_tables:

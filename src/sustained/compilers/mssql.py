@@ -220,6 +220,16 @@ class MssqlCompiler(Compiler):
             "IF @sustained_default IS NOT NULL EXEC(@sustained_default)"
         )
 
+    def compile_drop_column_statements(
+        self, table_sql: str, column_name: str, has_default: bool
+    ) -> "list[str]":
+        # SQL Server refuses to drop a column while a default constraint
+        # depends on it, so the constraint goes first.
+        drop = self.compile_drop_column(table_sql, column_name)
+        if not has_default:
+            return [drop]
+        return [self.compile_drop_column_default(table_sql, column_name), drop]
+
     def compile_add_column_default(
         self, table_sql: str, column_name: str, default_sql: str
     ) -> str:

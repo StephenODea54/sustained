@@ -472,9 +472,10 @@ def _invert_add_column(args: _Args) -> DdlStep:
     name = args["name"]
     assert isinstance(table, str) and isinstance(name, str)
     enum_check = column.type_name == "ENUM"
-    return DdlStep(
-        "drop_column", {"table": table, "name": name, "drop_enum_check": enum_check}
-    )
+    drop: _Args = {"table": table, "name": name, "drop_enum_check": enum_check}
+    if column.default is not None:
+        drop["has_default"] = True
+    return DdlStep("drop_column", drop)
 
 
 def drop_column(table: TableRef, name: str) -> DdlStep:
@@ -504,14 +505,14 @@ def _render_drop_column(args: _Args, compiler: "Compiler") -> List[str]:
                 name=constraint,
             )
         )
-    statements.append(
-        _tag(
-            compiler.compile_drop_column(table_sql, name),
-            "drop_column",
-            args["table"],
-            name,
-        )
+    drops = compiler.compile_drop_column_statements(
+        table_sql, name, bool(args.get("has_default", False))
     )
+    statements.extend(
+        _tag(statement, "drop_column_default", args["table"], name)
+        for statement in drops[:-1]
+    )
+    statements.append(_tag(drops[-1], "drop_column", args["table"], name))
     return statements
 
 

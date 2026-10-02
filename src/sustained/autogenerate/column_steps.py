@@ -384,7 +384,9 @@ def _new_column_steps(state: _Generation) -> None:
                 name,
                 ColumnState.from_column(compiler, coldef, nullable=False),
             )
-            down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
+            down_steps[0:0] = compiler.compile_drop_column_statements(
+                table_sql, name, coldef.default is not None
+            )
             if state.online:
                 loosen = compiler.compile_alter_column_nullability(
                     table_sql,
@@ -419,7 +421,9 @@ def _new_column_steps(state: _Generation) -> None:
                 has_default=coldef.default is not None,
             )
         )
-        down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
+        down_steps[0:0] = compiler.compile_drop_column_statements(
+            table_sql, name, coldef.default is not None
+        )
         if state.online:
             _column_keys_online(state, model, table_sql, name, coldef)
             continue
@@ -628,7 +632,9 @@ def _new_not_null_online(
                 name,
             )
         )
-    state.down_steps.insert(0, compiler.compile_drop_column(table_sql, name))
+    state.down_steps[0:0] = compiler.compile_drop_column_statements(
+        table_sql, name, coldef.default is not None
+    )
     _column_keys_online(state, model, table_sql, name, coldef)
 
 
