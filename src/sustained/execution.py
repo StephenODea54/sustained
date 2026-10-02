@@ -707,29 +707,50 @@ def _eager_load_tree(
             )
 
 
+# The most join keys one eager-load query binds. MSSQL accepts 2100
+# parameters per statement and SQLite builds before 3.32 accept 999, so
+# a single IN list over every parent key fails there for a large parent
+# list. 900 keys leave room for any other parameter of the query.
+EAGER_KEY_BATCH = 900
+
+
+def _key_batches(keys: List[RowValue]) -> List[List[RowValue]]:
+    """Splits the join keys into lists of at most EAGER_KEY_BATCH keys."""
+    return [
+        keys[start : start + EAGER_KEY_BATCH]
+        for start in range(0, len(keys), EAGER_KEY_BATCH)
+    ]
+
+
 class EagerPlan:
     """
     One eager load, split into the query to run and how to attach its rows.
     The split lets the sync and async paths share the SQL and the grouping,
     since only the way they run the query differs.
 
-    A None query means there is nothing to fetch, and attaching sets the
-    empty value on every parent.
+    An empty query list means there is nothing to fetch, and attaching
+    sets the empty value on every parent. The keys are split over more
+    than one query when there are more of them than EAGER_KEY_BATCH.
     """
+
+    @property
+    def query(self) -> Optional["AnyQuery"]:
+        """The first query, or None when there is nothing to fetch."""
+        return self.queries[0] if self.queries else None
 
     def __init__(
         self,
         relation_name: str,
         parent_keys: List[RowValue],
         is_many: bool,
-        query: Optional["AnyQuery"] = None,
+        queries: Optional[List["AnyQuery"]] = None,
         child_col: Optional[str] = None,
         through: bool = False,
     ) -> None:
         self.relation_name = relation_name
         self.parent_keys = parent_keys
         self.is_many = is_many
-        self.query = query
+        self.queries: List["AnyQuery"] = queries or []
         self.child_col = child_col
         self.through = through
 
@@ -786,7 +807,10 @@ def plan_eager_load(
         relation_name,
         parent_keys,
         is_many,
-        query=related_cls.query().whereIn(child_col, unique_keys),
+        queries=[
+            related_cls.query().whereIn(child_col, batch)
+            for batch in _key_batches(unique_keys)
+        ],
         child_col=child_col,
     )
 
@@ -848,7 +872,9 @@ def eager_load_relation(
     if not parents:
         return
     plan = plan_eager_load(model_class, parents, relation_name)
-    children = plan.query.run(connection) if plan.query is not None else []
+    children: List["Model"] = []
+    for query in plan.queries:
+        children.extend(cast(List["Model"], query.run(connection)))
     attach_eager_load(plan, parents, children)
 
 
@@ -908,7 +934,7 @@ def _plan_eager_load_through(
     if not unique_keys:
         return EagerPlan(relation_name, parent_keys, is_many=True)
 
-    query = (
+    queries = [
         related_cls.query()
         .select(
             f"{related_table}.*",
@@ -920,8 +946,9 @@ def _plan_eager_load_through(
             "=",
             f"{related_table}.{related_col}",
         )
-        .whereIn(f"{through_table}.{through_from_key}", unique_keys)
-    )
+        .whereIn(f"{through_table}.{through_from_key}", batch)
+        for batch in _key_batches(unique_keys)
+    ]
     return EagerPlan(
-        relation_name, parent_keys, is_many=True, query=query, through=True
+        relation_name, parent_keys, is_many=True, queries=queries, through=True
     )

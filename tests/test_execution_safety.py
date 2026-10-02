@@ -186,6 +186,27 @@ class TestGuardBlockedWithoutVerdicts(unittest.TestCase):
         self.assertEqual(error.verdicts, [])
 
 
+class TestEagerKeyBatches(unittest.TestCase):
+    def test_a_large_parent_list_splits_the_keys_over_several_queries(self):
+        from sustained.execution import EAGER_KEY_BATCH, eager_load_relation
+
+        count = EAGER_KEY_BATCH * 2 + 5
+        parents = [SafeOwner(id=i) for i in range(count)]
+        plan = plan_eager_load(SafeOwner, parents, "pets")
+        self.assertEqual(len(plan.queries), 3)
+        for query in plan.queries:
+            self.assertLessEqual(len(query.to_sql()[1]), EAGER_KEY_BATCH)
+
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        connection.execute("CREATE TABLE pets (id INTEGER, owner_id INTEGER)")
+        connection.executemany(
+            "INSERT INTO pets VALUES (?, ?)", [(i, i) for i in range(count)]
+        )
+        eager_load_relation(SafeOwner, connection, parents, "pets")
+        self.assertEqual([p.pets[0].id for p in parents], list(range(count)))
+
+
 class _CountingCursor:
     """A cursor that reports one affected row per execute."""
 

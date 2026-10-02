@@ -914,9 +914,7 @@ async def _eager_load_async(
     if not parents:
         return
     plan = plan_eager_load(model_class, parents, relation_name)
-    children = (
-        cast(List["Model"], await run_async(plan.query, adapter))
-        if plan.query is not None
-        else []
-    )
+    children: List["Model"] = []
+    for query in plan.queries:
+        children.extend(cast(List["Model"], await run_async(query, adapter)))
     attach_eager_load(plan, parents, children)
