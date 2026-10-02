@@ -266,11 +266,6 @@ def _proven_not_null(facts: Facts, table: str, column: str) -> bool:
         if tested is not None and tested.lower() == schema:
             return True
     return False
-    for expression in found.checks.values():
-        tested = not_null_column(tokenize(expression, Dialects.POSTGRES))
-        if tested is not None and tested.lower() == column.lower():
-            return True
-    return False
 
 
 def _set_not_null(facts: Facts, action: Action) -> Outcome:
