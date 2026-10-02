@@ -57,10 +57,10 @@ class GroupByClauseBuilder:
                 "(" + ", ".join(self._quote(c) for c in group) + ")"
                 for group in self._grouping_sets
             )
-            return f"GROUP BY GROUPING SETS ({groups})"
+            return self._compiler.compile_grouping_sets(groups)
         if not self._group_by_columns:
             return ""
         columns_sql = ", ".join(self._quote(c) for c in self._group_by_columns)
         if self._mode:
-            return f"GROUP BY {self._mode} ({columns_sql})"
+            return self._compiler.compile_group_by_mode(self._mode, columns_sql)
         return "GROUP BY " + columns_sql

@@ -380,6 +380,14 @@ class Compiler:
         """
         return False
 
+    def compile_group_by_mode(self, mode: str, columns_sql: str) -> str:
+        """Renders GROUP BY ROLLUP or GROUP BY CUBE over quoted columns."""
+        return f"GROUP BY {mode} ({columns_sql})"
+
+    def compile_grouping_sets(self, groups_sql: str) -> str:
+        """Renders GROUP BY GROUPING SETS over parenthesized groups."""
+        return f"GROUP BY GROUPING SETS ({groups_sql})"
+
     def parenthesized_set_members(self) -> bool:
         """
         Reports whether UNION, INTERSECT, and EXCEPT members render inside

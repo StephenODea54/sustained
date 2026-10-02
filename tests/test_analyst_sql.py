@@ -101,6 +101,21 @@ class TestGroupingModes(unittest.TestCase):
         sql = str(User.query().count().groupByGroupingSets(("a", "b"), ("a",), ()))
         self.assertTrue(sql.endswith("GROUP BY GROUPING SETS ((a, b), (a), ())"))
 
+    def test_mysql_rollup_uses_with_rollup(self):
+        # MySQL and MariaDB have no ROLLUP (...) form.
+        My = create_model("AnMyRollup", "t")
+        My.set_dialect(Dialects.MYSQL)
+        sql = str(My.query().count().groupByRollup("region", "city"))
+        self.assertTrue(sql.endswith("GROUP BY `region`, `city` WITH ROLLUP"))
+
+    def test_mysql_refuses_cube_and_grouping_sets(self):
+        My = create_model("AnMyCube", "t")
+        My.set_dialect(Dialects.MYSQL)
+        with self.assertRaises(DialectError):
+            str(My.query().count().groupByCube("a", "b"))
+        with self.assertRaises(DialectError):
+            str(My.query().count().groupByGroupingSets(("a",), ()))
+
     def test_rollup_requires_columns(self):
         with self.assertRaises(ValueError):
             User.query().groupByRollup()

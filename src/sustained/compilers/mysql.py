@@ -50,6 +50,20 @@ class MysqlCompiler(Compiler):
         # quoted span early.
         return "`{}`".format(identifier.replace("`", "``"))
 
+    def compile_group_by_mode(self, mode: str, columns_sql: str) -> str:
+        # MySQL and MariaDB spell ROLLUP as a WITH ROLLUP suffix and have
+        # no CUBE.
+        if mode != "ROLLUP":
+            raise DialectError(
+                f"The '{self._dialect.name}' dialect does not support {mode}."
+            )
+        return f"GROUP BY {columns_sql} WITH ROLLUP"
+
+    def compile_grouping_sets(self, groups_sql: str) -> str:
+        raise DialectError(
+            f"The '{self._dialect.name}' dialect does not support GROUPING SETS."
+        )
+
     def parenthesized_set_members(self) -> bool:
         return True
 
