@@ -44,6 +44,7 @@ from sustained.schema import (
 ANSI = Dialects.get_compiler(Dialects.DEFAULT)
 POSTGRES = Dialects.get_compiler(Dialects.POSTGRES)
 MYSQL = Dialects.get_compiler(Dialects.MYSQL)
+MSSQL = Dialects.get_compiler(Dialects.MSSQL)
 
 
 class Reader(Model):
@@ -176,6 +177,18 @@ class TestRendering(unittest.TestCase):
     def test_dotted_table_names_quote_per_part(self):
         step = drop_column("warehouse.readers", "bio")
         self.assertIn('"warehouse"."readers"', step.render(POSTGRES)[0])
+
+    def test_mssql_drop_column_drops_the_default_constraint_first(self):
+        step = drop_column("readers", "bio")
+        statements = step.render(MSSQL)
+        self.assertEqual(len(statements), 2)
+        self.assertIn("sys.default_constraints", statements[0])
+        self.assertIn("c.name = N'bio'", statements[0])
+        self.assertEqual(statements[1], "ALTER TABLE [readers] DROP COLUMN [bio]")
+        self.assertEqual(len(step.render(POSTGRES)), 1)
+        self.assertNotIn("default", step.signature())
+        inverse = add_column("readers", "bio", String(20)).inverse()
+        self.assertEqual(len(inverse.render(MSSQL)), 1)
 
     def test_factories_validate_names(self):
         for build in (

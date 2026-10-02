@@ -472,9 +472,12 @@ def _invert_add_column(args: _Args) -> DdlStep:
     name = args["name"]
     assert isinstance(table, str) and isinstance(name, str)
     enum_check = column.type_name == "ENUM"
-    drop: _Args = {"table": table, "name": name, "drop_enum_check": enum_check}
-    if column.default is not None:
-        drop["has_default"] = True
+    drop: _Args = {
+        "table": table,
+        "name": name,
+        "drop_enum_check": enum_check,
+        "has_default": column.default is not None,
+    }
     return DdlStep("drop_column", drop)
 
 
@@ -505,8 +508,12 @@ def _render_drop_column(args: _Args, compiler: "Compiler") -> List[str]:
                 name=constraint,
             )
         )
+    # A hand-written drop_column() step does not know whether the column
+    # has a default, so it drops the default constraint when the dialect
+    # keeps one; the statement is a no-op when none exists. The inverse of
+    # add_column() knows and records the answer.
     drops = compiler.compile_drop_column_statements(
-        table_sql, name, bool(args.get("has_default", False))
+        table_sql, name, bool(args.get("has_default", True))
     )
     statements.extend(
         _tag(statement, "drop_column_default", args["table"], name)
