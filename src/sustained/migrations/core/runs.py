@@ -348,8 +348,8 @@ def run_up(
             if unrehearsed and _destructive_in(final_run, m._compiler):
                 # The proof was waived, so the row says so. It never
                 # unlocks a later run: only 'passed' does that.
-                yield from bookkeeping.record_rehearsal(
-                    m, rehearsal_key(records, final_run), REHEARSAL_OVERRIDE
+                yield from bookkeeping.record_rehearsals(
+                    m, [rehearsal_key(records, final_run)], REHEARSAL_OVERRIDE
                 )
             return applied_now
         except Exception as error:

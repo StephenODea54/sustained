@@ -455,6 +455,26 @@ class TestRehearse(MigrationTestCase):
         self.assertIn("open transaction()", str(caught.exception))
 
 
+class TestRehearsalRowsTakeTheLock(unittest.TestCase):
+    def test_record_rehearsal_writes_under_the_migration_lock(self):
+        from sustained.migrations.core import bookkeeping
+
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        migrator = Migrator(conn, [Migration("m1", up="SELECT 1")])
+        real_scope = bookkeeping.lock_scope
+        calls = []
+
+        def counting_scope(m, body):
+            calls.append(m)
+            return (yield from real_scope(m, body))
+
+        with mock.patch.object(bookkeeping, "lock_scope", counting_scope):
+            migrator.record_rehearsal("key")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(migrator.rehearsal_outcome("key"), "passed")
+
+
 class TestRehearsalLockTimeout(unittest.TestCase):
     def test_each_dialect_sets_its_own_timeout(self):
         from sustained.migrations.core.rehearsing import lock_timeout

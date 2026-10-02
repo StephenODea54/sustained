@@ -559,7 +559,9 @@ def record_rehearsal(
             f"{REHEARSAL_OVERRIDE!r}."
         )
     yield RefuseOpenTransaction("record_rehearsal")
-    yield from record_rehearsals(m, [key], outcome)
+    # up() and rehearse() write their rows from inside their own lock and
+    # call record_rehearsals() directly, so this lock is never nested.
+    yield from lock_scope(m, record_rehearsals(m, [key], outcome))
 
 
 def record_rehearsals(
@@ -592,7 +594,7 @@ def record_scratch_rehearsal(
     if not keys:
         return None
     yield RefuseOpenTransaction("record_scratch_rehearsal")
-    yield from record_rehearsals(m, keys)
+    yield from lock_scope(m, record_rehearsals(m, keys))
     return keys[0]
 
 
