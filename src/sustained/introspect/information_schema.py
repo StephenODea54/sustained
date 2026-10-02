@@ -7,7 +7,7 @@ through it alone; SQL Server, DuckDB, and MySQL build on it.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, Generator, List, NamedTuple, Optional, Sequence, Tuple
 
 from sustained.introspect.model import (
     IntrospectedColumn,
@@ -59,6 +59,12 @@ class Catalog(NamedTuple):
         reads_default_sql: Whether the read also selects MySQL's EXTRA
             column and VERSION(), which mysql_default_sql() needs to
             write a MySQL default back as SQL.
+        checks_by_table: Whether the check read first tries to match
+            check_constraints.table_name as well as the name. MariaDB
+            keys a check name on its table, and names a column check
+            after its column, so two tables with a check on a price
+            column each have a check named price. MySQL has no such
+            column, and the read falls back to the name alone.
         reads_collation: Whether the read also selects COLLATION_NAME,
             which MySQL and SQL Server restate when they change a column.
         reads_type_params: Whether the read also selects
@@ -76,6 +82,7 @@ class Catalog(NamedTuple):
     reads_default_sql: bool = False
     reads_collation: bool = False
     reads_type_params: bool = False
+    checks_by_table: bool = False
 
 
 ANSI_CATALOG = Catalog(
@@ -96,6 +103,7 @@ MYSQL_CATALOG = ANSI_CATALOG._replace(
     comment_column="column_comment",
     reads_default_sql=True,
     reads_collation=True,
+    checks_by_table=True,
 )
 
 # Presto and Trino put the comment straight on information_schema.columns.
@@ -315,31 +323,9 @@ def _information_schema_plan(
         constraints_read = True
         break
 
-    checks: Dict[str, Dict[str, str]] = {}
-    check_names: Dict[str, Dict[str, str]] = {}
-    checks_read = False
-    if catalog.reads_checks:
-        try:
-            check_rows = yield (
-                "SELECT tc.table_name, tc.constraint_name, cc.check_clause "
-                "FROM information_schema.table_constraints tc "
-                "JOIN information_schema.check_constraints cc "
-                "ON cc.constraint_schema = tc.constraint_schema "
-                "AND cc.constraint_name = tc.constraint_name "
-                "WHERE tc.constraint_type = 'CHECK' "
-                f"AND {constraint_filter}"
-            )
-            for table, cname, clause in check_rows:
-                name = str(cname).lower()
-                expression = str(clause)
-                if _is_generated_not_null_check(name, expression):
-                    continue
-                checks.setdefault(str(table).lower(), {})[name] = expression
-                check_names.setdefault(str(table).lower(), {})[name] = str(cname)
-            checks_read = True
-        except Exception:
-            # An engine too old for the check view; degrade to no checks.
-            pass
+    checks, check_names, checks_read = yield from _check_plan(
+        catalog, constraint_filter
+    )
 
     schema = Snapshot(
         constraints_read=constraints_read,
@@ -362,6 +348,51 @@ def _information_schema_plan(
             schema=table_schemas.get(table),
         )
     return schema
+
+
+def _check_plan(catalog: Catalog, constraint_filter: str) -> Generator[
+    str,
+    List[Sequence[RowValue]],
+    Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, str]], bool],
+]:
+    """
+    Reads the check constraints of each table: the expressions and the
+    spelled names by lowercased check name, and whether a check view
+    was read.
+    """
+    checks: Dict[str, Dict[str, str]] = {}
+    check_names: Dict[str, Dict[str, str]] = {}
+    checks_read = False
+    check_joins = (
+        ["AND cc.table_name = tc.table_name "] if catalog.checks_by_table else []
+    )
+    check_joins.append("")
+    for table_join in check_joins if catalog.reads_checks else ():
+        try:
+            check_rows = yield (
+                "SELECT tc.table_name, tc.constraint_name, cc.check_clause "
+                "FROM information_schema.table_constraints tc "
+                "JOIN information_schema.check_constraints cc "
+                "ON cc.constraint_schema = tc.constraint_schema "
+                "AND cc.constraint_name = tc.constraint_name "
+                f"{table_join}"
+                "WHERE tc.constraint_type = 'CHECK' "
+                f"AND {constraint_filter}"
+            )
+        except Exception:
+            # No table_name on this check view, or an engine too old for
+            # the view; the last case degrades to no checks.
+            continue
+        for table, cname, clause in check_rows:
+            name = str(cname).lower()
+            expression = str(clause)
+            if _is_generated_not_null_check(name, expression):
+                continue
+            checks.setdefault(str(table).lower(), {})[name] = expression
+            check_names.setdefault(str(table).lower(), {})[name] = str(cname)
+        checks_read = True
+        break
+    return checks, check_names, checks_read
 
 
 def _replace_foreign_keys(schema: Snapshot, rows: Sequence[Sequence[RowValue]]) -> None:

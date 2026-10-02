@@ -399,6 +399,31 @@ class TestMysqlChecks(unittest.TestCase):
         self.assertTrue(schema.checks_read)
         self.assertEqual(schema["shows"].checks, {"ck_seats": "(`seats` > 0)"})
 
+    def test_the_check_read_matches_the_table_name_first(self):
+        # MariaDB names a column check after its column, so two tables
+        # can each hold a check of one name.
+        cursor = self.cursor(table_checks=[("shows", "seats", "`seats` > 0")])
+        schema = introspect_schema(FakeConnection(cursor), Dialects.MYSQL)
+        self.assertEqual(schema["shows"].checks, {"seats": "`seats` > 0"})
+        queries = [s for s in cursor.statements if "constraint_type = 'CHECK'" in s]
+        self.assertEqual(len(queries), 1)
+        self.assertIn("cc.table_name = tc.table_name", queries[0])
+
+    def test_the_check_read_falls_back_where_the_view_has_no_table_name(self):
+        cursor = self.cursor(table_checks=[("shows", "ck_seats", "(`seats` > 0)")])
+        execute = cursor.execute
+
+        def no_table_name(sql, params=()):
+            if "cc.table_name" in sql:
+                cursor.statements.append(sql)
+                raise RuntimeError("Unknown column 'cc.table_name'")
+            execute(sql, params)
+
+        cursor.execute = no_table_name
+        schema = introspect_schema(FakeConnection(cursor), Dialects.MYSQL)
+        self.assertTrue(schema.checks_read)
+        self.assertEqual(schema["shows"].checks, {"ck_seats": "(`seats` > 0)"})
+
     def test_a_missing_check_generates_add_constraint(self):
         model = self.model([Check("ck_seats", "seats > 0")])
         migration = autogenerate(
