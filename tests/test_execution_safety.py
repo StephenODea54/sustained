@@ -150,6 +150,19 @@ class TestSavepointCleanup(unittest.TestCase):
         self.assertEqual(str(caught.exception), "inner")
         self.assertIsInstance(caught.exception.__cause__, RuntimeError)
 
+    def test_failing_outer_rollback_keeps_the_original_error(self):
+        class BrokenRollback(RecordingConnection):
+            def rollback(self):
+                raise RuntimeError("connection lost")
+
+        conn = BrokenRollback(RecordingCursor())
+        with self.assertRaises(ValueError) as caught:
+            with transaction(conn, Dialects.POSTGRES):
+                raise ValueError("outer")
+        self.assertEqual(str(caught.exception), "outer")
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+        self.assertEqual(str(caught.exception.__cause__), "connection lost")
+
 
 class PoolModel(Model):
     tableName = "widgets"

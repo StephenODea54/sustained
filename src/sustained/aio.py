@@ -740,13 +740,19 @@ async def _transaction_on(
                     commit_sql = compiler.commit_transaction_sql()
                     if commit_sql is not None:
                         await adapter.execute(commit_sql, ())
-            except BaseException:
-                if driver_control:
-                    await adapter.rollback()
-                else:
-                    rollback_sql = compiler.rollback_transaction_sql()
-                    if rollback_sql is not None:
-                        await adapter.execute(rollback_sql, ())
+            except BaseException as error:
+                # A failed rollback, such as on a lost connection, does not
+                # replace the block's error: it keeps propagating with the
+                # rollback failure as its cause.
+                try:
+                    if driver_control:
+                        await adapter.rollback()
+                    else:
+                        rollback_sql = compiler.rollback_transaction_sql()
+                        if rollback_sql is not None:
+                            await adapter.execute(rollback_sql, ())
+                except Exception as rollback_error:
+                    raise error from rollback_error
                 raise
         finally:
             _pinned_adapter.reset(token)

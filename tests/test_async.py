@@ -612,6 +612,21 @@ class TestAsyncSavepointRelease(AsyncTestCase):
         self.assertIsInstance(caught.exception.__cause__, RuntimeError)
         self.assertEqual(str(caught.exception.__cause__), "connection lost")
 
+    async def test_a_failing_outer_rollback_keeps_the_original_error(self):
+        class BrokenRollback(FakeAdapter):
+            async def execute(self, sql, params):
+                if sql == "ROLLBACK":
+                    raise RuntimeError("connection lost")
+                return await super().execute(sql, params)
+
+        adapter = BrokenRollback()
+        with self.assertRaises(ValueError) as caught:
+            async with async_transaction(adapter):
+                raise ValueError("boom")
+        self.assertEqual(str(caught.exception), "boom")
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+        self.assertEqual(str(caught.exception.__cause__), "connection lost")
+
     async def test_a_failing_release_keeps_the_original_error(self):
         class BrokenRelease(FakeAdapter):
             async def execute(self, sql, params):
