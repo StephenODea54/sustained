@@ -108,6 +108,10 @@ def _pg_type(text: str) -> Tuple[str, Optional[Tuple[int, ...]], bool]:
         lowered = " ".join((lowered[: match.start()] + lowered[match.end() :]).split())
     if lowered.startswith("pg_catalog."):
         lowered = lowered[len("pg_catalog.") :]
+    if lowered == "float" and args and len(args) == 1:
+        # PostgreSQL makes float(1) to float(24) a real and float(25)
+        # to float(53) a double precision.
+        return ("real" if args[0] <= 24 else "double precision"), (), array
     return _TYPE_ALIASES.get(lowered, lowered), args, array
 
 

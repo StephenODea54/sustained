@@ -168,6 +168,20 @@ class TypeChangeTestCase(unittest.TestCase):
             with self.subTest(old=old, new=new):
                 self.assertEqual(self.work(old, new), (Work.REWRITE, Confidence.KNOWN))
 
+    def test_float_with_a_precision_names_real_or_double_precision(self):
+        for old, new in [
+            ("float(24)", "real"),
+            ("float(1)", "float4"),
+            ("float(25)", "double precision"),
+            ("float(53)", "float"),
+            ("float", "float8"),
+        ]:
+            with self.subTest(old=old, new=new):
+                self.assertEqual(self.work(old, new), (Work.CATALOG, Confidence.KNOWN))
+        self.assertEqual(
+            self.work("float(24)", "double precision"), (Work.REWRITE, Confidence.KNOWN)
+        )
+
     def test_an_unknown_type_is_a_likely_rewrite(self):
         self.assertEqual(self.work("text", "citext"), (Work.REWRITE, Confidence.LIKELY))
         self.assertEqual(
