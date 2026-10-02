@@ -49,8 +49,10 @@ class IntrospectedColumn(NamedTuple):
     raw for 'raw' and the expression uuid() for (uuid()).
 
     `autoincrement` is True where the catalog reports the column as an
-    identity column. Only the MySQL read sets it, from the EXTRA column,
-    because only MySQL restates a whole column to change its comment.
+    identity column. The MySQL read sets it from the EXTRA column,
+    because MySQL restates a whole column to change its comment. The
+    Postgres read sets it from is_identity, or from a nextval() default
+    for a serial column.
 
     `collation` is the collating sequence the column was declared with,
     or None when it names none. The SQLite read takes it from the stored

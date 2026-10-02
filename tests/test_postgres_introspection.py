@@ -515,6 +515,29 @@ class TestPostgresCatalogQueries(unittest.TestCase):
         self.assertIn("d.objsubid > 0", comment_sql)
         self.assertIn("d.classoid = 'pg_catalog.pg_class'::regclass", comment_sql)
 
+    def test_an_identity_column_is_autoincrement(self):
+        cursor = FakeCursor(
+            columns=[
+                column_row("users", "id", "integer", schema="public") + ("YES",),
+                column_row(
+                    "users",
+                    "seq",
+                    "integer",
+                    default="nextval('users_seq_seq'::regclass)",
+                    schema="public",
+                )
+                + ("NO",),
+                column_row("users", "email", "text", schema="public") + ("NO",),
+            ]
+        )
+        schema = self.read(cursor)
+        columns = schema["users"].columns
+        self.assertTrue(columns["id"].autoincrement)
+        self.assertTrue(columns["seq"].autoincrement)
+        self.assertFalse(columns["email"].autoincrement)
+        column_sql = cursor.statements[0]
+        self.assertIn("c.is_identity", column_sql)
+
     def test_a_comment_on_an_unknown_column_is_skipped(self):
         cursor = FakeCursor(
             columns=[column_row("users", "email", "text")],

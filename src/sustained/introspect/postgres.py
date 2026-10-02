@@ -16,6 +16,7 @@ from sustained.introspect.model import (
     SchemaPlan,
     Snapshot,
 )
+from sustained.introspect.normalize import is_sequence_default
 from sustained.introspect.scope import (
     _declared_schema,
     _is_generated_not_null_check,
@@ -82,7 +83,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     column_rows = yield (
         "SELECT c.table_name, c.column_name, c.data_type, c.udt_name, "
         "c.character_maximum_length, c.numeric_precision, c.numeric_scale, "
-        "c.is_nullable, c.column_default, c.table_schema "
+        "c.is_nullable, c.column_default, c.table_schema, c.is_identity "
         "FROM information_schema.columns c "
         "JOIN information_schema.tables t "
         "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
@@ -109,6 +110,10 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 primary_key=False,
                 default=None if default is None else str(default),
                 name=name,
+                # An identity column reports no default, and a serial
+                # column reports a nextval() default.
+                autoincrement=(len(row) > 10 and str(row[10]).upper() == "YES")
+                or is_sequence_default(default),
             )
         )
 
