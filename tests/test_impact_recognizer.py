@@ -727,3 +727,38 @@ class ClassifyDefaultTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BatchSeparatorTestCase(RecognizerTestCase):
+    """A SQL Server `GO` line separates batches and is not a statement."""
+
+    def test_trailing_go_is_dropped(self):
+        parsed = recognize("CREATE TABLE t (id int)\nGO", MSSQL)
+        self.assertEqual(parsed.kind, "create_table")
+        self.assertEqual(parsed.table, "t")
+
+    def test_go_with_a_count_lower_case_and_crlf(self):
+        parsed = recognize("\r\n  go 3  \r\nDROP TABLE t\r\ngo\r\n", MSSQL)
+        self.assertEqual(parsed.kind, "drop_table")
+
+    def test_go_before_a_semicolon_only_batch(self):
+        parsed = recognize("TRUNCATE TABLE t;\nGO\n;", MSSQL)
+        self.assertEqual(parsed.kind, "truncate")
+
+    def test_go_sharing_a_line_is_a_word(self):
+        parsed = recognize("UPDATE t SET go = 1 WHERE id = 2", MSSQL)
+        self.assertEqual(parsed.kind, "update")
+        self.assertUnknown("DROP TABLE t GO", MSSQL, table="t")
+
+    def test_two_batches_are_unknown(self):
+        parsed = self.assertUnknown("DROP TABLE a\nGO\nDROP TABLE b", MSSQL)
+        self.assertEqual(
+            parsed.options["reason"], "the text contains more than one batch"
+        )
+
+    def test_only_separators_is_empty(self):
+        parsed = self.assertUnknown("GO\nGO 2\n", MSSQL)
+        self.assertEqual(parsed.options["reason"], "the statement is empty")
+
+    def test_other_dialects_keep_go(self):
+        self.assertUnknown("DROP TABLE t\nGO", PG, table="t")

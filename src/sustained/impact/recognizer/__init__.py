@@ -92,6 +92,7 @@ from sustained.impact.recognizer.volatility import VOLATILITIES, classify_defaul
 from sustained.impact.tokens import (
     ERROR,
     IDENT,
+    NUMBER,
     OP,
     PUNCT,
     STRING,
@@ -427,6 +428,48 @@ def unknown(reason: str, table: Optional[str] = None) -> ParsedStatement:
     return ParsedStatement(UNKNOWN_KIND, table, options=frozen({"reason": reason}))
 
 
+def _on_its_own_line(sql: str, tokens: Sequence[Token], index: int) -> int:
+    """
+    The number of tokens a `GO` batch separator at `index` spans, with its
+    optional repeat count, or 0 when the word shares its line with other
+    tokens and so is not a separator.
+    """
+    token = tokens[index]
+    if index > 0:
+        previous = tokens[index - 1]
+        if "\n" not in sql[previous.start + len(previous.text) : token.start]:
+            return 0
+    end = index + 1
+    if end < len(tokens) and tokens[end].kind == NUMBER:
+        between = sql[token.start + len(token.text) : tokens[end].start]
+        if "\n" not in between:
+            end += 1
+    if end < len(tokens):
+        last = tokens[end - 1]
+        if "\n" not in sql[last.start + len(last.text) : tokens[end].start]:
+            return 0
+    return end - index
+
+
+def _batches(sql: str, tokens: List[Token]) -> List[List[Token]]:
+    """
+    The statement's tokens split at each SQL Server `GO` line, without
+    the separators and without batches that have no statement.
+    """
+    batches: List[List[Token]] = [[]]
+    index = 0
+    while index < len(tokens):
+        if tokens[index].is_word("GO"):
+            span = _on_its_own_line(sql, tokens, index)
+            if span:
+                batches.append([])
+                index += span
+                continue
+        batches[-1].append(tokens[index])
+        index += 1
+    return [b for b in batches if any(not _is_semicolon(t) for t in b)]
+
+
 def recognize(sql: str, dialect: Optional["Dialects"] = None) -> ParsedStatement:
     """
     One statement, parsed, or an unknown statement. The dialect decides
@@ -434,11 +477,18 @@ def recognize(sql: str, dialect: Optional["Dialects"] = None) -> ParsedStatement
     that differ between engines, such as SQL Server's `DROP INDEX t.ix`.
 
     A string that contains more than one statement is unknown: the analysis
-    reads one statement at a time.
+    reads one statement at a time. On SQL Server a line that reads `GO`,
+    with an optional repeat count, separates batches; the separators are
+    dropped, and a string with statements in two batches is unknown.
     """
     tokens = tokenize(sql, dialect)
     if tokens and tokens[-1].kind == ERROR:
         return unknown("the statement has a quote or comment that never closes")
+    if _named(dialect, "MSSQL"):
+        batches = _batches(sql, tokens)
+        if len(batches) > 1:
+            return unknown("the text contains more than one batch")
+        tokens = batches[0] if batches else []
     while tokens and tokens[-1].kind == PUNCT and tokens[-1].text == ";":
         tokens.pop()
     if not tokens:
