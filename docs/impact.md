@@ -536,7 +536,7 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 | `ADD COLUMN`, nullable or with a stable default | `ACCESS EXCLUSIVE` | catalog | `pg.add_column` |
 | `ADD COLUMN` with a volatile default, `serial`, identity, or a stored generated column | `ACCESS EXCLUSIVE` | rewrite | `pg.add_column.rewrite` |
 | `ADD COLUMN ... UNIQUE` or `PRIMARY KEY` | `ACCESS EXCLUSIVE` | index build | `pg.add_column.key` |
-| `ADD COLUMN ... CHECK` or `REFERENCES` | `ACCESS EXCLUSIVE`, plus `SHARE ROW EXCLUSIVE` on the referenced table | scan | `pg.add_column.checked` |
+| `ADD COLUMN ... CHECK` or `REFERENCES`, or `NOT NULL` with no default, which the server refuses on a table that has rows | `ACCESS EXCLUSIVE`, plus `SHARE ROW EXCLUSIVE` on the referenced table | scan | `pg.add_column.checked` |
 | `DROP COLUMN` | `ACCESS EXCLUSIVE` | catalog | `pg.drop_column` |
 | `ALTER COLUMN ... TYPE` | `ACCESS EXCLUSIVE` | rewrite | `pg.alter_column_type` |
 | `ALTER COLUMN ... TYPE`, binary coercible | `ACCESS EXCLUSIVE` | catalog | `pg.alter_column_type.binary_coercible` |

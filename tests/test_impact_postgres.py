@@ -118,6 +118,13 @@ class LockTableTestCase(unittest.TestCase):
             "pg.add_column",
         ),
         (
+            "ALTER TABLE t ADD COLUMN c integer NOT NULL",
+            "ACCESS EXCLUSIVE",
+            Blocks.READS_AND_WRITES,
+            Work.SCAN,
+            "pg.add_column.checked",
+        ),
+        (
             "ALTER TABLE t ADD COLUMN c timestamptz DEFAULT now()",
             "ACCESS EXCLUSIVE",
             Blocks.READS_AND_WRITES,
@@ -464,6 +471,17 @@ class LockTableTestCase(unittest.TestCase):
                 self.assertEqual(found.blocks, blocks)
                 self.assertEqual(found.work, work)
                 self.assertEqual(found.rule, rule)
+
+    def test_a_not_null_column_without_a_default_is_refused_on_rows(self):
+        statement = analyze(["ALTER TABLE t ADD COLUMN c integer NOT NULL"], PG)
+        messages = [
+            f.message
+            for f in statement.statements[0].findings
+            if f.rule == "pg.add_column.checked"
+        ]
+        self.assertEqual(len(messages), 1)
+        self.assertIn("refuses", messages[0])
+        self.assertIn("DEFAULT", messages[0])
 
 
 class RuleCatalogTestCase(unittest.TestCase):

@@ -43,6 +43,7 @@ ADD_COLUMN_CHECKED = Rule(
     (
         "ALTER TABLE t ADD COLUMN d integer CHECK (d > 0)",
         "ALTER TABLE t ADD COLUMN d integer REFERENCES r (id)",
+        "ALTER TABLE t ADD COLUMN d integer NOT NULL",
     ),
 )
 DROP_COLUMN = Rule("pg.drop_column", _ALTER_TABLE, ("ALTER TABLE t DROP COLUMN c",))

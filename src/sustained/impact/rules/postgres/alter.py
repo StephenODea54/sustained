@@ -156,6 +156,21 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
         effects.append(
             Effect(ADD_COLUMN_KEY, table, ACCESS_EXCLUSIVE, Work.INDEX_BUILD)
         )
+    elif options.get("not_null") and options.get("default") is None:
+        # With no default the new column is NULL in every row, so the
+        # server scans the table and refuses the statement at the first row.
+        effects.append(
+            Effect(
+                ADD_COLUMN_CHECKED,
+                table,
+                ACCESS_EXCLUSIVE,
+                Work.SCAN,
+                message=f"the server refuses a NOT NULL column with no DEFAULT "
+                f"unless {table} has no rows, which it scans for while reads and "
+                "writes wait; give the column a DEFAULT, or add it NULL, backfill "
+                "it, then SET NOT NULL",
+            )
+        )
     elif options.get("check") or options.get("references"):
         effects.append(Effect(ADD_COLUMN_CHECKED, table, ACCESS_EXCLUSIVE, Work.SCAN))
     else:
