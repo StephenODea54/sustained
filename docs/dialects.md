@@ -175,9 +175,11 @@ counts = (Event.query()
 
 Athena runs a Trino-based engine over files in S3, so the dialect inherits Presto's query behavior and adds Athena's storage model: `?` placeholders, `MERGE` upserts on Iceberg tables, Athena type spellings (`INT`, `STRING`, `DOUBLE`, `DECIMAL`), and `TableOptions` for `PARTITIONED BY`, `LOCATION`, and `TBLPROPERTIES` clauses. `String(n)` and `Text()` both render `STRING`, because Iceberg tables reject `VARCHAR`. Sustained never calls `boto3` itself, because `pyathena` wraps the `boto3` query lifecycle behind the DB-API cursor.
 
+The dialect targets Athena engine version 3, the Trino-based engine, which the [support policy](./support) sets as the floor. Engine version 2 is based on Presto 0.217, and Sustained does not test the SQL it renders, such as `OFFSET` and `MERGE`, against that engine.
+
 Set `pyathena.paramstyle = "qmark"` before you run a parameterized query, because Sustained passes parameters as a tuple and the default `pyformat` style in `pyathena` accepts only a dict. With `qmark`, `pyathena` 3 or later sends the tuple as native Athena execution parameters.
 
-Athena's API only takes execution parameters as strings, so `run()` converts each value: numbers through `str()`, booleans to `true`/`false`. Athena infers the value's type from the position of its placeholder, so a converted number still compares against a numeric column. `None` becomes a literal `NULL` in the statement. Binary values raise `DialectError`. The conversion runs inside `run()` and the migrator; if you execute `to_sql()` output yourself, pass it through `compiler.prepare_execution(sql, params)` first.
+Athena's API only takes execution parameters as strings, and the service puts each string into the statement as written. So `run()` sends each value as its SQL literal: a string in single quotes with each inner quote doubled, a number bare, a boolean as `TRUE` or `FALSE`, a date as `DATE '...'`, and a datetime as `TIMESTAMP '...'`. `None` becomes a literal `NULL` in the statement. Binary values raise `DialectError`. The conversion runs inside `run()` and the migrator; if you execute `to_sql()` output yourself, pass it through `compiler.prepare_execution(sql, params)` first.
 
 ```python
 import pyathena
