@@ -14,6 +14,7 @@ from typing import (
 )
 
 from ..dialects import Dialects
+from ..expressions import refuse_null_member
 from ..rendering import Renderable, RenderContext, render_nested, render_part
 from ..types import (
     ColumnReference,
@@ -364,6 +365,8 @@ class ConditionalClauseBuilder(ABC):
         if isinstance(vals, list):
             if not vals:
                 raise ValueError("IN/NOT IN requires a non-empty list of values.")
+            if op_override:
+                refuse_null_member(vals)
             value_list = list(vals)
 
             def render(ctx: RenderContext) -> str:

@@ -142,6 +142,8 @@ Show.query().where('sold_out', '=', True).andWhereNotIn('venue_id', [4, 5])
 
 An empty list raises `ValueError`, because `IN ()` is a syntax error on most engines and an empty list usually comes from a filter that got no values rather than a query meant to match nothing.
 
+A `None` in a `NOT IN` list also raises `ValueError`. The member renders as `NULL`, and `x NOT IN (1, NULL)` is never true, so the query would return no rows. To keep the rows where the column is `NULL`, take `None` out of the list and add `orWhereNull()`. In an `IN` list, `None` matches no row, and the other members match as usual. A `NOT IN` subquery that returns a `NULL` also matches no rows, and Sustained cannot detect this before the query runs.
+
 The values can be another query instead of a list:
 
 ```python

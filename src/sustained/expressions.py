@@ -11,6 +11,21 @@ if TYPE_CHECKING:
     from .types import AnyQuery, CaseResult
 
 
+def refuse_null_member(values: "Sequence[object]") -> None:
+    """
+    Raises ValueError when a NOT IN list has a None member. The member
+    renders as NULL, and `x NOT IN (1, NULL)` is NULL for every row
+    rather than true, so the filter would match no rows.
+    """
+    if any(value is None for value in values):
+        raise ValueError(
+            "NOT IN with a None member matches no rows, because "
+            "x NOT IN (..., NULL) is never true. Remove None from the list. "
+            "To match rows where the column is NULL as well, add "
+            "orWhereNull() or col(...).is_null()."
+        )
+
+
 class Predicate:
     """
     A composable SQL condition. Build predicates from ColumnExpr comparisons
@@ -161,6 +176,8 @@ class ColumnExpr:
         if not values:
             raise ValueError("IN/NOT IN requires a non-empty list of values.")
         items = list(values)
+        if operator == "NOT IN":
+            refuse_null_member(items)
 
         def render(ctx: "RenderContext") -> str:
             rendered = ", ".join(ctx.compiler.format_operand(v, ctx) for v in items)

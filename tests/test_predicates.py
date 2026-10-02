@@ -81,6 +81,15 @@ class TestColumnExprMethods(unittest.TestCase):
         with self.assertRaises(ValueError):
             PredUser.c.id.in_([])
 
+    def test_not_in_with_none_rejected(self):
+        with self.assertRaisesRegex(ValueError, "matches no rows"):
+            PredUser.c.id.not_in([1, None])
+
+    def test_in_with_none_renders(self):
+        sql, params = PredUser.query().where(PredUser.c.id.in_([1, None])).to_sql()
+        self.assertEqual(sql, "SELECT * FROM users WHERE users.id IN (?, ?)")
+        self.assertEqual(params, (1, None))
+
     def test_string_in_rejected(self):
         for value in ("active", b"active"):
             with self.subTest(value=value):

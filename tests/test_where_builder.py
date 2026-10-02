@@ -86,6 +86,23 @@ class TestWhereBuilder(unittest.TestCase):
         query = User.query().whereNotIn("id", [1, 2, 3])
         self.assertEqual(str(query), "SELECT * FROM users WHERE id NOT IN (1, 2, 3)")
 
+    def test_where_not_in_with_none_rejected(self):
+        class User(Model):
+            tableName = "users"
+
+        for method in ("whereNotIn", "orWhereNotIn", "andWhereNotIn"):
+            with self.subTest(method=method):
+                with self.assertRaisesRegex(ValueError, "matches no rows"):
+                    query = User.query().where("active", "=", True)
+                    getattr(query, method)("id", [1, None])
+
+    def test_where_in_with_none_renders(self):
+        class User(Model):
+            tableName = "users"
+
+        query = User.query().whereIn("id", [1, None])
+        self.assertEqual(str(query), "SELECT * FROM users WHERE id IN (1, NULL)")
+
     def test_where_in_with_subquery(self):
         class User(Model):
             tableName = "users"

@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- `whereNotIn()`, its `or` and `and` forms, and `col(...).not_in()` raise `ValueError` for a list with a `None` member. Such a list renders `x NOT IN (..., NULL)`, which is never true, so the query returned no rows.
 - On SQL Server, an `UPDATE` or `DELETE` whose subquery defines a CTE renders one `WITH` clause in front of the statement, where the subquery rendered its own `WITH` inside parentheses and the server refused it. Other dialects keep the `WITH` inside the subquery.
 - Athena execution parameters travel as SQL literals: a string is quoted with its inner quotes doubled, a date renders as `DATE '...'`, a datetime as `TIMESTAMP '...'`, and a boolean as `TRUE` or `FALSE`, where a string or date was sent bare and the engine read it as an identifier or refused it.
 - On SQL Server, the impact analysis drops `GO` batch separators before it reads a statement, so a statement that ends in `GO` is recognized instead of reported as unknown. Text with more than one batch still reads as unknown.
