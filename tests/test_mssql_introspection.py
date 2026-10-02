@@ -7,9 +7,14 @@ import unittest
 from unittest import mock
 
 from sustained import create_model
-from sustained.autogenerate import autogenerate
+from sustained.autogenerate import autogenerate, diff_schema
 from sustained.dialects import Dialects
-from sustained.introspect import MSSQL_CATALOG, _information_schema_plan, _sized_type
+from sustained.introspect import (
+    MSSQL_CATALOG,
+    _information_schema_plan,
+    _mssql_plan,
+    _sized_type,
+)
 from sustained.schema import Integer, Numeric, String, Text
 
 
@@ -159,3 +164,77 @@ class TestTheDiff(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def read_plan(column_rows, comment_rows=None):
+    """
+    Runs the whole MSSQL plan. The column read gets `column_rows`, the
+    extended properties read gets `comment_rows`, or raises when that is
+    None, and every other query gets no rows. Returns the queries asked
+    and the snapshot.
+    """
+    plan = _mssql_plan()
+    queries = [next(plan)]
+    try:
+        rows = column_rows
+        while True:
+            query = plan.send(rows)
+            queries.append(query)
+            if "sys.extended_properties" in query:
+                if comment_rows is None:
+                    query = plan.throw(RuntimeError("no such view"))
+                    queries.append(query)
+                    rows = []
+                else:
+                    rows = comment_rows
+            else:
+                rows = []
+    except StopIteration as stop:
+        return queries, stop.value
+
+
+class TestColumnComments(unittest.TestCase):
+    def test_the_read_joins_the_ms_description_property_to_the_column(self):
+        queries, _ = read_plan([])
+        query = next(q for q in queries if "sys.extended_properties" in q)
+        self.assertIn("ep.name = 'MS_Description'", query)
+        self.assertIn("ep.class = 1", query)
+        self.assertIn("t.object_id = ep.major_id", query)
+        self.assertIn("c.column_id = ep.minor_id", query)
+        self.assertIn("ep.minor_id > 0", query)
+
+    def test_a_comment_goes_on_its_column(self):
+        _, snapshot = read_plan(
+            [row("name", "nvarchar", 100), row("code", "char", 3)],
+            [("t", "name", "The display name"), ("other", "x", "unknown table")],
+        )
+        self.assertTrue(snapshot.comments_read)
+        self.assertEqual(snapshot["t"].columns["name"].comment, "The display name")
+        self.assertIsNone(snapshot["t"].columns["code"].comment)
+
+    def test_an_empty_property_reads_as_no_comment(self):
+        _, snapshot = read_plan(
+            [row("name", "nvarchar", 100)], [("t", "name", ""), ("t", "gone", "x")]
+        )
+        self.assertTrue(snapshot.comments_read)
+        self.assertIsNone(snapshot["t"].columns["name"].comment)
+
+    def test_a_missing_view_leaves_comments_unread(self):
+        _, snapshot = read_plan([row("name", "nvarchar", 100)], None)
+        self.assertFalse(snapshot.comments_read)
+        self.assertIsNone(snapshot["t"].columns["name"].comment)
+
+    def test_a_changed_comment_is_reported_as_drift(self):
+        _, snapshot = read_plan(
+            [row("id", "int", None, 10, 0), row("name", "nvarchar", 100)],
+            [("t", "name", "old words")],
+        )
+        snapshot["t"] = snapshot["t"]._replace(primary_key=("id",))
+        built = model(name=String(100, comment="new words"))
+        with mock.patch(
+            "sustained.autogenerate.introspect_schema", return_value=snapshot
+        ):
+            diff = diff_schema(None, [built], dialect=Dialects.MSSQL)
+        self.assertEqual(
+            diff.changed_comments, [("t", "name", "old words", "new words")]
+        )

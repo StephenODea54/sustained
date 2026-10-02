@@ -278,9 +278,9 @@ class Snapshot(Dict[str, IntrospectedTable]):
         # that a constraint is absent.
         self.constraints_read = constraints_read
         self.checks_read = checks_read
-        # Whether column comments were read. SQLite and MSSQL store none,
-        # and a degraded read leaves the flag False, so a diff must not
-        # take an absent comment as proof the database holds none.
+        # Whether column comments were read. SQLite stores none, and a
+        # degraded read leaves the flag False, so a diff must not take an
+        # absent comment as proof that the database has none.
         self.comments_read = comments_read
         # The names of the views in the schema, read on SQLite only. A
         # table rebuild renames its copy into place, and SQLite refuses

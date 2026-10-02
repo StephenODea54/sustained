@@ -1,6 +1,7 @@
 """
 The SQL Server read: information_schema, plus sys.indexes for plain
-indexes and sys.foreign_keys for where each key points.
+indexes, sys.foreign_keys for where each key points, and
+sys.extended_properties for column comments.
 """
 
 from __future__ import annotations
@@ -76,5 +77,38 @@ def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         _replace_foreign_keys(schema, fk_rows)
     except Exception:
         # No sys views to read; keep the keys without their targets.
+        pass
+    try:
+        # SQL Server keeps a column comment as the MS_Description extended
+        # property of the column: class 1 is an object or column, major_id
+        # is the table, and minor_id is the column_id. Without this read
+        # a comment changed on the model never reports as drift.
+        comment_rows = yield (
+            "SELECT t.name, c.name, CAST(ep.value AS nvarchar(max)) "
+            "FROM sys.extended_properties ep "
+            "JOIN sys.tables t ON t.object_id = ep.major_id "
+            "JOIN sys.columns c ON c.object_id = ep.major_id "
+            "AND c.column_id = ep.minor_id "
+            "WHERE ep.class = 1 AND ep.minor_id > 0 "
+            "AND ep.name = 'MS_Description' "
+            f"AND {index_filter}"
+        )
+        comments: Dict[str, Dict[str, str]] = {}
+        for table, column, value in comment_rows:
+            if value in (None, ""):
+                continue
+            comments.setdefault(str(table).lower(), {})[str(column).lower()] = str(
+                value
+            )
+        for table, by_column in comments.items():
+            if table not in schema:
+                continue
+            table_columns = schema[table].columns
+            for name, comment in by_column.items():
+                if name in table_columns:
+                    table_columns[name] = table_columns[name]._replace(comment=comment)
+        schema.comments_read = True
+    except Exception:
+        # No sys.extended_properties to read; degrade to no comments.
         pass
     return schema

@@ -12,6 +12,7 @@
 - Autogenerate reports a difference in an index's partial predicate, key part direction, or prefix length as drift when the introspection read reports those details on `IntrospectedIndex`.
 - A PostgreSQL type change on a column that has a default drops the default before `ALTER COLUMN ... TYPE` and sets the model's default after it, where the server refused the change when the stored default did not cast to the new type. A column without a default generates the same statements as before.
 - The default comparison in the schema diff keeps the case of a string literal, so a model default of `'YES'` on a column whose database default is `'yes'` is reported as drift. Keywords such as `NULL`, `TRUE`, and `CURRENT_TIMESTAMP` still compare without regard to case.
+- The SQL Server schema read reads each column's `MS_Description` extended property as its comment, so a comment that differs between a model and the database is reported as drift. SQL Server has no statement to set a column comment, so the diff records the difference as a note and does not generate a migration for it.
 
 ## 2.26.0
 

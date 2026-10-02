@@ -397,13 +397,22 @@ class TestPrestoCommentRead(unittest.TestCase):
         self.assertIsNone(schema["users"].columns["email"].comment)
         self.assertFalse(schema.comments_read)
 
-    def test_mssql_asks_for_no_comments(self):
+    def test_mssql_reads_comments_from_extended_properties(self):
         cursor = FakeCursor(
-            {"information_schema.columns": [("users", "id", "int", "NO", None)]}
+            {
+                "information_schema.columns": [("users", "id", "int", "NO", None)],
+                "sys.extended_properties": [("users", "id", "The key")],
+            }
         )
         schema = introspect_schema(FakeConnection(cursor), Dialects.MSSQL)
-        self.assertFalse(schema.comments_read)
-        self.assertFalse(any("comment" in s.lower() for s in cursor.statements))
+        self.assertTrue(schema.comments_read)
+        self.assertEqual(schema["users"].columns["id"].comment, "The key")
+        self.assertFalse(
+            any(
+                "information_schema.columns" in s and "comment" in s.lower()
+                for s in cursor.statements
+            )
+        )
 
 
 class TestAthenaCommentDrift(unittest.TestCase):
