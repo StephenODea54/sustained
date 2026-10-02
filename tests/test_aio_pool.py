@@ -320,6 +320,12 @@ class TestPoolRunsQueries(unittest.IsolatedAsyncioTestCase):
         rows = await Widget.query().select("name").arun()
         self.assertEqual([r.name for r in rows], ["hinge"])
 
+    async def test_ato_dicts_runs_through_the_pool(self):
+        await Widget.query().insert({"id": 1, "name": "hinge"}).arun()
+        rows = await Widget.query().select("name").ato_dicts()
+        self.assertEqual(rows, [{"name": "hinge"}])
+        self.assertEqual(len(self.pool._idle), self.pool.size)
+
     async def test_a_transaction_holds_one_adapter(self):
         from sustained.aio import async_transaction
 

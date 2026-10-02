@@ -42,7 +42,12 @@ from typing import (
     cast,
 )
 
-from sustained.execution import checked_columns, enter_autocommit, notify_statement
+from sustained.execution import (
+    checked_columns,
+    enter_autocommit,
+    notify_statement,
+    total_row_count,
+)
 from sustained.types import (
     ColumnDescription,
     Connection,
@@ -826,10 +831,10 @@ async def _run_query_on(
                 sql, [values for _, values in prepared]
             )
         else:
-            total = 0
+            counts = []
             for row_sql, row_values in prepared:
-                total += await resolved.execute(row_sql, row_values)
-            result = total
+                counts.append(await resolved.execute(row_sql, row_values))
+            result = total_row_count(counts)
         # The listener sees every row's values, flattened in the order they
         # were sent, so an audit of a batch insert holds the same
         # information as an audit of single-row inserts.

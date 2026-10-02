@@ -186,5 +186,66 @@ class TestGuardBlockedWithoutVerdicts(unittest.TestCase):
         self.assertEqual(error.verdicts, [])
 
 
+class _CountingCursor:
+    """A cursor that reports one affected row per execute."""
+
+    description = None
+
+    def __init__(self):
+        self.rowcount = -1
+        self.statements = []
+
+    def execute(self, sql, params=()):
+        self.statements.append((sql, params))
+        self.rowcount = 1
+
+    def executemany(self, sql, seq):
+        self.statements.append((sql, list(seq)))
+        self.rowcount = len(seq)
+
+    def close(self):
+        pass
+
+
+class _CountingConnection:
+    def __init__(self):
+        self.cursors = []
+
+    def cursor(self):
+        cursor = _CountingCursor()
+        self.cursors.append(cursor)
+        return cursor
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+class AthenaRow(Model):
+    tableName = "athena_rows"
+
+
+AthenaRow.set_dialect(Dialects.ATHENA)
+
+
+class TestPerRowInsertCount(unittest.TestCase):
+    def test_an_insert_split_into_one_execute_per_row_counts_every_row(self):
+        connection = _CountingConnection()
+        query = AthenaRow.query().insert(
+            [{"id": 1, "name": None}, {"id": 2, "name": "b"}, {"id": 3, "name": "c"}]
+        )
+
+        self.assertEqual(query.run(connection), 3)
+        self.assertEqual(len(connection.cursors[0].statements), 3)
+
+    def test_an_unknown_count_on_any_row_makes_the_total_unknown(self):
+        from sustained.execution import total_row_count
+
+        self.assertEqual(total_row_count([1, -1, 1]), -1)
+        self.assertEqual(total_row_count([1, 2]), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

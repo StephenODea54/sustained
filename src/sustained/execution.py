@@ -555,6 +555,17 @@ def transaction(
         cursor.close()
 
 
+def total_row_count(counts: Sequence[int]) -> int:
+    """
+    Adds up the row counts of an insert sent one row per statement. A
+    driver that reports -1 for a statement does not know its count, so
+    the total is -1 too rather than a negative sum.
+    """
+    if any(count < 0 for count in counts):
+        return -1
+    return sum(counts)
+
+
 def checked_columns(columns: Sequence[str]) -> List[str]:
     """
     Returns the result set's column names and refuses a repeated one.

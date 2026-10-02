@@ -1395,6 +1395,7 @@ class QueryBuilder:
             fetch_models,
             in_transaction,
             notify_statement,
+            total_row_count,
         )
 
         use_executemany = (
@@ -1407,6 +1408,7 @@ class QueryBuilder:
             and not self._has_expression_values()
         )
         started = time.perf_counter()
+        per_row_count: Optional[int] = None
         if use_executemany:
             # Render a single-row template and bind each row's values, so
             # large inserts go through the driver's batch path.
@@ -1422,8 +1424,13 @@ class QueryBuilder:
             if all(row_sql == sql for row_sql, _ in prepared):
                 cursor.executemany(sql, [values for _, values in prepared])
             else:
+                # The cursor reports the count of its last execute only,
+                # so the per-row counts are added up here, as arun() does.
+                counts = []
                 for row_sql, row_values in prepared:
                     cursor.execute(row_sql, row_values)
+                    counts.append(int(cursor.rowcount))
+                per_row_count = total_row_count(counts)
             # The listener sees every row's values, flattened in the
             # order they were sent, so an audit of a batch insert holds
             # the same information as an audit of single-row inserts.
@@ -1446,7 +1453,7 @@ class QueryBuilder:
             columns = checked_columns([desc[0] for desc in cursor.description])
             result: WriteResult = [dict(zip(columns, row)) for row in cursor.fetchall()]
         else:
-            result = cursor.rowcount
+            result = cursor.rowcount if per_row_count is None else per_row_count
         # Inside a transaction() context the context manager owns the
         # commit; committing here would break atomicity.
         if not in_transaction(conn) and hasattr(conn, "commit"):
@@ -1496,10 +1503,12 @@ class QueryBuilder:
 
         if self._stmt_type != "select":
             raise ValueError("Only SELECT queries return result sets.")
-        resolved = resolve_adapter(adapter, self._model_class)
         sql, params = self._compiler.prepare_execution(*self.to_sql())
-        started = time.perf_counter()
-        columns, rows = await resolved.fetch(sql, params)
+        # A pool runs no statement itself, so the fetch goes to the
+        # adapter its scope() checks out.
+        async with resolve_adapter(adapter, self._model_class).scope() as resolved:
+            started = time.perf_counter()
+            columns, rows = await resolved.fetch(sql, params)
         notify_statement(sql, params, time.perf_counter() - started)
         names = checked_columns(columns)
         return [dict(zip(names, row)) for row in rows]
