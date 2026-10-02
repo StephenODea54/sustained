@@ -49,7 +49,7 @@ from sustained.migrations import Migration
 # A statement ends at a semicolon that ends its line. A trailing '--'
 # comment after the semicolon is part of that line, so it does not glue
 # the next statement onto this one.
-_STATEMENT_END_RE = re.compile(r";[ \t]*(?:--[^\n]*)?\n")
+_STATEMENT_END_RE = re.compile(r";[ \t]*(?:--[^\n]*)?\r?\n")
 
 # A Postgres dollar quote opens with $$ or $tag$ and closes with the same
 # text.

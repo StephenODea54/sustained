@@ -24,6 +24,12 @@ class TestSplitSqlStatements(unittest.TestCase):
             ["CREATE TABLE a (x INTEGER)", "CREATE TABLE b (y INTEGER)"],
         )
 
+    def test_splits_on_crlf_line_endings(self):
+        text = "SELECT 1;\r\nSELECT 2; -- two\r\nSELECT 3;\r\n"
+        self.assertEqual(
+            split_sql_statements(text), ["SELECT 1", "SELECT 2", "SELECT 3"]
+        )
+
     def test_final_semicolon_is_optional(self):
         self.assertEqual(
             split_sql_statements("SELECT 1;\nSELECT 2"),
