@@ -194,7 +194,7 @@ def _sqlite_quote(name: str) -> str:
 def _sqlite_plan() -> SchemaPlan:
     rows = yield (
         "SELECT type, name, tbl_name, sql FROM sqlite_master "
-        "WHERE type IN ('table', 'trigger', 'view') "
+        "WHERE type IN ('table', 'trigger', 'view', 'index') "
         # LIKE takes an unescaped _ as any one character, which would
         # also leave out a table of the user's such as sqlites.
         "AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'"
@@ -204,6 +204,9 @@ def _sqlite_plan() -> SchemaPlan:
     for kind, _, table_name, sql in rows:
         if kind == "trigger" and sql:
             triggers.setdefault(str(table_name).lower(), []).append(str(sql))
+    index_sql = {
+        str(row[1]).lower(): str(row[3]) for row in rows if row[0] == "index" and row[3]
+    }
     schema = Snapshot(
         constraints_read=True,
         checks_read=True,
@@ -268,8 +271,13 @@ def _sqlite_plan() -> SchemaPlan:
                 # out of the schema rather than crashing the read.
                 continue
             index_columns = tuple(name.lower() for name in names)
+            partial = len(row) > 4 and bool(row[4])
             indexes[index_name.lower()] = IntrospectedIndex(
-                index_columns, unique, constraint=origin == "u", name=index_name
+                index_columns,
+                unique,
+                constraint=origin == "u",
+                name=index_name,
+                sql=index_sql.get(index_name.lower()) if partial else None,
             )
 
         schema[table.lower()] = IntrospectedTable(

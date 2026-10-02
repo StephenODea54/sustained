@@ -106,6 +106,10 @@ class IntrospectedIndex(NamedTuple):
     before an index of each partition is attached to it. The server
     does not use an invalid index for queries, and a unique one enforces
     nothing on the rows it does not cover. It is True everywhere else.
+
+    `sql` is the CREATE INDEX statement the SQLite catalog stores for a
+    partial index. A table rebuild runs it to recreate the index with its
+    WHERE clause. It is None everywhere else.
     """
 
     columns: Tuple[str, ...]
@@ -113,6 +117,7 @@ class IntrospectedIndex(NamedTuple):
     constraint: bool = False
     name: Optional[str] = None
     valid: bool = True
+    sql: Optional[str] = None
 
 
 class IntrospectedForeignKey(NamedTuple):

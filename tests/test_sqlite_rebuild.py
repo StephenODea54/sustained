@@ -98,6 +98,21 @@ class TestRebuildWithDrops(RebuildTestCase):
         self.apply(migration)
         self.assertEqual(self.indexes(), ["ix_rb_code"])
 
+    def test_without_drops_an_undeclared_partial_index_keeps_its_where(self):
+        self.conn.execute(
+            "CREATE UNIQUE INDEX ix_rb_code ON rb_items (code) WHERE note IS NOT NULL"
+        )
+        model = model_of(
+            {"id": Integer(primary_key=True), "code": String(10), "note": Text()}
+        )
+        migration = autogenerate(self.conn, [model], id="m", ignore_undeclared=True)
+        self.apply(migration)
+        (sql,) = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'ix_rb_code'"
+        ).fetchone()
+        self.assertIn("WHERE note IS NOT NULL", sql)
+        self.conn.execute("INSERT INTO rb_items VALUES (2, 7, NULL)")
+
 
 class TestRebuildTightensToNotNull(RebuildTestCase):
     def setUp(self):

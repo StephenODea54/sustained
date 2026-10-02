@@ -358,13 +358,16 @@ def _undeclared_index_sql(
 ) -> List[str]:
     """
     CREATE INDEX statements for the table's indexes that the model does not
-    declare, so a rebuild does not quietly discard them. SQLite's automatic
+    declare, so a rebuild does not quietly discard them. A partial index
+    comes back from the statement the catalog stores, with its WHERE
+    clause. SQLite's automatic
     indexes are skipped: the column constraints that made them recreate
     them.
     """
     declared_indexes = {i.name.lower() for i in model.indexes or []}
     return [
-        compiler.compile_create_index(
+        index.sql
+        or compiler.compile_create_index(
             name, table_sql, list(index.columns), index.unique
         )
         for name, index in actual_table.indexes.items()
