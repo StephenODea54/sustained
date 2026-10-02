@@ -560,7 +560,7 @@ The rules follow the PostgreSQL documentation for 12 and later. Each rule id lin
 | `DETACH PARTITION` | `ACCESS EXCLUSIVE` on both, the partition's partitions, and the parent's DEFAULT partition | catalog | `pg.detach_partition` |
 | `DETACH PARTITION ... CONCURRENTLY` | `SHARE UPDATE EXCLUSIVE` on both | catalog | `pg.detach_partition.concurrently` |
 | `SET TABLESPACE`, `SET LOGGED`, `SET UNLOGGED` | `ACCESS EXCLUSIVE` | rewrite, or catalog on a partitioned table, which has no file | `pg.table_rewrite` |
-| `SET SCHEMA`, `OWNER TO`, row level security, other storage parameters | `ACCESS EXCLUSIVE` | catalog | `pg.alter_table.catalog` |
+| `SET SCHEMA`, `OWNER TO`, `REPLICA IDENTITY`, row level security, other storage parameters | `ACCESS EXCLUSIVE` | catalog | `pg.alter_table.catalog` |
 | `SET (fillfactor = ...)` and the other parameters that take the weaker lock | `SHARE UPDATE EXCLUSIVE` | catalog | `pg.set_parameters` |
 | `ENABLE TRIGGER`, `DISABLE TRIGGER` | `SHARE ROW EXCLUSIVE` | catalog | `pg.alter_trigger` |
 | `CREATE INDEX` | `SHARE` | index build | `pg.create_index` |

@@ -173,6 +173,7 @@ ACTION_KINDS = frozenset(
         "set_schema",
         "set_parameters",
         "owner_to",
+        "replica_identity",
         "enable_trigger",
         "disable_trigger",
         "row_security",

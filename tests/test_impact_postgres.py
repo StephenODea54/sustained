@@ -118,6 +118,20 @@ class LockTableTestCase(unittest.TestCase):
             "pg.add_column",
         ),
         (
+            "ALTER TABLE t REPLICA IDENTITY FULL",
+            "ACCESS EXCLUSIVE",
+            Blocks.READS_AND_WRITES,
+            Work.CATALOG,
+            "pg.alter_table.catalog",
+        ),
+        (
+            "ALTER TABLE t REPLICA IDENTITY USING INDEX ix",
+            "ACCESS EXCLUSIVE",
+            Blocks.READS_AND_WRITES,
+            Work.CATALOG,
+            "pg.alter_table.catalog",
+        ),
+        (
             "ALTER TABLE t ADD COLUMN c integer NOT NULL",
             "ACCESS EXCLUSIVE",
             Blocks.READS_AND_WRITES,

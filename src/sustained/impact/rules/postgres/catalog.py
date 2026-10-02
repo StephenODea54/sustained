@@ -213,6 +213,7 @@ TABLE_CATALOG = Rule(
         "ALTER TABLE t SET SCHEMA s",
         "ALTER TABLE t OWNER TO CURRENT_USER",
         "ALTER TABLE t ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE t REPLICA IDENTITY FULL",
         "ALTER TABLE t SET (autovacuum_enabled = false, user_catalog_table = true)",
     ),
 )

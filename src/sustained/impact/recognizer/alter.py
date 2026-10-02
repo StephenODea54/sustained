@@ -390,6 +390,17 @@ class AlterTable(Definitions):
         self.expect("TO")
         return Action("owner_to", None, frozen({"name": self.name()}))
 
+    def action_replica(self) -> Action:
+        """
+        PostgreSQL's `REPLICA IDENTITY {DEFAULT | FULL | NOTHING | USING
+        INDEX name}`.
+        """
+        self.expect("IDENTITY")
+        if self.accept("USING", "INDEX"):
+            return Action("replica_identity", None, frozen({"index": self.name()}))
+        mode = self.value()
+        return Action("replica_identity", None, frozen({"mode": mode}))
+
     def action_enable(self) -> Action:
         return self.toggle("enable")
 
@@ -478,6 +489,7 @@ _ACTIONS: Dict[str, _ActionHandler] = {
     "DETACH": AlterTable.action_detach,
     "SET": AlterTable.action_set,
     "OWNER": AlterTable.action_owner,
+    "REPLICA": AlterTable.action_replica,
     "ENABLE": AlterTable.action_enable,
     "DISABLE": AlterTable.action_disable,
     "ENGINE": AlterTable.action_engine,
