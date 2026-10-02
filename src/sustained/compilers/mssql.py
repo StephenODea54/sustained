@@ -37,6 +37,10 @@ class MssqlCompiler(Compiler):
     def compile_top(self, value: int) -> str:
         return f"TOP {value}"
 
+    def with_leads_insert(self) -> bool:
+        # T-SQL refuses INSERT INTO t WITH ... SELECT.
+        return True
+
     def parenthesized_set_members(self) -> bool:
         return True
 

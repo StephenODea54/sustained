@@ -559,31 +559,42 @@ class QueryBuilder:
         finally:
             ctx.hoisting = hoisting
 
+    def _render_with_clause(self, ctx: RenderContext) -> str:
+        """
+        Renders the one WITH clause that defines every CTE the statement
+        reaches, or '' when it reaches none. The caller sets ctx.hoisting,
+        so the subqueries inside render without their own WITH.
+        """
+        collected = self._collect_ctes()
+        if not collected:
+            return ""
+        unique_ctes: Dict[str, "QueryBuilder"] = {}
+        any_recursive = False
+        for alias, subquery, recursive in collected:
+            any_recursive = any_recursive or recursive
+            existing = unique_ctes.get(alias)
+            if existing is not None:
+                if existing is subquery or str(existing) == str(subquery):
+                    continue
+                raise ValueError(
+                    f"Duplicate CTE alias '{alias}' refers to different subqueries."
+                )
+            unique_ctes[alias] = subquery
+        cte_strs = [
+            f"{self._compiler.quote_alias(alias)} AS ({subquery._render_sql(ctx, include_ctes=False)})"
+            for alias, subquery in unique_ctes.items()
+        ]
+        with_keyword = self._compiler.compile_with_keyword(any_recursive)
+        return f"{with_keyword} " + ", ".join(cte_strs)
+
     def _render_select_parts(self, ctx: RenderContext, include_ctes: bool) -> str:
         """Renders the SELECT statement body."""
         query_parts = []
 
         if include_ctes:
-            collected = self._collect_ctes()
-            if collected:
-                unique_ctes: Dict[str, "QueryBuilder"] = {}
-                any_recursive = False
-                for alias, subquery, recursive in collected:
-                    any_recursive = any_recursive or recursive
-                    existing = unique_ctes.get(alias)
-                    if existing is not None:
-                        if existing is subquery or str(existing) == str(subquery):
-                            continue
-                        raise ValueError(
-                            f"Duplicate CTE alias '{alias}' refers to different subqueries."
-                        )
-                    unique_ctes[alias] = subquery
-                cte_strs = [
-                    f"{self._compiler.quote_alias(alias)} AS ({subquery._render_sql(ctx, include_ctes=False)})"
-                    for alias, subquery in unique_ctes.items()
-                ]
-                with_keyword = self._compiler.compile_with_keyword(any_recursive)
-                query_parts.append(f"{with_keyword} " + ", ".join(cte_strs))
+            with_sql = self._render_with_clause(ctx)
+            if with_sql:
+                query_parts.append(with_sql)
 
         # Build the main query part.
         base_select = self._build_base_select_sql(ctx)
@@ -1102,6 +1113,20 @@ class QueryBuilder:
                 "such as whereIn() on a subquery that has the clause."
             )
 
+    def _render_split_ctes(self, ctx: RenderContext) -> Tuple[str, str]:
+        """
+        Renders this SELECT as its WITH clause and the statement after it,
+        for a dialect that writes the WITH in front of an enclosing
+        statement. Parameters collect in that same order.
+        """
+        hoisting = ctx.hoisting
+        ctx.hoisting = True
+        try:
+            with_sql = self._render_with_clause(ctx)
+            return with_sql, self._render_sql(ctx, include_ctes=False)
+        finally:
+            ctx.hoisting = hoisting
+
     def _render_dml(self, ctx: RenderContext) -> str:
         """Renders an INSERT, UPDATE, or DELETE statement."""
         self._refuse_unrendered_write_clauses()
@@ -1118,8 +1143,14 @@ class QueryBuilder:
                     self._compiler.quote_identifier(c) for c in source_columns
                 )
                 columns_part = f" ({quoted})"
-            select_sql = source_query._render_sql(ctx)
-            sql = f"INSERT INTO {table_sql}{columns_part} {select_sql}"
+            if self._compiler.with_leads_insert():
+                with_sql, select_sql = source_query._render_split_ctes(ctx)
+                sql = f"INSERT INTO {table_sql}{columns_part} {select_sql}"
+                if with_sql:
+                    sql = f"{with_sql} {sql}"
+            else:
+                select_sql = source_query._render_sql(ctx)
+                sql = f"INSERT INTO {table_sql}{columns_part} {select_sql}"
             if self._returning_columns:
                 returning_sql = ", ".join(
                     self._compiler.quote_column_reference(c)

@@ -371,6 +371,15 @@ class Compiler:
         """Renders the WITH keyword, adding RECURSIVE where required."""
         return "WITH RECURSIVE" if recursive else "WITH"
 
+    def with_leads_insert(self) -> bool:
+        """
+        Reports whether the WITH clause of an INSERT ... SELECT source goes
+        in front of INSERT. Most engines take it after INSERT INTO, as part
+        of the SELECT. SQL Server takes it in front only, and MySQL takes
+        it after only.
+        """
+        return False
+
     def parenthesized_set_members(self) -> bool:
         """
         Reports whether UNION, INTERSECT, and EXCEPT members render inside

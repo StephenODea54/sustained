@@ -44,6 +44,23 @@ class TestInsertFromRendering(unittest.TestCase):
         sql = str(Archive.query().insert_from(["id"], source))
         self.assertIn("INSERT INTO archive (id) WITH act AS (", sql)
 
+    def test_source_cte_leads_the_insert_on_mssql(self):
+        # T-SQL takes a WITH clause in front of INSERT only.
+        MsUser = create_model("EtlMsUser", "users")
+        MsUser.set_dialect(Dialects.MSSQL)
+        MsArchive = create_model("EtlMsArchive", "archive")
+        MsArchive.set_dialect(Dialects.MSSQL)
+        cte = MsUser.query().select("id").where("active", "=", True)
+        source = MsUser.query().with_("act", cte).from_("act").select("id")
+        source.where("id", ">", 5)
+        sql, params = MsArchive.query().insert_from(["id"], source).to_sql()
+        self.assertEqual(
+            sql,
+            "WITH [act] AS (SELECT [id] FROM [users] WHERE [active] = ?) "
+            "INSERT INTO [archive] ([id]) SELECT [id] FROM [act] WHERE [id] > ?",
+        )
+        self.assertEqual(params, (True, 5))
+
 
 class TestCtasRendering(unittest.TestCase):
     def test_basic_ctas(self):
