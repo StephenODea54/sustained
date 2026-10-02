@@ -473,6 +473,14 @@ class TestRehearsalLockTimeout(unittest.TestCase):
         self.assertIsNone(lock_timeout(Dialects.DUCKDB, 2))
         self.assertIsNone(lock_timeout(Dialects.PRESTO, 2))
 
+    def test_a_lock_timeout_past_the_dialect_limits_is_refused(self):
+        from sustained.migrations.core.rehearsing import checked_lock_timeout
+
+        self.assertEqual(checked_lock_timeout(2147483.647), 2147483.647)
+        with self.assertRaises(ValueError) as caught:
+            checked_lock_timeout(2147483.648)
+        self.assertIn("at most 2147483.647 seconds", str(caught.exception))
+
     def test_a_restore_that_fails_is_dropped(self):
         from sustained.migrations.core.rehearsing import restore_lock_timeout
 

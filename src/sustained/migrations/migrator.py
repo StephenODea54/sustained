@@ -605,7 +605,7 @@ class Migrator(MigratorBase):
         SQLite, each set back to its earlier value after the rollback.
         DuckDB ignores it, since a conflicting write there fails without
         waiting. Raises ValueError for a lock_timeout that is not a
-        number above 0.
+        number above 0, or that is more than 2147483.647 seconds.
 
         With models, the run rehearses what up(models=[...]) would apply:
         the generated migration joins the pending list for this run only,

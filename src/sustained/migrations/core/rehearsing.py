@@ -124,10 +124,17 @@ def lock_timeout(dialect: Dialects, seconds: float) -> Optional[LockTimeout]:
     return None
 
 
+# PostgreSQL, SQL Server, and SQLite take the timeout as a 32-bit count
+# of milliseconds. MySQL's lock_wait_timeout tops out at 31536000
+# seconds, which is longer, so this limit is the one that applies.
+_MAX_LOCK_TIMEOUT_MS = 2147483647
+
+
 def checked_lock_timeout(seconds: Optional[float]) -> Optional[float]:
     """
     rehearse()'s lock_timeout, or None for none. Raises ValueError for a
-    value that is not a number above 0 and finite.
+    value that is not a number above 0 and finite, or that is more than
+    2147483.647 seconds, the most every dialect's setting takes.
     """
     if seconds is None:
         return None
@@ -139,6 +146,11 @@ def checked_lock_timeout(seconds: Optional[float]) -> Optional[float]:
     ):
         raise ValueError(
             f"lock_timeout must be a number of seconds above 0, not {seconds!r}."
+        )
+    if math.ceil(seconds * 1000) > _MAX_LOCK_TIMEOUT_MS:
+        raise ValueError(
+            f"lock_timeout must be at most {_MAX_LOCK_TIMEOUT_MS / 1000} seconds,"
+            f" not {seconds!r}."
         )
     return float(seconds)
 
