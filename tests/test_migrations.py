@@ -967,3 +967,22 @@ class TestDownToUnderTheLock(MigrationTestCase):
                 migrator.down_to("m2")
         self.assertIn("'m2' is not applied", str(caught.exception))
         self.assertEqual(migrator.applied(), ["m1"])
+
+
+class TestFailedRowWithoutValidation(MigrationTestCase):
+    def test_up_without_validation_refuses_a_failed_attempt_before_running(self):
+        # The step would run again and then collide with the failed row's
+        # id, which on MySQL leaves its schema changes applied and
+        # unrecorded.
+        ran = []
+        migration = Migration("a", up=lambda c: ran.append(c))
+        migrator = Migrator(self.conn, [migration])
+        migrator.applied_records()
+        with mock.patch.object(
+            migrator._compiler, "supports_transactional_ddl", return_value=False
+        ):
+            migrator._record_failure(migration, 1)
+        with self.assertRaises(MigrationError) as caught:
+            migrator.up(validate=False)
+        self.assertIn("failed attempt on record", str(caught.exception))
+        self.assertEqual(ran, [])

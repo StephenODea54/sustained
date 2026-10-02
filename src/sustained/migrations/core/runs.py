@@ -259,6 +259,16 @@ def run_up(
         next_seq = _next_seq(records)
         applied_now: List[str] = []
         versioned_now = [x for x in migrations if x.id not in already_applied]
+        # Even with validate=False, a versioned migration with a failed row
+        # cannot run: its INSERT would collide with that row after the
+        # step ran, and on MySQL the step's schema changes would stay.
+        failed = [
+            _failed_attempt_problem(x.id)
+            for x in versioned_now
+            if x.id in records_by_id
+        ]
+        if failed:
+            raise MigrationError(failed)
         repeatables_now = [
             x
             for x in (m._repeatables() if target is None else [])
