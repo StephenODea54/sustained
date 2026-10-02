@@ -8,15 +8,17 @@ Every released version of Sustained, newest first, grouped by major version. The
 
 Version numbers follow semantic versioning. A major version marks a change that can break working code. A minor version adds new features. A patch version fixes a defect without changing public API signatures or introducing new functionality.
 
-## Unreleased
+## 2.x
 
-### Added
+### 2.27.0
+
+#### Added
 
 - `orderBy()` takes `nulls='first'` or `nulls='last'` to place `NULL` values at that end of the order. PostgreSQL, SQLite, DuckDB, Presto, and Athena render `NULLS FIRST` or `NULLS LAST`. MySQL and SQL Server have no such clause, so the key renders as `CASE WHEN col IS NULL THEN 0 ELSE 1 END` in front of the column. Any other value raises `ValueError`.
 - `Index` takes `where=` for a partial index predicate and accepts `IndexColumn(name, desc=False, prefix_length=None)` in place of a column name, so a model can declare a partial index, a DESC key part, or a MySQL prefix index. The compilers render them, and refuse a WHERE predicate on MySQL or a prefix length outside MySQL with `DialectError`.
 - `AsyncMigrator.read_schema(models)` and `AsyncMigrator.sync(models)` mirror the `Migrator` methods of the same names. `sync()` gives the same deprecation warning on both migrators.
 
-### Fixed
+#### Fixed
 
 - `whereNotIn()`, its `or` and `and` forms, and `col(...).not_in()` raise `ValueError` for a list with a `None` member. Such a list renders `x NOT IN (..., NULL)`, which is never true, so the query returned no rows.
 - On SQL Server, an `UPDATE` or `DELETE` whose subquery defines a CTE renders one `WITH` clause in front of the statement, where the subquery rendered its own `WITH` inside parentheses and the server refused it. Other dialects keep the `WITH` inside the subquery.
@@ -29,8 +31,6 @@ Version numbers follow semantic versioning. A major version marks a change that 
 - The default comparison in the schema diff keeps the case of a string literal, so a model default of `'YES'` on a column whose database default is `'yes'` is reported as drift. Keywords such as `NULL`, `TRUE`, and `CURRENT_TIMESTAMP` still compare without regard to case.
 - The SQL Server schema read reads each column's `MS_Description` extended property as its comment, so a comment that differs between a model and the database is reported as drift. SQL Server has no statement to set a column comment, so the diff records the difference as a note and does not generate a migration for it.
 - A column rename hint for an enum column on SQL Server drops the `ck_<table>_<old>_enum` check before the rename and adds `ck_<table>_<new>_enum` after it, in the same migration, where the check kept the old column's name and the next diff reported it as missing. On SQLite the rename rebuilds the table, which writes the check under the new name. `ddl.rename_column()` takes an optional `column` declaration and does the same for an enum column; a step without it renders and hashes as before.
-
-## 2.x
 
 ### 2.26.0
 
