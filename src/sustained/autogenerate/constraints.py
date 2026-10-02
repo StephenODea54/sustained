@@ -411,10 +411,17 @@ def _diff_constraints(
             # A serial column's default names a sequence, which no model
             # declaration can equal. There is nothing to compare.
             continue
-        expected_default = (
-            None if coldef.default is None else normalize_default(str(coldef.default))
-        )
-        actual_default = normalize_default(actual_col.default)
+        # Both sides go in as SQL, with the quotes on a string literal, so
+        # normalize_default keeps the case of each literal. MySQL 8 reports
+        # a string default without its quotes, and restated_default() puts
+        # them back.
+        if coldef.default is None:
+            expected_default = None
+        elif isinstance(coldef.default, str):
+            expected_default = normalize_default(compiler.format_value(coldef.default))
+        else:
+            expected_default = normalize_default(str(coldef.default))
+        actual_default = normalize_default(actual_col.restated_default())
         if expected_default != actual_default:
             diff.constraint_notes.append(
                 f"{table_name}.{name} default is "

@@ -162,9 +162,12 @@ def normalize_default(raw: Optional[str]) -> Optional[str]:
     Reduces a reported column default to a comparable form: strips
     balanced outer parentheses, Postgres ::type casts, the N prefix of an
     MSSQL Unicode string, quotes, and an empty argument list, and
-    uppercases. The argument list is why
-    MariaDB's current_timestamp() and MySQL's CURRENT_TIMESTAMP compare
-    equal.
+    uppercases every part outside a string literal. The argument list is
+    why MariaDB's current_timestamp() and MySQL's CURRENT_TIMESTAMP
+    compare equal, and the uppercasing is why NULL and null do. A string
+    literal keeps its case, so a default of 'yes' differs from 'YES'.
+    A caller compares a model default against this form by passing the
+    model value spelled as a SQL literal, with its quotes.
 
     A sequence call reduces to None. It is what Postgres reports for a
     serial column, and no model declaration can ever equal it.
@@ -189,9 +192,9 @@ def normalize_default(raw: Optional[str]) -> Optional[str]:
     # MSSQL reports a Unicode string default as N'...'.
     if value[:2] in ("N'", "n'"):
         value = value[1:]
+    value = _outside_literals(value, str.upper)
     value = value.strip("'\"")
-    value = re.sub(r"\(\s*\)$", "", value.strip())
-    return value.upper()
+    return re.sub(r"\(\s*\)$", "", value.strip())
 
 
 def _balanced_paren_body(text: str, start: int) -> Optional[str]:

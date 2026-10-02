@@ -828,9 +828,19 @@ class TestNormalizeDefault(unittest.TestCase):
         self.assertEqual(normalize_default("((5))"), "5")
 
     def test_a_cast_comes_off_before_the_quotes(self):
-        self.assertEqual(normalize_default("'x'::character varying(255)"), "X")
-        self.assertEqual(normalize_default("'a'::text[]"), "A")
+        self.assertEqual(normalize_default("'x'::character varying(255)"), "x")
+        self.assertEqual(normalize_default("'a'::text[]"), "a")
         self.assertEqual(normalize_default("'{}'::jsonb"), "{}")
+
+    def test_a_string_literal_keeps_its_case(self):
+        self.assertNotEqual(normalize_default("'yes'"), normalize_default("'YES'"))
+        self.assertEqual(normalize_default("('yes')"), "yes")
+        self.assertEqual(normalize_default("N'Yes'"), "Yes")
+
+    def test_keywords_compare_without_case(self):
+        self.assertEqual(normalize_default("NULL"), normalize_default("null"))
+        self.assertEqual(normalize_default("true"), normalize_default("TRUE"))
+        self.assertEqual(normalize_default("now()"), normalize_default("NOW"))
 
     def test_an_empty_argument_list_comes_off(self):
         self.assertEqual(

@@ -868,3 +868,33 @@ class TestOutstandingLines(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDefaultCaseDrift(SqliteConstraintTestCase):
+    def _diff(self, ddl_default, model_default):
+        self.conn.execute(
+            "CREATE TABLE dc_items (id INTEGER PRIMARY KEY, "
+            f"grade VARCHAR(40) DEFAULT {ddl_default})"
+        )
+        model = make_model(
+            "DcItem",
+            "dc_items",
+            {
+                "id": Integer(primary_key=True),
+                "grade": String(40, default=model_default),
+            },
+        )
+        return diff_schema(self.conn, [model])
+
+    def test_a_string_default_differing_only_in_case_is_drift(self):
+        diff = self._diff("'yes'", "YES")
+        self.assertTrue(
+            any("grade default is yes" in note for note in diff.constraint_notes),
+            diff.constraint_notes,
+        )
+
+    def test_a_string_default_with_the_same_case_is_not_drift(self):
+        diff = self._diff("'yes'", "yes")
+        self.assertEqual(
+            [note for note in diff.constraint_notes if "default" in note], []
+        )

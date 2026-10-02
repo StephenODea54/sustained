@@ -126,9 +126,9 @@ class TestMssqlUnicodeLiterals(unittest.TestCase):
     def test_reported_unicode_default_compares_to_the_bare_value(self):
         from sustained.introspect import normalize_default
 
-        self.assertEqual(normalize_default("(N'raw')"), "RAW")
-        self.assertEqual(normalize_default("(n'raw')"), "RAW")
-        self.assertEqual(normalize_default("('raw')"), "RAW")
+        self.assertEqual(normalize_default("(N'raw')"), "raw")
+        self.assertEqual(normalize_default("(n'raw')"), "raw")
+        self.assertEqual(normalize_default("('raw')"), "raw")
         self.assertEqual(normalize_default("NOW()"), "NOW")
 
 
