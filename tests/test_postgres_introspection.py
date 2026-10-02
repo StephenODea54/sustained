@@ -259,6 +259,14 @@ class TestPostgresCatalogQueries(unittest.TestCase):
         self.assertNotIn("ix_lower_email", schema["users"].indexes)
         self.assertIn("ix_plain", schema["users"].indexes)
 
+    def test_the_index_read_leaves_out_included_columns(self):
+        # indkey lists the INCLUDE columns after the key columns, and
+        # indnkeyatts counts the key columns alone.
+        cursor = FakeCursor(columns=[column_row("users", "email", "text")])
+        self.read(cursor)
+        (query,) = [s for s in cursor.statements if "pg_index" in s]
+        self.assertIn("k.ord <= ix.indnkeyatts", query)
+
     def test_a_multi_column_index_keeps_its_order(self):
         cursor = FakeCursor(
             columns=[

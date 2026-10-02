@@ -128,6 +128,10 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "LEFT JOIN pg_catalog.pg_attribute a "
             "ON a.attrelid = t.oid AND a.attnum = k.attnum "
             "WHERE t.relkind IN ('r', 'p') "
+            # indkey lists the INCLUDE columns of a covering index after
+            # its key columns. The read stops at the key columns, so an
+            # index on (a) INCLUDE (b) reads as an index on (a).
+            "AND k.ord <= ix.indnkeyatts "
             f"AND {namespace_filter} "
             "ORDER BY t.relname, i.relname, k.ord"
         )
