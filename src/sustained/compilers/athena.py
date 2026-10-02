@@ -14,9 +14,11 @@ render as ?, which pyathena sends as native execution parameters when
 pyathena.paramstyle is set to "qmark". Sustained passes parameters as a
 tuple, which pyathena's default pyformat style refuses: it takes a dict
 only. Every parameter travels to the service as a string, since the
-Athena API takes nothing else; Athena infers each value's type from the
-spot its placeholder sits in. A None parameter becomes a literal NULL in
-the statement, because NULL has no parameter spelling.
+Athena API takes nothing else, and the service pastes each string into
+the statement as written, so each value travels as its SQL literal: a
+string in single quotes, a number bare, a date as DATE '...'. A None
+parameter becomes a literal NULL in the statement, because NULL has no
+parameter spelling.
 
 Upserts, UPDATE, DELETE, and in-place column changes only work on Iceberg
 tables (created with the table_type=ICEBERG property).
@@ -33,24 +35,21 @@ if TYPE_CHECKING:
     from sustained.types import SqlValue
 
 
-def _execution_parameter(value: "SqlValue") -> str:
+def _execution_parameter(compiler: "AthenaCompiler", value: "SqlValue") -> str:
     """
-    One parameter as the string Athena's API wants. Athena infers each
-    value's type from the spot its placeholder sits in, so a stringified
-    number or boolean still compares against its column.
+    One parameter as the string Athena's API wants. The service pastes
+    each value into the statement as text, so a string needs its quotes
+    and a date or timestamp needs its type keyword. The values render as
+    the dialect's literals: a string in single quotes with each quote
+    doubled, a number bare, a boolean as TRUE or FALSE, a date as
+    DATE '...', and a timestamp as TIMESTAMP '...'.
     """
-    if isinstance(value, str):
-        return value
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
     if isinstance(value, (bytes, bytearray)):
         raise DialectError(
             "Athena execution parameters cannot carry binary values. "
             "Write the value as literal SQL instead."
         )
-    return str(value)
+    return compiler.format_value(value)
 
 
 def _inline_null_parameters(
@@ -115,12 +114,13 @@ class AthenaCompiler(PrestoCompiler):
         self, sql: str, params: "tuple[SqlValue, ...]"
     ) -> "tuple[str, tuple[SqlValue, ...]]":
         # Athena execution parameters travel to the service as strings;
-        # boto3 rejects any other type before the query starts. NULL has
-        # no parameter spelling at all, so a None parameter's placeholder
-        # is rewritten to a literal NULL in the statement.
+        # boto3 rejects any other type before the query starts, and the
+        # service substitutes each string into the statement as written.
+        # NULL has no parameter spelling at all, so a None parameter's
+        # placeholder is rewritten to a literal NULL in the statement.
         if any(value is None for value in params):
             sql, params = _inline_null_parameters(sql, params)
-        return sql, tuple(_execution_parameter(value) for value in params)
+        return sql, tuple(_execution_parameter(self, value) for value in params)
 
     def normalize_diff_type(self, type_name: str) -> str:
         # Athena stores every string column as STRING and reports it back

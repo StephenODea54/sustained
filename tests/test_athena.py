@@ -1,6 +1,8 @@
 """Tests for the Athena dialect: SQL rendering, DDL, and migrations."""
 
 import unittest
+from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from sustained import Model, create_model
 from sustained.dialects import Dialects
@@ -162,14 +164,42 @@ class TestAthenaExecutionParameters(unittest.TestCase):
         self.assertEqual(
             sql, "SELECT 1 WHERE a = ? AND b = ? AND c = ? AND d = ? AND e = ?"
         )
-        self.assertEqual(params, ("1", "2.5", "true", "false", "x"))
+        self.assertEqual(params, ("1", "2.5", "TRUE", "FALSE", "'x'"))
+
+    def test_string_is_quoted_with_doubled_quotes(self):
+        _, params = self.compiler.prepare_execution("a = ?", ("it's",))
+        self.assertEqual(params, ("'it''s'",))
+
+    def test_empty_string(self):
+        _, params = self.compiler.prepare_execution("a = ?", ("",))
+        self.assertEqual(params, ("''",))
+
+    def test_decimal_keeps_its_digits(self):
+        _, params = self.compiler.prepare_execution("a = ?", (Decimal("1.50"),))
+        self.assertEqual(params, ("1.50",))
+
+    def test_date_is_a_typed_literal(self):
+        _, params = self.compiler.prepare_execution("a = ?", (date(2024, 3, 9),))
+        self.assertEqual(params, ("DATE '2024-03-09'",))
+
+    def test_naive_datetime_is_a_timestamp_literal(self):
+        _, params = self.compiler.prepare_execution(
+            "a = ?", (datetime(2024, 3, 9, 10, 30, 15),)
+        )
+        self.assertEqual(params, ("TIMESTAMP '2024-03-09 10:30:15'",))
+
+    def test_aware_datetime_keeps_its_offset(self):
+        _, params = self.compiler.prepare_execution(
+            "a = ?", (datetime(2024, 3, 9, 10, 30, tzinfo=timezone.utc),)
+        )
+        self.assertEqual(params, ("TIMESTAMP '2024-03-09 10:30:00+00:00'",))
 
     def test_none_becomes_literal_null(self):
         sql, params = self.compiler.prepare_execution(
             "INSERT INTO t (a, b, c) VALUES (?, ?, ?)", ("x", None, 3)
         )
         self.assertEqual(sql, "INSERT INTO t (a, b, c) VALUES (?, NULL, ?)")
-        self.assertEqual(params, ("x", "3"))
+        self.assertEqual(params, ("'x'", "3"))
 
     def test_question_mark_inside_quotes_stays(self):
         sql, params = self.compiler.prepare_execution(
@@ -365,6 +395,11 @@ class TestAthenaDdl(unittest.TestCase):
         self.assertFalse(self.compiler.supports_transactions())
 
 
+def _unquoted(parameter):
+    """The string a quoted Athena execution parameter stands for."""
+    return parameter[1:-1].replace("''", "'")
+
+
 class FakeAthenaCursor:
     def __init__(self, conn):
         self._conn = conn
@@ -383,9 +418,9 @@ class FakeAthenaCursor:
         elif sql.startswith("SELECT") and "sustained_migrations" in sql:
             self._rows = [(i,) for i in self._conn.applied]
         elif sql.startswith("INSERT INTO") and "sustained_migrations" in sql:
-            self._conn.applied.append(params[0])
+            self._conn.applied.append(_unquoted(params[0]))
         elif sql.startswith("DELETE FROM") and "sustained_migrations" in sql:
-            self._conn.applied.remove(params[0])
+            self._conn.applied.remove(_unquoted(params[0]))
         else:
             self._rows = []
 
