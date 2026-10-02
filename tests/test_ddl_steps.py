@@ -190,6 +190,27 @@ class TestRendering(unittest.TestCase):
         inverse = add_column("readers", "bio", String(20)).inverse()
         self.assertEqual(len(inverse.render(MSSQL)), 1)
 
+    def test_renaming_an_enum_column_moves_its_check_on_mssql(self):
+        mood = Enum("ok", "sad", name="mood")
+        step = rename_column("readers", "mood", "feeling", column=mood)
+        statements = step.render(MSSQL)
+        self.assertEqual(
+            statements,
+            [
+                "ALTER TABLE [readers] DROP CONSTRAINT [ck_readers_mood_enum]",
+                "EXEC sp_rename N'readers.mood', N'feeling', 'COLUMN'",
+                "ALTER TABLE [readers] ADD CONSTRAINT [ck_readers_feeling_enum] "
+                "CHECK ([feeling] IN (N'ok', N'sad'))",
+            ],
+        )
+        self.assertEqual(len(step.render(POSTGRES)), 1)
+        inverse = step.inverse()
+        self.assertIn("[ck_readers_feeling_enum]", inverse.render(MSSQL)[0])
+        self.assertIn("[ck_readers_mood_enum]", inverse.render(MSSQL)[2])
+        plain = rename_column("readers", "mood", "feeling")
+        self.assertNotIn('"column":', plain.signature())
+        self.assertEqual(len(plain.render(MSSQL)), 1)
+
     def test_factories_validate_names(self):
         for build in (
             lambda: add_column("t", "", Integer()),

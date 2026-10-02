@@ -291,6 +291,12 @@ class Snapshot(Dict[str, IntrospectedTable]):
         # table rebuild renames its copy into place, and SQLite refuses
         # the rename while a view names a table that is not there.
         self.views: Tuple[str, ...] = tuple(views)
+        # The enum checks a column rename hint moved, keyed by the
+        # lowercased table and new column name, each mapped to the check
+        # name and expression the database has. The check keeps the old
+        # column's name through RENAME COLUMN, so the generated migration
+        # drops it and adds the check under the new name.
+        self.renamed_enum_checks: Dict[Tuple[str, str], Tuple[str, str]] = {}
 
     def copy(self) -> "Snapshot":
         """

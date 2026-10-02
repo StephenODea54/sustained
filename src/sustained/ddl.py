@@ -523,13 +523,24 @@ def _render_drop_column(args: _Args, compiler: "Compiler") -> List[str]:
     return statements
 
 
-def rename_column(table: TableRef, old: str, new: str) -> DdlStep:
-    """Renames one column. Reverses by renaming it back."""
+def rename_column(
+    table: TableRef, old: str, new: str, column: Optional[ColumnDef] = None
+) -> DdlStep:
+    """
+    Renames one column. Reverses by renaming it back. `column` is the
+    column's declaration. For an enum column on a dialect that keeps the
+    column to its values with a named CHECK, the step drops the check
+    named after the old column and adds it again under the new name,
+    since the engine renames the column inside the expression but keeps
+    the constraint's name. The step's checksum is unchanged when
+    `column` is not given.
+    """
     if not old or not new:
         raise ValueError("rename_column needs the old and the new name.")
-    return DdlStep(
-        "rename_column", {"table": _table_name(table), "old": old, "new": new}
-    )
+    args: _Args = {"table": _table_name(table), "old": old, "new": new}
+    if column is not None:
+        args["column"] = column
+    return DdlStep("rename_column", args)
 
 
 @_op("rename_column")
@@ -537,23 +548,60 @@ def _render_rename_column(args: _Args, compiler: "Compiler") -> List[str]:
     old = args["old"]
     new = args["new"]
     assert isinstance(old, str) and isinstance(new, str)
-    return [
+    table_sql = _table_sql(args, compiler)
+    column = args.get("column")
+    renames_check = (
+        isinstance(column, ColumnDef)
+        and column.type_name == "ENUM"
+        and compiler.enum_strategy() == "check"
+        and compiler.rebuild_strategy() == "alter"
+    )
+    statements: List[str] = []
+    if renames_check:
+        old_check = _enum_check_name(table_sql, old)
+        statements.append(
+            _tag(
+                compiler.compile_drop_constraint(table_sql, old_check),
+                "drop_constraint",
+                args["table"],
+                old,
+                name=old_check,
+            )
+        )
+    statements.append(
         _tag(
-            compiler.compile_rename_column(_table_sql(args, compiler), old, new),
+            compiler.compile_rename_column(table_sql, old, new),
             "rename_column",
             args["table"],
             old,
             new=new,
         )
-    ]
+    )
+    if renames_check:
+        assert isinstance(column, ColumnDef) and column.enum_values is not None
+        new_check = _enum_check_name(table_sql, new)
+        column_ref = compiler.quote_ddl_identifier(new)
+        values_sql = ", ".join(compiler.format_value(v) for v in column.enum_values)
+        statements.append(
+            _tag(
+                compiler.compile_add_check(
+                    table_sql, new_check, f"{column_ref} IN ({values_sql})"
+                ),
+                "add_check",
+                args["table"],
+                new,
+                name=new_check,
+            )
+        )
+    return statements
 
 
 @_inverse_of("rename_column")
 def _invert_rename_column(args: _Args) -> DdlStep:
-    return DdlStep(
-        "rename_column",
-        {"table": args["table"], "old": args["new"], "new": args["old"]},
-    )
+    inverse: _Args = {"table": args["table"], "old": args["new"], "new": args["old"]}
+    if "column" in args:
+        inverse["column"] = args["column"]
+    return DdlStep("rename_column", inverse)
 
 
 def set_column_comment(

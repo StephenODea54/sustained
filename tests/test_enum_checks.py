@@ -67,6 +67,27 @@ class TestSqliteEnumChecks(unittest.TestCase):
         ).fetchone()
         self.assertIn('"ck_posts_status_enum"', sql)
 
+    def test_a_renamed_column_rebuilds_the_check_under_its_name(self):
+        model = create_model("RenamedSqlitePost", "posts")
+        model.tableColumns = {
+            "id": Integer(primary_key=True),
+            "state": Enum("draft", "live", name="post_status"),
+        }
+        model.columns = tuple(model.tableColumns)
+        migration = autogenerate(
+            self.conn, [model], id="b", renames={"posts.status": "state"}
+        )
+        for statement in migration.up:
+            self.conn.execute(statement)
+        (create_sql,) = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'posts'"
+        ).fetchone()
+        self.assertIn("ck_posts_state_enum", create_sql)
+        self.assertNotIn("ck_posts_status_enum", create_sql)
+        self.assertTrue(diff_schema(self.conn, [model]).is_empty())
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute("INSERT INTO posts VALUES (2, 'gone')")
+
     def test_a_removed_value_in_use_fails_the_copy(self):
         with self.assertRaises(sqlite3.IntegrityError):
             self.apply(posts("draft"))
@@ -125,6 +146,40 @@ class TestMssqlEnumChecks(unittest.TestCase):
         self.assertEqual(migration.down[0], DROP)
         self.assertIn("ALTER COLUMN [status] nvarchar(5)", migration.down[1])
         self.assertIn(READ_BACK, migration.down[2])
+
+    def test_a_renamed_column_moves_its_check(self):
+        model = create_model("RenamedPost", "posts")
+        model.tableColumns = {
+            "id": Integer(primary_key=True),
+            "state": Enum("draft", "live", name="post_status"),
+        }
+        model.columns = tuple(model.tableColumns)
+        with mock.patch(
+            "sustained.autogenerate.introspect_schema",
+            return_value=mssql_snapshot(READ_BACK),
+        ):
+            migration = autogenerate(
+                None,
+                [model],
+                id="m",
+                dialect=Dialects.MSSQL,
+                renames={"posts.status": "state"},
+            )
+        rename = "EXEC sp_rename N'posts.status', N'state', 'COLUMN'"
+        added = (
+            "ALTER TABLE [posts] ADD CONSTRAINT [ck_posts_state_enum] "
+            "CHECK ([state] IN (N'draft', N'live'))"
+        )
+        self.assertEqual(migration.up, [DROP, rename, added])
+        self.assertEqual(
+            migration.down,
+            [
+                "ALTER TABLE [posts] DROP CONSTRAINT [ck_posts_state_enum]",
+                "EXEC sp_rename N'posts.state', N'status', 'COLUMN'",
+                "ALTER TABLE [posts] ADD CONSTRAINT [ck_posts_status_enum] "
+                f"CHECK ({READ_BACK})",
+            ],
+        )
 
     def test_a_missing_check_is_added(self):
         migration = self.generate(posts("draft", "live"), check=None)

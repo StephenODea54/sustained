@@ -23,6 +23,7 @@ from sustained.autogenerate.online import (
     validate,
 )
 from sustained.autogenerate.statements import (
+    _add_enum_check,
     _create_table_steps,
     _declared_fk_intent,
     _declared_fk_sql,
@@ -204,7 +205,14 @@ def _table_rename_steps(state: _Generation, table_renames: Dict[str, str]) -> No
 
 
 def _column_rename_steps(state: _Generation, renames: Dict[str, str]) -> None:
-    """RENAME COLUMN for each column rename hint."""
+    """
+    RENAME COLUMN for each column rename hint. On a dialect that keeps an
+    enum column to its values with a named CHECK, the check named after
+    the old column comes off before the rename and goes back on under the
+    new name after it, since the engine renames the column inside the
+    expression but keeps the constraint's name. A dialect that cannot add
+    a constraint in place rebuilds the table instead.
+    """
     compiler = state.compiler
     actual = state.actual
     models_by_table = state.models_by_table
@@ -213,6 +221,36 @@ def _column_rename_steps(state: _Generation, renames: Dict[str, str]) -> None:
     for path, new_name in renames.items():
         table, old_name = path.rsplit(".", 1)
         table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
+        moved = actual.renamed_enum_checks.get((table.lower(), new_name.lower()))
+        model = models_by_table.get(table.lower())
+        coldef = None
+        if model is not None:
+            coldef = (model.tableColumns or {}).get(new_name)
+        renames_check = (
+            moved is not None
+            and coldef is not None
+            and coldef.type_name == "ENUM"
+            and compiler.enum_strategy() == "check"
+        )
+        if renames_check and _rebuild_needed(compiler, "change a constraint"):
+            assert model is not None
+            state.rebuild_tables[table.lower()] = model
+            renames_check = False
+        if renames_check:
+            assert moved is not None and model is not None
+            old_check, expression = moved
+            up_steps.append(
+                with_intent(
+                    compiler.compile_drop_constraint(table_sql, old_check),
+                    "drop_constraint",
+                    _intent_table(model),
+                    old_name,
+                    name=old_check,
+                )
+            )
+            down_steps.insert(
+                0, compiler.compile_add_check(table_sql, old_check, expression)
+            )
         up_steps.append(
             with_intent(
                 compiler.compile_rename_column(table_sql, old_name, new_name),
@@ -225,6 +263,11 @@ def _column_rename_steps(state: _Generation, renames: Dict[str, str]) -> None:
         down_steps.insert(
             0, compiler.compile_rename_column(table_sql, new_name, old_name)
         )
+        if renames_check:
+            assert model is not None and coldef is not None
+            _add_enum_check(
+                compiler, up_steps, down_steps, table_sql, model, new_name, coldef
+            )
 
 
 def _enum_type_steps(state: _Generation) -> None:
