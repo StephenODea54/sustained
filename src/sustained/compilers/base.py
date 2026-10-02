@@ -1269,6 +1269,34 @@ class Compiler:
             f"TOP is not supported by the '{self._dialect.name}' dialect. Use limit() instead."
         )
 
+    def compile_order_entry(
+        self, column_sql: str, direction: str, nulls: Optional[str] = None
+    ) -> str:
+        """
+        Renders one ORDER BY key. Nulls is FIRST, LAST, or None for the
+        engine's own placement of NULL values.
+        """
+        if nulls is None:
+            return f"{column_sql} {direction}"
+        return f"{column_sql} {direction} NULLS {nulls}"
+
+    def compile_emulated_nulls_order(
+        self, column_sql: str, direction: str, nulls: Optional[str]
+    ) -> str:
+        """
+        Renders one ORDER BY key for an engine with no NULLS FIRST or
+        NULLS LAST. A CASE key in front of the column sorts the NULL rows
+        to the requested end, and the column then sorts the rest.
+        """
+        entry = f"{column_sql} {direction}"
+        if nulls is None:
+            return entry
+        null_rank, value_rank = (0, 1) if nulls == "FIRST" else (1, 0)
+        return (
+            f"CASE WHEN {column_sql} IS NULL THEN {null_rank} "
+            f"ELSE {value_rank} END, {entry}"
+        )
+
     def limit_needs_order_by(self) -> bool:
         """
         Reports whether compile_limit_offset() raises DialectError for a

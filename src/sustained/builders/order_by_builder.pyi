@@ -8,4 +8,9 @@ class OrderByClauseBuilder:
     def __init__(
         self, model_class: Type[Model], compiler: Optional[Compiler] = None
     ) -> None: ...
-    def orderBy(self, column: ColumnReference, direction: str = "ASC") -> None: ...
+    def orderBy(
+        self,
+        column: ColumnReference,
+        direction: str = "ASC",
+        nulls: Optional[str] = None,
+    ) -> None: ...

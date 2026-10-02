@@ -253,6 +253,21 @@ Show.query().orderBy('starts_at', 'desc').orderBy('title')
 
 On a query built with `union()`, the ordering applies to the combined result.
 
+Engines disagree on where `NULL` values sort. PostgreSQL, DuckDB, and Trino put them last in an ascending order, and SQLite, MySQL, and SQL Server put them first. Pass `nulls='first'` or `nulls='last'` to place them at the same end on every engine:
+
+```python
+Show.query().orderBy('starts_at', 'desc', nulls='last')
+# SELECT * FROM shows ORDER BY starts_at DESC NULLS LAST
+```
+
+MySQL and SQL Server have no `NULLS FIRST` or `NULLS LAST`, so on those engines Sustained adds a `CASE` key in front of the column:
+
+```python
+# MYSQL: SELECT * FROM `shows` ORDER BY CASE WHEN `starts_at` IS NULL THEN 1 ELSE 0 END, `starts_at` DESC
+```
+
+SQL Server refuses that `CASE` key when the query uses `distinct()` or `union()`, because there every `ORDER BY` item has to appear in the select list. In that case, select the `CASE` expression as a column and order by its alias.
+
 ## Limiting and paging
 
 `limit()` and `offset()` each take a non-negative integer, and you can call each one once per query:

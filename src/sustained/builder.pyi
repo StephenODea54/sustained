@@ -432,7 +432,10 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
 
     # Order By methods
     def orderBy(
-        self, column: ColumnReference, direction: str = "ASC"
+        self,
+        column: ColumnReference,
+        direction: str = "ASC",
+        nulls: Optional[str] = None,
     ) -> QueryBuilder[TModel]: ...
 
     # Having methods

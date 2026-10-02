@@ -29,10 +29,13 @@ class OrderByClauseBuilder:
         self._compiler = (
             compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
         )
-        self._clauses: List[Tuple[ColumnReference, str]] = []
+        self._clauses: List[Tuple[ColumnReference, str, Optional[str]]] = []
 
     def orderBy(
-        self, column: ColumnReference, direction: str = "asc"
+        self,
+        column: ColumnReference,
+        direction: str = "asc",
+        nulls: Optional[str] = None,
     ) -> "OrderByClauseBuilder":
         """
         Adds an ORDER BY clause to the query.
@@ -41,6 +44,8 @@ class OrderByClauseBuilder:
             column: The column to order by, or raw() SQL.
             direction (str, optional): The direction of ordering ('asc' or 'desc').
                                      Defaults to 'asc'.
+            nulls (str, optional): 'first' or 'last' to place NULL values at
+                that end of the order. None keeps the engine's placement.
 
         Returns:
             OrderByClauseBuilder: The builder instance for chaining.
@@ -48,8 +53,11 @@ class OrderByClauseBuilder:
         normalized_direction = direction.upper()
         if normalized_direction not in ["ASC", "DESC"]:
             raise ValueError("Order by direction must be 'asc' or 'desc'.")
+        normalized_nulls = None if nulls is None else nulls.upper()
+        if normalized_nulls not in (None, "FIRST", "LAST"):
+            raise ValueError("Order by nulls must be 'first', 'last', or None.")
 
-        self._clauses.append((column, normalized_direction))
+        self._clauses.append((column, normalized_direction, normalized_nulls))
         return self
 
     def __str__(self) -> str:
@@ -64,8 +72,10 @@ class OrderByClauseBuilder:
 
         clauses_str = ", ".join(
             [
-                f"{self._compiler.quote_column_reference(col)} {direction}"
-                for col, direction in self._clauses
+                self._compiler.compile_order_entry(
+                    self._compiler.quote_column_reference(col), direction, nulls
+                )
+                for col, direction, nulls in self._clauses
             ]
         )
         return f"ORDER BY {clauses_str}"

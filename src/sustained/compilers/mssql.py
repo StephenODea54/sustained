@@ -303,6 +303,12 @@ class MssqlCompiler(Compiler):
             return f"({column_sql} IS NOT NULL AND {column_sql} = {bit})"
         return f"({column_sql} IS NULL OR {column_sql} <> {bit})"
 
+    def compile_order_entry(
+        self, column_sql: str, direction: str, nulls: Optional[str] = None
+    ) -> str:
+        # SQL Server has no NULLS FIRST or NULLS LAST.
+        return self.compile_emulated_nulls_order(column_sql, direction, nulls)
+
     def limit_needs_order_by(self) -> bool:
         return True
 

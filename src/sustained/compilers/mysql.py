@@ -230,6 +230,12 @@ class MysqlCompiler(Compiler):
             "second query, or use LAST_INSERT_ID() through raw SQL."
         )
 
+    def compile_order_entry(
+        self, column_sql: str, direction: str, nulls: Optional[str] = None
+    ) -> str:
+        # MySQL has no NULLS FIRST or NULLS LAST.
+        return self.compile_emulated_nulls_order(column_sql, direction, nulls)
+
     def compile_limit_offset(
         self,
         limit: Optional[int],
