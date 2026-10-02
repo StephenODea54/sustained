@@ -819,7 +819,7 @@ A statement waiting for a lock queues every later lock request on the table that
 
 | Statement | Lock | Work | Rule |
 | --- | --- | --- | --- |
-| `ADD` a nullable column, with or without a default, or a computed column | `Sch-M` | catalog | `mssql.add_column` |
+| `ADD` a nullable column, with or without a default, or a computed column, and a NOT NULL column with no default, which gets a `warn` finding because the server refuses it on a table that has rows | `Sch-M` | catalog | `mssql.add_column` |
 | `ADD` a NOT NULL column with a runtime constant default, or a default `WITH VALUES` | `Sch-M` | catalog on the editions above, and rewrite on the others | `mssql.add_column.default` |
 | `ADD` a column with a per-row default such as `NEWID()`, an identity, a `PERSISTED` computed column, or a `rowversion` or `timestamp` column; and a NOT NULL column, or a default `WITH VALUES`, of a large value type, `xml`, `text`, `ntext`, `image`, `hierarchyid`, a spatial type, or `json`, on every edition. A type that is not a system type may be a CLR type, which writes every row too, so it is a rewrite with confidence `likely` | `Sch-M` | rewrite | `mssql.add_column.rewrite` |
 | `DROP COLUMN`, with a note that the space stays in each row until the table is rebuilt | `Sch-M` | catalog | `mssql.drop_column` |

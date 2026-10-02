@@ -156,6 +156,14 @@ class AddColumnTestCase(unittest.TestCase):
                 self.assertEqual((found.lock, found.work), ("Sch-M", Work.CATALOG))
                 self.assertIs(found.blocks, Blocks.READS_AND_WRITES)
                 self.assertEqual(found.rule, "mssql.add_column")
+                self.assertNotIn("mssql.add_column", rules(impact(sql)))
+
+    def test_a_not_null_column_without_a_default_is_refused_on_rows(self):
+        found = impact("ALTER TABLE t ADD d int NOT NULL")
+        self.assertEqual(found.tables[0].rule, "mssql.add_column")
+        note = finding(found, "mssql.add_column")
+        self.assertIs(note.severity, Severity.WARN)
+        self.assertIn("refuses", note.message)
 
     def test_a_filled_default_is_catalog_on_the_enterprise_editions(self):
         for sql in (

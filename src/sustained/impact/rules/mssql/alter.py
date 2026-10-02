@@ -192,7 +192,19 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
         options.get("not_null") or options.get("with_values")
     )
     if not fills:
-        return Outcome((_effect(ADD_COLUMN, table, Work.CATALOG),))
+        notes: Tuple[Finding, ...] = ()
+        if default is None and options.get("not_null"):
+            notes = (
+                Finding(
+                    ADD_COLUMN.id,
+                    Severity.WARN,
+                    f"the server refuses a NOT NULL column with no DEFAULT unless "
+                    f"{table} has no rows; give the column a DEFAULT, or add it "
+                    "NULL, backfill it, then make it NOT NULL",
+                    source=ADD_COLUMN.source,
+                ),
+            )
+        return Outcome((_effect(ADD_COLUMN, table, Work.CATALOG, notes=notes),))
     written = _written(options.get("type"), table)
     if written is not None:
         message, confidence = written
