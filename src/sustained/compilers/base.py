@@ -29,7 +29,7 @@ from sustained.types import Expression, SqlValue
 if TYPE_CHECKING:
     from sustained.dialects import Dialects
     from sustained.rendering import RenderContext
-    from sustained.schema import ColumnDef, ColumnState, TableOptions
+    from sustained.schema import ColumnDef, ColumnState, IndexColumn, TableOptions
     from sustained.types import CaseResult
 
 
@@ -820,18 +820,63 @@ class Compiler:
         bare_sql = new_sql[len(table_qualifier(new_sql)) :]
         return f"ALTER TABLE {old_sql} RENAME TO {bare_sql}"
 
+    # Whether CREATE INDEX accepts a WHERE predicate (partial index).
+    supports_partial_index = False
+    # Whether a key part accepts a prefix length, as in `col(10)`.
+    supports_index_prefix = False
+    # Whether a key part accepts DESC.
+    supports_index_desc = True
+
+    def compile_index_column(self, column: "Union[str, IndexColumn]") -> str:
+        """Renders one key part of a CREATE INDEX column list."""
+        from sustained.exceptions import DialectError
+        from sustained.schema import IndexColumn
+
+        part = column if isinstance(column, IndexColumn) else IndexColumn(column)
+        sql = self.quote_ddl_identifier(part.name)
+        if part.prefix_length is not None:
+            if not self.supports_index_prefix:
+                raise DialectError(
+                    f"The {self.dialect_name()} dialect has no index prefix "
+                    f"length; index column '{part.name}' declares one."
+                )
+            sql = f"{sql}({part.prefix_length})"
+        if part.desc:
+            if not self.supports_index_desc:
+                raise DialectError(
+                    f"The {self.dialect_name()} dialect has no DESC index "
+                    f"column; index column '{part.name}' declares one."
+                )
+            sql = f"{sql} DESC"
+        return sql
+
     def compile_create_index(
         self,
         index_name: str,
         table_sql: str,
-        columns: "list[str]",
+        columns: "Sequence[Union[str, IndexColumn]]",
         unique: bool,
+        where: Optional[str] = None,
     ) -> str:
-        """Renders a CREATE INDEX statement."""
+        """
+        Renders a CREATE INDEX statement. `columns` takes plain names or
+        IndexColumn parts, and `where` is the predicate of a partial
+        index as SQL text.
+        """
+        from sustained.exceptions import DialectError
+
         unique_sql = "UNIQUE " if unique else ""
         name_sql = self.quote_ddl_identifier(index_name)
-        columns_sql = ", ".join(self.quote_ddl_identifier(c) for c in columns)
-        return f"CREATE {unique_sql}INDEX {name_sql} ON {table_sql} ({columns_sql})"
+        columns_sql = ", ".join(self.compile_index_column(c) for c in columns)
+        sql = f"CREATE {unique_sql}INDEX {name_sql} ON {table_sql} ({columns_sql})"
+        if where is None:
+            return sql
+        if not self.supports_partial_index:
+            raise DialectError(
+                f"The {self.dialect_name()} dialect has no partial index; "
+                f"index '{index_name}' declares a WHERE predicate."
+            )
+        return f"{sql} WHERE {where}"
 
     def compile_drop_index(self, index_name: str, table_sql: str) -> str:
         """

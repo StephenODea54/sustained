@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `Index` takes `where=` for a partial index predicate and accepts `IndexColumn(name, desc=False, prefix_length=None)` in place of a column name, so a model can declare a partial index, a DESC key part, or a MySQL prefix index. The compilers render them, and refuse a WHERE predicate on MySQL or a prefix length outside MySQL with `DialectError`.
+
+### Fixed
+
+- Autogenerate reports a difference in an index's partial predicate, key part direction, or prefix length as drift when the introspection read reports those details on `IntrospectedIndex`.
+
 ## 2.26.0
 
 ### Added

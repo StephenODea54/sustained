@@ -112,6 +112,13 @@ class IntrospectedIndex(NamedTuple):
     `sql` is the CREATE INDEX statement the SQLite catalog stores for a
     partial index. A table rebuild runs it to recreate the index with its
     WHERE clause. It is None everywhere else.
+
+    `where` is the predicate of a partial index as the catalog spells
+    it, or None for an index over every row. `descending` has one flag
+    per key part, True for a DESC part, and `prefix_lengths` has one
+    entry per key part, the indexed character count of a MySQL prefix
+    part or None. Both are empty where a read does not report them, and
+    `details` is True only where the read reports all three.
     """
 
     columns: Tuple[str, ...]
@@ -120,6 +127,10 @@ class IntrospectedIndex(NamedTuple):
     name: Optional[str] = None
     valid: bool = True
     sql: Optional[str] = None
+    where: Optional[str] = None
+    descending: Tuple[bool, ...] = ()
+    prefix_lengths: Tuple[Optional[int], ...] = ()
+    details: bool = False
 
 
 class IntrospectedForeignKey(NamedTuple):

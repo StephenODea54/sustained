@@ -26,6 +26,8 @@ _SIMPLE_OPERAND_RE = re.compile(r"^(?:[\w.]|\[(?:[^\]]|\]\])*\])+$|^-?\d+(?:\.\d
 
 
 class MssqlCompiler(Compiler):
+    supports_partial_index = True
+
     def quote_identifier(self, identifier: str) -> str:
         # A closing bracket inside the name doubles, so a name can never
         # end the quoted span early.

@@ -22,14 +22,14 @@ Upserts, UPDATE, DELETE, and in-place column changes only work on Iceberg
 tables (created with the table_type=ICEBERG property).
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Sequence, Union
 
 from sustained.exceptions import DialectError
 
 from .presto import PrestoCompiler
 
 if TYPE_CHECKING:
-    from sustained.schema import ColumnDef, ColumnState, TableOptions
+    from sustained.schema import ColumnDef, ColumnState, IndexColumn, TableOptions
     from sustained.types import SqlValue
 
 
@@ -255,8 +255,9 @@ class AthenaCompiler(PrestoCompiler):
         self,
         index_name: str,
         table_sql: str,
-        columns: "list[str]",
+        columns: "Sequence[Union[str, IndexColumn]]",
         unique: bool,
+        where: Optional[str] = None,
     ) -> str:
         raise DialectError(
             "Athena has no indexes. Remove the model's indexes declaration; "

@@ -362,6 +362,47 @@ def _checked_fk_action(
     return normalized
 
 
+class IndexColumn:
+    """
+    One key part of an index.
+
+    Attributes:
+        name: The column name.
+        desc: Whether the key part sorts in descending order.
+        prefix_length: The number of leading characters indexed (MySQL
+            prefix index), or None for the whole value.
+    """
+
+    def __init__(
+        self, name: str, desc: bool = False, prefix_length: Optional[int] = None
+    ) -> None:
+        if not name:
+            raise ValueError("An index column needs a name.")
+        if prefix_length is not None and prefix_length <= 0:
+            raise ValueError(f"Index column '{name}' needs a prefix_length above zero.")
+        self.name = name
+        self.desc = desc
+        self.prefix_length = prefix_length
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, IndexColumn):
+            return NotImplemented
+        return (self.name, self.desc, self.prefix_length) == (
+            other.name,
+            other.desc,
+            other.prefix_length,
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.name, self.desc, self.prefix_length))
+
+    def __repr__(self) -> str:
+        return (
+            f"IndexColumn({self.name!r}, desc={self.desc!r}, "
+            f"prefix_length={self.prefix_length!r})"
+        )
+
+
 class Index:
     """
     Declares a named index on a model. List instances in the model's
@@ -369,18 +410,32 @@ class Index:
 
     Attributes:
         name: The index name; must be unique within the database.
-        columns: The indexed columns, in order.
+        columns: The indexed column names, in order.
+        key_parts: The indexed columns as IndexColumn, in order, with
+            each part's direction and prefix length.
         unique: Whether the index enforces uniqueness.
+        where: The predicate of a partial index as SQL text, or None
+            for an index over every row.
     """
 
-    def __init__(self, name: str, *columns: str, unique: bool = False) -> None:
+    def __init__(
+        self,
+        name: str,
+        *columns: Union[str, IndexColumn],
+        unique: bool = False,
+        where: Optional[str] = None,
+    ) -> None:
         if not name:
             raise ValueError("An index needs a name.")
         if not columns:
             raise ValueError(f"Index '{name}' needs at least one column.")
         self.name = name
-        self.columns = tuple(columns)
+        self.key_parts: Tuple[IndexColumn, ...] = tuple(
+            c if isinstance(c, IndexColumn) else IndexColumn(c) for c in columns
+        )
+        self.columns: Tuple[str, ...] = tuple(part.name for part in self.key_parts)
         self.unique = unique
+        self.where = where
 
 
 # Each factory forwards its keyword arguments to ColumnDef, which checks
@@ -734,6 +789,7 @@ __all__ = [
     "ColumnDef",
     "ForeignKey",
     "Index",
+    "IndexColumn",
     "TableConstraint",
     "TableOptions",
     "Integer",

@@ -7,6 +7,8 @@ if TYPE_CHECKING:
 
 
 class PostgresCompiler(Compiler):
+    supports_partial_index = True
+
     def quote_identifier(self, identifier: str) -> str:
         # A double quote inside the name doubles, so a name can never end
         # the quoted span early.

@@ -419,8 +419,9 @@ class Model(metaclass=ModelMeta):
                 compiler.compile_create_index(
                     index.name,
                     cls._qualified_table_sql(),
-                    list(index.columns),
+                    list(index.key_parts),
                     index.unique,
+                    index.where,
                 )
             )
         return statements

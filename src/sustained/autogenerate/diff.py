@@ -647,6 +647,37 @@ def _column_type_changed(
     )
 
 
+def _normalize_predicate(predicate: Optional[str]) -> Optional[str]:
+    if predicate is None:
+        return None
+    text = predicate.strip()
+    while text.startswith("(") and text.endswith(")"):
+        text = text[1:-1].strip()
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s*([=<>(),])\s*", r"\1", text)
+    return (
+        text.replace('"', "").replace("`", "").replace("[", "").replace("]", "").lower()
+    )
+
+
+def index_details_differ(index: "Index", actual_index: IntrospectedIndex) -> bool:
+    """
+    Whether the declared partial predicate, key part directions, or
+    prefix lengths differ from the introspected index. A read that does
+    not report these details compares as equal, so a dialect without
+    that read does not report drift on every run.
+    """
+    if not actual_index.details:
+        return False
+    if _normalize_predicate(index.where) != _normalize_predicate(actual_index.where):
+        return True
+    declared_desc = tuple(part.desc for part in index.key_parts)
+    if declared_desc != tuple(actual_index.descending):
+        return True
+    declared_prefix = tuple(part.prefix_length for part in index.key_parts)
+    return declared_prefix != tuple(actual_index.prefix_lengths)
+
+
 def _diff_indexes(
     compiler: "Compiler",
     diff: SchemaDiff,
@@ -670,6 +701,7 @@ def _diff_indexes(
             # An invalid index, which a failed CREATE INDEX CONCURRENTLY
             # leaves, answers no query and is built again.
             or not actual_index.valid
+            or index_details_differ(index, actual_index)
         ):
             diff.changed_indexes.append((model, index, actual_index))
     for name, actual_index in actual_table.indexes.items():

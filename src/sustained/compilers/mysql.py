@@ -45,6 +45,8 @@ class MysqlCompiler(Compiler):
     raise here and MariaDB's RETURNING stays reachable through raw SQL.
     """
 
+    supports_index_prefix = True
+
     def quote_identifier(self, identifier: str) -> str:
         # A backtick inside the name doubles, so a name can never end the
         # quoted span early.

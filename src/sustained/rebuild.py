@@ -90,7 +90,7 @@ def create_indexes_sql(compiler: "Compiler", model: Type["Model"]) -> List[str]:
     table_sql = model._qualified_table_sql(compiler)
     return [
         compiler.compile_create_index(
-            index.name, table_sql, list(index.columns), index.unique
+            index.name, table_sql, list(index.key_parts), index.unique, index.where
         )
         for index in model.indexes or []
     ]

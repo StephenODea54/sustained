@@ -2,6 +2,8 @@ from .base import Compiler
 
 
 class DefaultCompiler(Compiler):
+    # SQLite, which the default dialect renders for, accepts a partial index.
+    supports_partial_index = True
     """
     Compiler for the default dialect, which runs against SQLite. Queries
     write identifiers bare, as the base compiler does. DDL quotes every
