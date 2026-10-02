@@ -404,6 +404,10 @@ def record_failure(
         migration.transactional and m._compiler.supports_transactional_ddl()
     ):
         return
+    # The step ran bare, so the rows it changed before it failed are
+    # still uncommitted. The rollback takes them back before the Commit
+    # below writes the failure row. Schema changes have committed already.
+    yield from rollback_quietly()
     try:
         timestamp = datetime.now(timezone.utc).isoformat()
         checksum = migration_checksum(migration)
@@ -437,6 +441,9 @@ def record_down_failure(m: MigratorBase, migration: Migration) -> Core[None]:
         return
     column = m._compiler.quote_identifier
     placeholder = m._compiler.placeholder()
+    # As in record_failure(), the rows the down step changed before it
+    # failed roll back before the Commit below.
+    yield from rollback_quietly()
     try:
         yield Execute(
             f"UPDATE {m._table_sql()} SET {column('success')} = "

@@ -195,6 +195,43 @@ class TestFailureTracking(MigrationTestCase):
         self.assertEqual(migrator.up(), ["bad"])
         self.assertEqual(migrator.applied(), ["bad"])
 
+    def test_failure_row_does_not_commit_the_failed_step_rows(self):
+        # Without transactional DDL the step runs bare, so its row changes
+        # are still open when it fails. Writing the failure row must not
+        # commit them.
+        self.conn.execute("CREATE TABLE ft (x INTEGER)")
+        self.conn.commit()
+        migration = Migration("bad", up=["INSERT INTO ft VALUES (1)", "NOT SQL"])
+        migrator = Migrator(self.conn, [migration])
+        migrator.applied_records()
+        with mock.patch.object(
+            migrator._compiler, "supports_transactional_ddl", return_value=False
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                migrator.up()
+        self.conn.rollback()
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM ft").fetchone(), (0,))
+        row = self.conn.execute("SELECT id, success FROM sustained_migrations")
+        self.assertEqual(tuple(row.fetchone()), ("bad", 0))
+
+    def test_down_failure_mark_does_not_commit_the_failed_step_rows(self):
+        self.conn.execute("CREATE TABLE ft (x INTEGER)")
+        self.conn.commit()
+        migration = Migration(
+            "m", up="SELECT 1", down=["INSERT INTO ft VALUES (1)", "NOT SQL"]
+        )
+        migrator = Migrator(self.conn, [migration])
+        migrator.up()
+        with mock.patch.object(
+            migrator._compiler, "supports_transactional_ddl", return_value=False
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                migrator.down()
+        self.conn.rollback()
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM ft").fetchone(), (0,))
+        row = self.conn.execute("SELECT success FROM sustained_migrations")
+        self.assertEqual(tuple(row.fetchone()), (0,))
+
     def test_transactional_failure_leaves_no_row(self):
         migrator = Migrator(self.conn, [Migration("bad", up="THIS IS NOT SQL")])
         with self.assertRaises(sqlite3.OperationalError):
