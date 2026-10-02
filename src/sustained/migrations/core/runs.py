@@ -566,6 +566,10 @@ def applied_versioned(
 
 def down_to(m: MigratorBase, target: str, allow_changed: bool) -> Core[List[str]]:
     yield RefuseOpenTransaction("down_to")
+    if any(x.id == target for x in m._repeatables()):
+        raise ValueError(
+            f"Migration '{target}' is repeatable, so it is not a down_to() target."
+        )
     applied = yield from applied_versioned(m)
     if target not in applied:
         raise ValueError(f"Migration '{target}' is not applied.")

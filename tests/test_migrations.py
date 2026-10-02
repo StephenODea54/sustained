@@ -968,6 +968,18 @@ class TestDownToUnderTheLock(MigrationTestCase):
         self.assertIn("'m2' is not applied", str(caught.exception))
         self.assertEqual(migrator.applied(), ["m1"])
 
+    def test_down_to_refuses_a_repeatable_target(self):
+        migrations = [
+            Migration("m1", up="SELECT 1", down="SELECT 1"),
+            Migration("r1", up="SELECT 1", repeatable=True),
+        ]
+        migrator = Migrator(self.conn, migrations)
+        migrator.up()
+        with self.assertRaises(ValueError) as caught:
+            migrator.down_to("r1")
+        self.assertIn("'r1' is repeatable", str(caught.exception))
+        self.assertEqual(migrator.applied(), ["m1", "r1"])
+
 
 class TestFailedRowWithoutValidation(MigrationTestCase):
     def test_up_without_validation_refuses_a_failed_attempt_before_running(self):
