@@ -248,7 +248,9 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "JOIN pg_catalog.pg_attribute a "
             "ON a.attrelid = d.objoid AND a.attnum = d.objsubid "
             "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
-            "WHERE d.objsubid > 0 "
+            # OIDs repeat across catalogs, so only pg_class comments apply.
+            "WHERE d.classoid = 'pg_catalog.pg_class'::regclass "
+            "AND d.objsubid > 0 "
             f"AND {namespace_filter}"
         )
         for table, name, description in comment_rows:

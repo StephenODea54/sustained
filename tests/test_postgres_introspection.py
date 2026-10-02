@@ -513,6 +513,7 @@ class TestPostgresCatalogQueries(unittest.TestCase):
         self.assertTrue(schema.comments_read)
         comment_sql = next(s for s in cursor.statements if "pg_description" in s)
         self.assertIn("d.objsubid > 0", comment_sql)
+        self.assertIn("d.classoid = 'pg_catalog.pg_class'::regclass", comment_sql)
 
     def test_a_comment_on_an_unknown_column_is_skipped(self):
         cursor = FakeCursor(
