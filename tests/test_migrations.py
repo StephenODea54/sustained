@@ -919,3 +919,51 @@ class TestDuckdbRehearsalRollback(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDownToUnderTheLock(MigrationTestCase):
+    def test_down_to_counts_the_window_after_taking_the_lock(self):
+        # Another migrator applies m4 between down_to()'s first read and
+        # the moment it takes the lock. The window must still end at m2.
+        from sustained.migrations.core import bookkeeping, runs
+
+        migrations = [
+            Migration(f"m{n}", up="SELECT 1", down="SELECT 1") for n in range(1, 5)
+        ]
+        Migrator(self.conn, migrations).up(target="m3")
+        migrator = Migrator(self.conn, migrations)
+        real_scope = bookkeeping.lock_scope
+        calls = []
+
+        def racing_scope(m, body):
+            if not calls:
+                calls.append(m)
+                Migrator(self.conn, migrations).up()
+            return (yield from real_scope(m, body))
+
+        with mock.patch.object(runs.bookkeeping, "lock_scope", racing_scope):
+            self.assertEqual(migrator.down_to("m2"), ["m4", "m3"])
+        self.assertEqual(migrator.applied(), ["m1", "m2"])
+
+    def test_down_to_refuses_a_target_reverted_before_the_lock(self):
+        from sustained.migrations.core import bookkeeping, runs
+
+        migrations = [
+            Migration(f"m{n}", up="SELECT 1", down="SELECT 1") for n in range(1, 4)
+        ]
+        Migrator(self.conn, migrations).up()
+        migrator = Migrator(self.conn, migrations)
+        real_scope = bookkeeping.lock_scope
+        calls = []
+
+        def racing_scope(m, body):
+            if not calls:
+                calls.append(m)
+                Migrator(self.conn, migrations).down_to("m1")
+            return (yield from real_scope(m, body))
+
+        with mock.patch.object(runs.bookkeeping, "lock_scope", racing_scope):
+            with self.assertRaises(ValueError) as caught:
+                migrator.down_to("m2")
+        self.assertIn("'m2' is not applied", str(caught.exception))
+        self.assertEqual(migrator.applied(), ["m1"])

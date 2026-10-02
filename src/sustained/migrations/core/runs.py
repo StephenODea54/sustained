@@ -559,24 +559,35 @@ def down_to(m: MigratorBase, target: str, allow_changed: bool) -> Core[List[str]
     applied = yield from applied_versioned(m)
     if target not in applied:
         raise ValueError(f"Migration '{target}' is not applied.")
-    steps = len(applied) - applied.index(target) - 1
-    if not steps:
+    if applied[-1] == target:
         return []
-    return (yield from down(m, steps, allow_changed))
+    # The window is counted again under the lock: a migrator that applies
+    # or reverts between this read and the lock changes how many
+    # migrations sit above the target.
+    return (yield from down(m, 0, allow_changed, target))
 
 
-def down(m: MigratorBase, steps: int, allow_changed: bool) -> Core[List[str]]:
-    _checked_steps(steps)
+def down(
+    m: MigratorBase, steps: int, allow_changed: bool, target: Optional[str] = None
+) -> Core[List[str]]:
+    if target is None:
+        _checked_steps(steps)
     yield RefuseOpenTransaction("down")
     try:
-        return (yield from run_down(m, steps, allow_changed))
+        return (yield from run_down(m, steps, allow_changed, target))
     except Exception as error:
         yield from fire_on_error(m, error)
         raise
 
 
-def run_down(m: MigratorBase, steps: int, allow_changed: bool) -> Core[List[str]]:
-    """The run itself, without the callback down() wraps it in."""
+def run_down(
+    m: MigratorBase, steps: int, allow_changed: bool, target: Optional[str] = None
+) -> Core[List[str]]:
+    """
+    The run itself, without the callback down() wraps it in. With a
+    `target`, the window is every applied migration above it, counted
+    from the rows read under the lock, and `steps` is not used.
+    """
     from sustained.exceptions import MigrationError
 
     def locked() -> Core[List[str]]:
@@ -587,6 +598,11 @@ def run_down(m: MigratorBase, steps: int, allow_changed: bool) -> Core[List[str]
             raise MigrationError(failed)
         by_record = {r.id: r for r in records}
         applied = yield from applied_versioned(m, [r.id for r in records if r.success])
+        count = steps
+        if target is not None:
+            if target not in applied:
+                raise ValueError(f"Migration '{target}' is not applied.")
+            count = len(applied) - applied.index(target) - 1
         by_id = {x.id: x for x in m._migrations}
         reverted: List[str] = []
         # Every migration in the window is read and checked before the
@@ -594,7 +610,7 @@ def run_down(m: MigratorBase, steps: int, allow_changed: bool) -> Core[List[str]
         # would leave the newer migrations reverted and committed for a
         # condition that was knowable before any of them ran.
         window: List[Tuple[str, Migration, MigrationStep]] = []
-        for migration_id in reversed(applied[-steps:] if steps else []):
+        for migration_id in reversed(applied[-count:] if count else []):
             migration = by_id.get(migration_id)
             if migration is not None and not allow_changed:
                 if _changed_since_applied(migration, by_record.get(migration_id)):
