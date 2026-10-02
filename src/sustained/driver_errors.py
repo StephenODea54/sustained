@@ -11,7 +11,9 @@ _MISSING_TABLE_STATES = frozenset({"42P01", "42S02"})
 _MYSQL_NO_SUCH_TABLE = 1146
 _MISSING_TABLE_MESSAGE = re.compile(
     r"no such table"  # SQLite
-    r"|relation .* does not exist"  # Postgres
+    # Postgres. The lookbehind skips 'column "c" of relation "t" does
+    # not exist', which names a missing column of a table that exists.
+    r"|(?<! of )relation .* does not exist"
     r"|table .* (?:does not|doesn't) exist"  # MySQL, Presto, Trino
     r"|(?:table|schema) with name .* does not exist"  # DuckDB
     r"|invalid object name"  # MSSQL

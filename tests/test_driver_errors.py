@@ -26,6 +26,17 @@ class TestIsMissingTable(unittest.TestCase):
             with self.subTest(driver=driver):
                 self.assertTrue(is_missing_table(error))
 
+    def test_a_missing_column_of_a_relation_is_not_a_missing_table(self):
+        message = 'column "nme" of relation "users" does not exist'
+        cases = {
+            "psycopg": StateError(message, sqlstate="42703"),
+            "psycopg2": StateError(message, pgcode="42703"),
+            "no state": Exception(message),
+        }
+        for driver, error in cases.items():
+            with self.subTest(driver=driver):
+                self.assertFalse(is_missing_table(error))
+
     def test_leading_codes_name_a_missing_table(self):
         cases = {
             "pymysql": Exception(1146, "Table 'db.t' doesn't exist"),
