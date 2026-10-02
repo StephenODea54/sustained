@@ -229,5 +229,29 @@ class TestSqliteStatementParsing(unittest.TestCase):
         )
 
 
+class TestSqliteTables(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_a_composite_primary_key_keeps_its_declared_order(self):
+        self.conn.execute(
+            "CREATE TABLE seats (venue_id INTEGER, row_no INTEGER, "
+            "PRIMARY KEY (row_no, venue_id))"
+        )
+        schema = introspect_schema(self.conn)
+        self.assertEqual(schema["seats"].primary_key, ("row_no", "venue_id"))
+
+    def test_a_table_named_like_an_internal_one_is_read(self):
+        self.conn.execute("CREATE TABLE sqlites (id INTEGER PRIMARY KEY)")
+        self.conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)")
+        schema = introspect_schema(self.conn)
+        self.assertIn("sqlites", schema)
+        # AUTOINCREMENT makes SQLite create its own sqlite_sequence table.
+        self.assertNotIn("sqlite_sequence", schema)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -195,7 +195,9 @@ def _sqlite_plan() -> SchemaPlan:
     rows = yield (
         "SELECT type, name, tbl_name, sql FROM sqlite_master "
         "WHERE type IN ('table', 'trigger', 'view') "
-        "AND name NOT LIKE 'sqlite_%'"
+        # LIKE takes an unescaped _ as any one character, which would
+        # also leave out a table of the user's such as sqlites.
+        "AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'"
     )
     tables = [(str(row[1]), str(row[3] or "")) for row in rows if row[0] == "table"]
     triggers: Dict[str, List[str]] = {}
@@ -209,7 +211,9 @@ def _sqlite_plan() -> SchemaPlan:
     )
     for table, create_sql in tables:
         columns: Dict[str, IntrospectedColumn] = {}
-        primary_key: List[str] = []
+        # PRAGMA table_info lists columns in table order, and pk is each
+        # column's 1-based place in the key, which may differ.
+        key_places: List[Tuple[int, str]] = []
         collations = _sqlite_collations(create_sql)
         for _, name, raw_type, notnull, default, pk in (
             yield f"PRAGMA table_info({_sqlite_quote(table)})"
@@ -223,7 +227,8 @@ def _sqlite_plan() -> SchemaPlan:
                 name=name,
             )
             if pk:
-                primary_key.append(name.lower())
+                key_places.append((int(pk), name.lower()))
+        primary_key = [name for _, name in sorted(key_places)]
 
         fk_rows = sorted(
             (yield f"PRAGMA foreign_key_list({_sqlite_quote(table)})"),
