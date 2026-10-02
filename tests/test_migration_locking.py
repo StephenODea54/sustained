@@ -231,6 +231,22 @@ class TestLockingRun(unittest.TestCase):
         self.assertLess(records_at, ddl_at)
         self.assertLess(ddl_at, unlock_at)
 
+    def test_repair_takes_the_lock_around_its_reads_and_writes(self):
+        # repair() deletes failed rows and rewrites checksums, so a run
+        # that writes a failed row at the same time must not interleave.
+        conn = FakePostgresConnection()
+        self._migrator(conn, []).repair()
+        lock_at = conn.log.index(
+            "SELECT pg_advisory_lock(hashtext('sustained_migrations'))"
+        )
+        records_at = next(
+            n
+            for n, s in enumerate(conn.log)
+            if s.startswith("SELECT") and "checksum" in s
+        )
+        self.assertLess(lock_at, records_at)
+        self.assertIn(UNLOCK, conn.log)
+
     def test_lock_is_released_when_a_step_fails(self):
         conn = FakePostgresConnection(fail_on="CREATE TABLE boom_t")
         migrator = self._migrator(

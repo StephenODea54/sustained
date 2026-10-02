@@ -291,6 +291,12 @@ def validate(m: MigratorBase, raise_on_problems: bool = True) -> Core[List[str]]
 
 def repair(m: MigratorBase) -> Core[List[str]]:
     yield RefuseOpenTransaction("repair")
+    # The lock keeps a concurrent run from writing a failed row or a
+    # checksum between the read below and the writes after it.
+    return (yield from lock_scope(m, _repair_rows(m)))
+
+
+def _repair_rows(m: MigratorBase) -> Core[List[str]]:
     records = yield from applied_records(m)
     compiler = m._compiler
     by_id = {x.id: x for x in m._migrations}
