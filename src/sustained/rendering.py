@@ -157,7 +157,8 @@ def render_nested(query: "QueryBuilder[Any]", ctx: RenderContext) -> str:
     Inside a SELECT that hoists its CTEs, the subquery leaves its WITH
     clause out, because the outer WITH already defines those names. MSSQL
     and other engines refuse a WITH inside parentheses. Elsewhere, such as
-    in the WHERE clause of an UPDATE, the subquery keeps its own WITH.
+    in the WHERE clause of an UPDATE on a dialect whose compiler does not
+    report with_leads_write(), the subquery keeps its own WITH.
     """
     recorded = ctx.nested
     if recorded is not None:

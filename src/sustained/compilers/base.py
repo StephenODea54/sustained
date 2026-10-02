@@ -371,12 +371,15 @@ class Compiler:
         """Renders the WITH keyword, adding RECURSIVE where required."""
         return "WITH RECURSIVE" if recursive else "WITH"
 
-    def with_leads_insert(self) -> bool:
+    def with_leads_write(self) -> bool:
         """
-        Reports whether the WITH clause of an INSERT ... SELECT source goes
-        in front of INSERT. Most engines take it after INSERT INTO, as part
-        of the SELECT. SQL Server takes it in front only, and MySQL takes
-        it after only.
+        Reports whether the WITH clause of a write goes in front of the
+        verb: the WITH of an INSERT ... SELECT source in front of INSERT,
+        and the WITH of every subquery inside an UPDATE or DELETE in front
+        of UPDATE or DELETE, as one clause. Most engines take the WITH
+        after INSERT INTO, as part of the SELECT, and inside each
+        parenthesized subquery. SQL Server takes it in front only, and
+        MySQL takes it after only.
         """
         return False
 

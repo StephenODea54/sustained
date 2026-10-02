@@ -104,6 +104,11 @@ class TestHoisting(unittest.TestCase):
 
 
 class TestWritesKeepTheirOwnWith(unittest.TestCase):
+    """
+    On a dialect that accepts a WITH inside parentheses, each subquery of
+    an UPDATE or DELETE keeps its own WITH clause.
+    """
+
     def test_delete_subqueries_each_keep_their_with(self):
         sql, params = (
             query().whereIn("id", recent()).whereIn("id", recent()).delete().to_sql()
@@ -140,3 +145,83 @@ class TestSqliteRunsTheHoistedStatement(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMssqlWritesHoist(unittest.TestCase):
+    """
+    SQL Server refuses a WITH inside parentheses and after the verb, so a
+    write puts the CTEs of its subqueries before INSERT, UPDATE, or DELETE.
+    """
+
+    RECENT = "WITH [recent] AS (SELECT [id] FROM [events] WHERE [day] > ?) "
+
+    def test_delete_where_in_subquery(self):
+        sql, params = (
+            query(Dialects.MSSQL)
+            .whereIn("id", recent(Dialects.MSSQL))
+            .delete()
+            .to_sql()
+        )
+        self.assertEqual(
+            sql,
+            self.RECENT
+            + "DELETE FROM [events] WHERE [id] IN (SELECT [id] FROM [recent])",
+        )
+        self.assertEqual(params, (5,))
+
+    def test_update_where_in_subquery(self):
+        sql, params = (
+            query(Dialects.MSSQL)
+            .where("kind", "=", "a")
+            .whereIn("id", recent(Dialects.MSSQL))
+            .update({"kind": "b"})
+            .to_sql()
+        )
+        self.assertEqual(
+            sql,
+            self.RECENT + "UPDATE [events] SET [kind] = ? WHERE [kind] = ? "
+            "AND [id] IN (SELECT [id] FROM [recent])",
+        )
+        self.assertEqual(params, (5, "b", "a"))
+
+    def test_insert_from_subquery(self):
+        sql, params = (
+            query(Dialects.MSSQL).insert_from(["id"], recent(Dialects.MSSQL)).to_sql()
+        )
+        self.assertEqual(
+            sql,
+            self.RECENT + "INSERT INTO [events] ([id]) SELECT [id] FROM [recent]",
+        )
+        self.assertEqual(params, (5,))
+
+    def test_the_same_cte_reached_twice_renders_once(self):
+        shared = recent(Dialects.MSSQL)
+        sql, params = (
+            query(Dialects.MSSQL)
+            .whereIn("id", shared)
+            .whereExists(shared)
+            .delete()
+            .to_sql()
+        )
+        self.assertEqual(sql.count("WITH"), 1)
+        self.assertEqual(sql.count("[recent] AS"), 1)
+        self.assertEqual(params, (5,))
+
+    def test_one_name_for_two_bodies_raises(self):
+        other = (
+            query(Dialects.MSSQL)
+            .with_("recent", query(Dialects.MSSQL).select("id"))
+            .from_("recent")
+        )
+        with self.assertRaisesRegex(ValueError, "Duplicate CTE alias 'recent'"):
+            (
+                query(Dialects.MSSQL)
+                .whereIn("id", recent(Dialects.MSSQL))
+                .whereExists(other)
+                .delete()
+                .to_sql()
+            )
+
+    def test_a_write_without_ctes_has_no_with(self):
+        sql, _ = query(Dialects.MSSQL).where("id", "=", 1).delete().to_sql()
+        self.assertEqual(sql, "DELETE FROM [events] WHERE [id] = ?")

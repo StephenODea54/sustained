@@ -497,7 +497,8 @@ class QueryBuilder:
 
         A subquery in a WHERE, HAVING, ON, or select-list position sits in
         a render function, so a probe render with a recording context finds
-        it. The probe's text is discarded.
+        it. The probe's text is discarded. An UPDATE or DELETE probes its
+        own body, so the subqueries in its SET and WHERE clauses are found.
         """
         ctes: List[Tuple[str, "QueryBuilder", bool]] = []
         if isinstance(self._from_source, tuple):
@@ -510,7 +511,10 @@ class QueryBuilder:
         probe = RenderContext(self._compiler, parameterize=True)
         probe.hoisting = True
         probe.nested = []
-        self._render_select(probe, include_ctes=False)
+        if self._stmt_type in ("update", "delete"):
+            self._render_update_or_delete(probe, self._model_table_sql())
+        else:
+            self._render_select(probe, include_ctes=False)
         for nested in probe.nested:
             ctes.extend(nested._collect_ctes())
         return ctes
@@ -1127,6 +1131,49 @@ class QueryBuilder:
         finally:
             ctx.hoisting = hoisting
 
+    def _render_write(self, ctx: RenderContext, table_sql: str) -> str:
+        """
+        Renders an UPDATE or DELETE. On a dialect whose compiler reports
+        with_leads_write(), the CTEs of every subquery in the statement
+        render as one WITH clause in front of the verb, and the subqueries
+        render without their own, because the engine refuses a WITH
+        inside parentheses. Parameters collect in that same order.
+        """
+        if not self._compiler.with_leads_write():
+            return self._render_update_or_delete(ctx, table_sql)
+        hoisting = ctx.hoisting
+        ctx.hoisting = True
+        try:
+            with_sql = self._render_with_clause(ctx)
+            sql = self._render_update_or_delete(ctx, table_sql)
+        finally:
+            ctx.hoisting = hoisting
+        return f"{with_sql} {sql}" if with_sql else sql
+
+    def _render_update_or_delete(self, ctx: RenderContext, table_sql: str) -> str:
+        """Renders an UPDATE or DELETE without a WITH clause of its own."""
+        if self._stmt_type == "update":
+            if not self._where_builder.has_clauses():
+                raise ValueError(
+                    "UPDATE without a WHERE clause would modify every row. "
+                    "Add where() clauses, or where(QueryBuilder.raw('1'), '=', 1) to force it."
+                )
+            # Assignments render before the WHERE clause so parameters are
+            # collected in the order they appear in the SQL.
+            assignments = ", ".join(
+                f"{self._compiler.quote_identifier(c)} = {ctx.value(v)}"
+                for c, v in self._update_values.items()
+            )
+            where_str = self._where_builder.render(ctx)
+            return f"UPDATE {table_sql} SET {assignments} {where_str}"
+        if not self._where_builder.has_clauses():
+            raise ValueError(
+                "DELETE without a WHERE clause would remove every row. "
+                "Add where() clauses, or where(QueryBuilder.raw('1'), '=', 1) to force it."
+            )
+        where_str = self._where_builder.render(ctx)
+        return f"DELETE FROM {table_sql} {where_str}"
+
     def _render_dml(self, ctx: RenderContext) -> str:
         """Renders an INSERT, UPDATE, or DELETE statement."""
         self._refuse_unrendered_write_clauses()
@@ -1143,7 +1190,7 @@ class QueryBuilder:
                     self._compiler.quote_identifier(c) for c in source_columns
                 )
                 columns_part = f" ({quoted})"
-            if self._compiler.with_leads_insert():
+            if self._compiler.with_leads_write():
                 with_sql, select_sql = source_query._render_split_ctes(ctx)
                 sql = f"INSERT INTO {table_sql}{columns_part} {select_sql}"
                 if with_sql:
@@ -1197,28 +1244,8 @@ class QueryBuilder:
                     f"INSERT INTO {table_sql} ({columns_sql}) "
                     f"VALUES {', '.join(row_groups)}"
                 )
-        elif self._stmt_type == "update":
-            if not self._where_builder.has_clauses():
-                raise ValueError(
-                    "UPDATE without a WHERE clause would modify every row. "
-                    "Add where() clauses, or where(QueryBuilder.raw('1'), '=', 1) to force it."
-                )
-            # Assignments render before the WHERE clause so parameters are
-            # collected in the order they appear in the SQL.
-            assignments = ", ".join(
-                f"{self._compiler.quote_identifier(c)} = {ctx.value(v)}"
-                for c, v in self._update_values.items()
-            )
-            where_str = self._where_builder.render(ctx)
-            sql = f"UPDATE {table_sql} SET {assignments} {where_str}"
         else:
-            if not self._where_builder.has_clauses():
-                raise ValueError(
-                    "DELETE without a WHERE clause would remove every row. "
-                    "Add where() clauses, or where(QueryBuilder.raw('1'), '=', 1) to force it."
-                )
-            where_str = self._where_builder.render(ctx)
-            sql = f"DELETE FROM {table_sql} {where_str}"
+            sql = self._render_write(ctx, table_sql)
 
         if self._returning_columns:
             returning_sql = ", ".join(
