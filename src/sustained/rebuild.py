@@ -358,21 +358,29 @@ def _undeclared_index_sql(
 ) -> List[str]:
     """
     CREATE INDEX statements for the table's indexes that the model does not
-    declare, so a rebuild does not quietly discard them. A partial index
-    comes back from the statement the catalog stores, with its WHERE
-    clause. SQLite's automatic
-    indexes are skipped: the column constraints that made them recreate
-    them.
+    declare, so a rebuild does not quietly discard them. An index with a
+    statement in sqlite_master comes back as SQLite stored it, which keeps
+    an expression index and the WHERE clause of a partial index. An index
+    the read reports without a stored statement is rendered from its
+    columns. SQLite's automatic indexes are skipped: the column
+    constraints that made them recreate them.
     """
     declared_indexes = {i.name.lower() for i in model.indexes or []}
-    return [
-        index.sql
-        or compiler.compile_create_index(
+    steps = [
+        sql
+        for name, sql in actual_table.index_sql.items()
+        if name not in declared_indexes
+    ]
+    steps.extend(
+        compiler.compile_create_index(
             name, table_sql, list(index.columns), index.unique
         )
         for name, index in actual_table.indexes.items()
-        if name not in declared_indexes and not name.startswith("sqlite_autoindex")
-    ]
+        if name not in declared_indexes
+        and name not in actual_table.index_sql
+        and not name.startswith("sqlite_autoindex")
+    )
+    return steps
 
 
 def rebuild_turns_foreign_keys_off(

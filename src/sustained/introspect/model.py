@@ -184,6 +184,10 @@ class IntrospectedTable(NamedTuple):
     """
     One table as reported by the database.
 
+    `index_sql` maps each lowercased index name to the CREATE INDEX
+    statement sqlite_master stores for it, on SQLite only, so a table
+    rebuild can write back an expression index that `indexes` leaves out.
+
     `unnamed_checks` and `triggers` are read on SQLite only, where a
     table rebuild has to write them back. An unnamed check is the
     expression of a CHECK written without a CONSTRAINT name, at the
@@ -221,6 +225,7 @@ class IntrospectedTable(NamedTuple):
     schema: Optional[str] = None
     not_valid: FrozenSet[str] = frozenset()
     partitioned: bool = False
+    index_sql: Mapping[str, str] = _NO_CHECKS
     partitions: Tuple[IntrospectedPartition, ...] = ()
     partition_of: Optional[str] = None
 

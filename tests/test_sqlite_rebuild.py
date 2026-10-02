@@ -68,6 +68,28 @@ class TestRebuildWithIndexChanges(RebuildTestCase):
         self.apply(migration)
         self.assertTrue(diff_schema(self.conn, [model]).is_empty())
 
+    def test_an_expression_index_comes_back_as_written(self):
+        sql = "CREATE INDEX ix_rb_lower ON rb_items (lower(note))"
+        partial = "CREATE INDEX ix_rb_code_part ON rb_items (code) WHERE code > 5"
+        self.conn.execute(sql)
+        self.conn.execute(partial)
+        model = model_of(
+            {"id": Integer(primary_key=True), "code": String(10), "note": Text()}
+        )
+        migration = autogenerate(self.conn, [model], id="m", ignore_undeclared=True)
+        self.assertIn(sql, migration.up)
+        self.assertIn(partial, migration.up)
+        self.apply(migration)
+        stored = dict(
+            self.conn.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'index' "
+                "AND tbl_name = 'rb_items'"
+            )
+        )
+        self.assertEqual(stored["ix_rb_lower"], sql)
+        self.assertEqual(stored["ix_rb_code_part"], partial)
+        self.assertEqual(self.rows(), [(1, "7", "first")])
+
 
 class TestRebuildWithDrops(RebuildTestCase):
     def test_an_index_on_a_dropped_column_goes_with_the_table(self):

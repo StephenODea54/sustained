@@ -207,6 +207,12 @@ def _sqlite_plan() -> SchemaPlan:
     index_sql = {
         str(row[1]).lower(): str(row[3]) for row in rows if row[0] == "index" and row[3]
     }
+    table_index_sql: Dict[str, Dict[str, str]] = {}
+    for kind, name, table_name, sql in rows:
+        if kind == "index" and sql:
+            table_index_sql.setdefault(str(table_name).lower(), {})[
+                str(name).lower()
+            ] = str(sql)
     schema = Snapshot(
         constraints_read=True,
         checks_read=True,
@@ -288,6 +294,7 @@ def _sqlite_plan() -> SchemaPlan:
             checks=_sqlite_table_checks(create_sql),
             unnamed_checks=_sqlite_unnamed_checks(create_sql),
             triggers=tuple(triggers.get(table.lower(), ())),
+            index_sql=table_index_sql.get(table.lower(), {}),
             name=table,
         )
     return schema
