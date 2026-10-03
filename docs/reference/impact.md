@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Migration lock impact reference
-description: "Reference for sustained.impact: analyze(), read_context(), the rule profiles, the impact attached for guards, rehearse(trace=True), the live preflight, the ImpactReport model, EngineContext, thresholds, and the report's text and JSON forms."
+description: "Reference for sustained.impact: analyze(), read_context(), rule profiles, the live preflight, ImpactReport, EngineContext, and thresholds."
 ---
 
 These names live in `sustained.impact`, except where a section names another module.

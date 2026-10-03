@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Statement impact
-description: "Read what each migration statement does to a live PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, or DuckDB database while it runs: the locks it takes, what they block, whether it rewrites the table, and the safer form."
+description: "See the locks each Sustained migration statement takes on PostgreSQL, MySQL, SQL Server, SQLite, or DuckDB, what they block, and the safer form."
 ---
 
 A migration can be valid, reversible, and free of drops, and still take the application down while it runs. A `CREATE INDEX` on a large table stops every write to it until the build finishes. An `ALTER TABLE` that needs `ACCESS EXCLUSIVE` waits behind the longest open transaction, and every query on the table waits behind the `ALTER TABLE`.
