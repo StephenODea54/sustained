@@ -182,7 +182,7 @@ groupBy(*columns)
 ```
 {: .sig #groupby}
 
-`GROUP BY`. Takes column strings under the same rule as `select()`, or `QueryBuilder.raw()` expressions.
+`GROUP BY`. Takes column strings under the same rule as `select()`, or `QueryBuilder.raw()` expressions. A `Literal` raises `ValueError`, because `GROUP BY 1` names a select-list position. Write `raw('1')` for a position. `groupByRollup()`, `groupByCube()`, and `groupByGroupingSets()` raise the same error.
 
 ```python
 groupByRollup(*columns)
@@ -221,7 +221,7 @@ orderBy(column, direction='asc')
 ```
 {: .sig #orderby}
 
-Sorts the result. Chain calls to sort by several columns. Any direction other than `asc` or `desc` raises `ValueError`. The column follows the same rule as `select()`, so a sort parameter taken from a request cannot carry SQL. Pass an expression through `QueryBuilder.raw()`.
+Sorts the result. Chain calls to sort by several columns. Any direction other than `asc` or `desc` raises `ValueError`. The column follows the same rule as `select()`, so a sort parameter taken from a request cannot carry SQL. Pass an expression through `QueryBuilder.raw()`. A `Literal` raises `ValueError`, because `ORDER BY 1` names a select-list position. Write `raw('1')` for a position.
 
 ```python
 limit(value)

@@ -30,7 +30,7 @@ A column name often comes from a request, such as a sort parameter. Because Sust
 
 In `select()`, `'column AS alias'` sets an alias. Sustained reads the text after ` AS ` as the alias, so write a name that contains ` AS ` in quotes, such as `'"Cost AS Pct"'`. The rules apply to `select()`, `where()`, `having()`, `orderBy()`, `groupBy()`, `distinctOn()`, `returning()`, and `ColumnExpr`, and `from_()` takes a plain table name only.
 
-If you want a position to read its argument another way, wrap it. `col()` is always a column, `Literal` is always a value, and `raw()` is always raw SQL, in every position. Sustained writes the text of `raw()` into the query as it is and does not quote it, so never build it from a request. [Predicates and expressions](/reference/predicates#columns-values-and-raw-sql) lists the column and value positions.
+If you want a position to read its argument another way, wrap it. `col()` is always a column, `Literal` is always a value, and `raw()` is always raw SQL, in every position. `orderBy()` and `groupBy()` raise `ValueError` for a `Literal`, because `ORDER BY 1` sorts by the first select-list column. Use `raw('1')` for that. Sustained writes the text of `raw()` into the query as it is and does not quote it, so never build it from a request. [Predicates and expressions](/reference/predicates#columns-values-and-raw-sql) lists the column and value positions.
 
 ```python
 from sustained import raw

@@ -8,6 +8,7 @@ from typing import (
 )
 
 from ..rendering import compiler_or_default
+from .order_by_builder import reject_literal
 
 if TYPE_CHECKING:
     from ..compilers import Compiler
@@ -29,12 +30,17 @@ class GroupByClauseBuilder:
 
     def groupBy(self, *columns: ColumnReference) -> None:
         """Adds columns to the GROUP BY clause."""
+        for column in columns:
+            reject_literal(column, "groupBy")
         self._group_by_columns.extend(columns)
 
     def set_mode(self, mode: str, columns: List[str]) -> None:
         """Switches the clause to ROLLUP or CUBE over the given columns."""
         if not columns:
             raise ValueError(f"{mode} requires at least one column.")
+        method = "groupByRollup" if mode == "ROLLUP" else "groupByCube"
+        for column in columns:
+            reject_literal(column, method)
         self._mode = mode
         self._group_by_columns = list(columns)
 
@@ -42,6 +48,9 @@ class GroupByClauseBuilder:
         """Switches the clause to explicit GROUPING SETS."""
         if not sets:
             raise ValueError("GROUPING SETS requires at least one set.")
+        for group in sets:
+            for column in group:
+                reject_literal(column, "groupByGroupingSets")
         self._grouping_sets = sets
 
     def _quote(self, column: ColumnReference) -> str:

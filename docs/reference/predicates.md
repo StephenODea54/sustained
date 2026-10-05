@@ -81,6 +81,8 @@ Literal(value)
 
 The argument is a value, even in a column position. In a function argument, a select list, or a `CASE` result it renders as an inline literal. In `where()`, `insert()`, and `update()` it binds as a parameter.
 
+`orderBy()` and the `groupBy()` family raise `ValueError` for a `Literal`. In `ORDER BY` and `GROUP BY` the number `1` names the first column of the select list and not the value `1`. To sort or group by a position, write `raw('1')`.
+
 ```python
 from sustained import Literal
 
@@ -238,7 +240,7 @@ These live in `sustained.types`. Use them to annotate code that accepts what the
 | `Selectable` | Anything `select()` takes |
 | `CaseCondition` | <code>str &#124; Predicate</code>: a `CASE` condition, where a string is raw SQL |
 | `CaseResult` | <code>DbReturnValue &#124; Expression &#124; ColumnExpr &#124; Literal &#124; Func</code> |
-| `ColumnReference` | <code>str &#124; Expression &#124; ColumnExpr &#124; Literal &#124; Func</code>: the column of `where()`, `having()`, `orderBy()`, `groupBy()`, and a join `ON` |
+| `ColumnReference` | <code>str &#124; Expression &#124; ColumnExpr &#124; Literal &#124; Func</code>: the column of `where()`, `having()`, `orderBy()`, `groupBy()`, and a join `ON`. `orderBy()` and `groupBy()` raise `ValueError` for a `Literal` |
 | `QueryResolvable` | <code>QueryBuilder &#124; Callable[..., QueryBuilder] &#124; Expression</code> |
 | `Join` | <code>BasicJoinMapping &#124; JoinMappingWithThrough</code> |
 

@@ -2,12 +2,27 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List, Optional, Tuple, Type
 
+from ..expressions import Literal
 from ..rendering import compiler_or_default
 
 if TYPE_CHECKING:
     from ..compilers import Compiler
     from ..model import Model
     from ..types import ColumnReference
+
+
+def reject_literal(column: object, method: str) -> None:
+    """
+    Raises ValueError for a Literal. In ORDER BY and GROUP BY the integer 1
+    names the first select-list column, not the value 1. Literal means a
+    value everywhere else, so it raises here, and raw('1') writes the
+    position.
+    """
+    if isinstance(column, Literal):
+        raise ValueError(
+            f"{method}() does not take a Literal. "
+            "Use raw('1') to name a select-list position, or col() for a column."
+        )
 
 
 class OrderByClauseBuilder:
@@ -47,6 +62,7 @@ class OrderByClauseBuilder:
         Returns:
             OrderByClauseBuilder: The builder instance for chaining.
         """
+        reject_literal(column, "orderBy")
         normalized_direction = direction.upper()
         if normalized_direction not in ["ASC", "DESC"]:
             raise ValueError("Order by direction must be 'asc' or 'desc'.")

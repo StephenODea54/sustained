@@ -166,6 +166,38 @@ class TestWrappersInEveryPosition(unittest.TestCase):
         )
 
 
+class TestLiteralInOrderAndGroup(unittest.TestCase):
+    """A Literal raises in ORDER BY and GROUP BY, where 1 is a position."""
+
+    def test_each_method_raises_with_raw_hint(self) -> None:
+        calls = {
+            "orderBy": lambda q: q.orderBy(Literal(1)),
+            "groupBy": lambda q: q.groupBy("a", Literal(1)),
+            "groupByRollup": lambda q: q.groupByRollup("a", Literal(1)),
+            "groupByCube": lambda q: q.groupByCube(Literal(1)),
+            "groupByGroupingSets": lambda q: q.groupByGroupingSets(
+                ("a",), ("b", Literal(1))
+            ),
+        }
+        for method, call in calls.items():
+            with self.subTest(method=method):
+                with self.assertRaises(ValueError) as caught:
+                    call(Thing.query())
+                self.assertIn(
+                    f"{method}() does not take a Literal", str(caught.exception)
+                )
+                self.assertIn("raw('1')", str(caught.exception))
+
+    def test_raw_names_a_position(self) -> None:
+        sql = str(
+            Thing.query()
+            .select("a", "b")
+            .groupBy(sustained.raw("1"))
+            .orderBy(sustained.raw("2"), "desc")
+        )
+        self.assertEqual(sql, "SELECT a, b FROM things GROUP BY 1 ORDER BY 2 DESC")
+
+
 class TestQuotedWriteKeys(unittest.TestCase):
     """insert() and update() keys accept a name already in quotes."""
 
