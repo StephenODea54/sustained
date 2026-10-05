@@ -73,9 +73,8 @@ class DuckDbCompiler(Compiler):
         ]
 
     def compile_identity(self) -> str:
-        raise DialectError(
-            "DuckDB has no identity columns. Use a sequence with a DEFAULT "
-            "expression instead."
+        raise self._unsupported(
+            "identity columns", "Use a sequence with a DEFAULT expression instead."
         )
 
     def savepoint_sql(self, name: str) -> Optional[str]:

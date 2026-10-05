@@ -44,6 +44,15 @@ _SELECT_ALIAS_RE = re.compile(
     r"^(?P<column>.+?)\s+AS\s+(?P<alias>[A-Za-z_][A-Za-z0-9_$]*)$", re.IGNORECASE
 )
 
+# How each dialect's name is written in prose, for error messages.
+_DISPLAY_NAMES = {
+    "ATHENA": "Athena",
+    "DUCKDB": "DuckDB",
+    "MYSQL": "MySQL",
+    "POSTGRES": "Postgres",
+    "PRESTO": "Presto",
+}
+
 # One plain identifier such as "users".
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
@@ -278,6 +287,19 @@ class Compiler:
         """The dialect's name, for error messages."""
         return self._dialect.name
 
+    def display_name(self) -> str:
+        """The dialect's name as prose writes it, such as "MySQL"."""
+        return _DISPLAY_NAMES.get(self.dialect_name(), self.dialect_name())
+
+    def _unsupported(self, feature: str, hint: str = "") -> DialectError:
+        """
+        The error for a feature this dialect lacks, in one wording:
+        "The MySQL dialect does not support RETURNING." with the hint
+        after it. Callers raise the result.
+        """
+        message = f"The {self.display_name()} dialect does not support {feature}."
+        return DialectError(f"{message} {hint}" if hint else message)
+
     def quote_identifier(self, identifier: str) -> str:
         """
         Quotes one identifier. This dialect writes identifiers bare, so a
@@ -451,9 +473,8 @@ class Compiler:
         """
         if self._distinct_on:
             return f"DISTINCT ON ({', '.join(columns_sql)})"
-        raise DialectError(
-            f"DISTINCT ON is not supported by the '{self._dialect.name}' dialect. "
-            "Use a window function with a row filter instead."
+        raise self._unsupported(
+            "DISTINCT ON", "Use a window function with a row filter instead."
         )
 
     def compile_locking(self, skip_locked: bool, nowait: bool) -> str:
@@ -467,9 +488,7 @@ class Compiler:
             elif nowait:
                 clause += " NOWAIT"
             return clause
-        raise DialectError(
-            f"FOR UPDATE is not supported by the '{self._dialect.name}' dialect."
-        )
+        raise self._unsupported("FOR UPDATE")
 
     def compile_explain(self, analyze: bool) -> str:
         """Renders the EXPLAIN prefix. Dialects without EXPLAIN raise."""
@@ -1334,9 +1353,8 @@ class Compiler:
         """
         if options is None:
             return ""
-        raise DialectError(
-            f"The '{self._dialect.name}' dialect does not support table "
-            "options (partitioning, location, or table properties)."
+        raise self._unsupported(
+            "table options (partitioning, location, or table properties)"
         )
 
     def compile_alter_column_type(
@@ -1420,9 +1438,7 @@ class Compiler:
         return f"{keyword} {table_sql} AS {select_sql}"
 
     def compile_top(self, value: int) -> str:
-        raise DialectError(
-            f"TOP is not supported by the '{self._dialect.name}' dialect. Use limit() instead."
-        )
+        raise self._unsupported("TOP", "Use limit() instead.")
 
     def compile_order_entry(
         self, column_sql: str, direction: str, nulls: Optional[str] = None

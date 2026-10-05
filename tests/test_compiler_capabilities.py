@@ -36,5 +36,26 @@ class TestCompilerCapabilities(unittest.TestCase):
         self.assertTrue(compiler.escapes_percent())
 
 
+class TestUnsupportedMessages(unittest.TestCase):
+    def test_one_wording_with_and_without_hint(self):
+        from sustained.exceptions import DialectError
+
+        mysql = Dialects.get_compiler(Dialects.MYSQL)
+        with self.assertRaises(DialectError) as caught:
+            mysql.compile_grouping_sets("a")
+        self.assertEqual(
+            str(caught.exception),
+            "The MySQL dialect does not support GROUPING SETS.",
+        )
+        mssql = Dialects.get_compiler(Dialects.MSSQL)
+        with self.assertRaises(DialectError) as caught:
+            mssql.compile_explain(False)
+        self.assertEqual(
+            str(caught.exception),
+            "The MSSQL dialect does not support EXPLAIN. "
+            "Use SET SHOWPLAN_XML via raw SQL.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

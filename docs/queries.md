@@ -289,7 +289,7 @@ Show.query().page(2, 25)
 ```python
 Show.query().top(10)
 # MSSQL:   SELECT TOP 10 * FROM shows
-# others:  DialectError: TOP is not supported by the 'DEFAULT' dialect. Use limit() instead.
+# others:  DialectError: The DEFAULT dialect does not support TOP. Use limit() instead.
 ```
 
 `limit()` and `top()` on the same query raise `ValueError`. On MSSQL, `limit()` and `offset()` compile to `OFFSET ... FETCH`, which T-SQL only allows after an `ORDER BY`, so the query raises `DialectError` without one. On Presto, `OFFSET` renders before `LIMIT`. An `offset()` with no `limit()` needs a row limit on the dialects that reject a bare `OFFSET`: the default dialect renders `LIMIT -1 OFFSET n`, which SQLite reads as all rows, and MySQL renders its own all-rows limit. Postgres and DuckDB keep the bare `OFFSET`.

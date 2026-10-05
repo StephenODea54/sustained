@@ -9,9 +9,6 @@ if TYPE_CHECKING:
 
 
 class PrestoCompiler(Compiler):
-    # How each dialect's name is written in prose, for error messages.
-    _DISPLAY_NAMES = {"PRESTO": "Presto", "ATHENA": "Athena"}
-
     _TYPE_MAP = {**Compiler._TYPE_MAP, "BINARY": "VARBINARY"}
 
     _IDENT_QUOTES = ('"', '"')
@@ -28,9 +25,6 @@ class PrestoCompiler(Compiler):
     _stores_column_comments = True
     # CREATE TABLE takes the comment inside the column definition.
     _inline_column_comments = True
-
-    def display_name(self) -> str:
-        return self._DISPLAY_NAMES.get(self.dialect_name(), self.dialect_name())
 
     def compile_is_boolean(self, column_sql: str, operator: str, value: bool) -> str:
         # Trino has no IS TRUE. IS NOT DISTINCT FROM gives the same answer,
@@ -86,13 +80,13 @@ class PrestoCompiler(Compiler):
         action: str,
         update_columns: "list[str]",
     ) -> str:
-        raise DialectError(f"{self.display_name()} does not support upserts.")
+        raise self._unsupported("upserts")
 
     def compile_identity(self) -> str:
-        raise DialectError(f"{self.display_name()} has no identity columns.")
+        raise self._unsupported("identity columns")
 
     def compile_returning(self, columns_sql: str) -> str:
-        raise DialectError(f"{self.display_name()} does not support RETURNING clauses.")
+        raise self._unsupported("RETURNING")
 
     def compile_limit_offset(
         self,

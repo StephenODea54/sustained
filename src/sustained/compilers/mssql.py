@@ -68,14 +68,10 @@ class MssqlCompiler(Compiler):
         )
 
     def compile_returning(self, columns_sql: str) -> str:
-        raise DialectError(
-            "MSSQL does not support RETURNING. Use an OUTPUT clause via raw SQL."
-        )
+        raise self._unsupported("RETURNING", "Use an OUTPUT clause via raw SQL.")
 
     def compile_ctas(self, table_sql: str, select_sql: str, temporary: bool) -> str:
-        raise DialectError(
-            "MSSQL does not support CREATE TABLE AS. Use SELECT ... INTO via raw SQL."
-        )
+        raise self._unsupported("CREATE TABLE AS", "Use SELECT ... INTO via raw SQL.")
 
     _TYPE_MAP = {
         **Compiler._TYPE_MAP,
@@ -219,9 +215,7 @@ class MssqlCompiler(Compiler):
         return "WITH"
 
     def compile_explain(self, analyze: bool) -> str:
-        raise DialectError(
-            "MSSQL has no EXPLAIN statement. Use SET SHOWPLAN_XML via raw SQL."
-        )
+        raise self._unsupported("EXPLAIN", "Use SET SHOWPLAN_XML via raw SQL.")
 
     def compile_function_call(
         self, func: Func, ctx: "Optional[RenderContext]" = None

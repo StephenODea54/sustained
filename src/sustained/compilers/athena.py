@@ -213,7 +213,7 @@ class AthenaCompiler(PrestoCompiler):
 
     def compile_ctas(self, table_sql: str, select_sql: str, temporary: bool) -> str:
         if temporary:
-            raise DialectError("Athena has no temporary tables.")
+            raise self._unsupported("temporary tables")
         return super().compile_ctas(table_sql, select_sql, temporary)
 
     def compile_add_column(self, table_sql: str, column_sql: str) -> str:
@@ -230,7 +230,7 @@ class AthenaCompiler(PrestoCompiler):
         )
 
     def compile_rename_table(self, old_sql: str, new_sql: str) -> str:
-        raise DialectError("Athena cannot rename tables.")
+        raise self._unsupported("renaming tables")
 
     def compile_create_index(
         self,
@@ -240,13 +240,14 @@ class AthenaCompiler(PrestoCompiler):
         unique: bool,
         where: Optional[str] = None,
     ) -> str:
-        raise DialectError(
-            "Athena has no indexes. Remove the model's indexes declaration; "
-            "use partitioning through table options instead."
+        raise self._unsupported(
+            "indexes",
+            "Remove the model's indexes declaration; use partitioning "
+            "through table options instead.",
         )
 
     def compile_drop_index(self, index_name: str, table_sql: str) -> str:
-        raise DialectError("Athena has no indexes.")
+        raise self._unsupported("indexes")
 
     def rebuild_strategy(self) -> str:
         # An Iceberg table takes CHANGE COLUMN, so Athena alters in place

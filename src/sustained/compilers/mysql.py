@@ -75,15 +75,11 @@ class MysqlCompiler(Compiler):
         # MySQL and MariaDB spell ROLLUP as a WITH ROLLUP suffix and have
         # no CUBE.
         if mode != "ROLLUP":
-            raise DialectError(
-                f"The '{self._dialect.name}' dialect does not support {mode}."
-            )
+            raise self._unsupported(mode)
         return f"GROUP BY {columns_sql} WITH ROLLUP"
 
     def compile_grouping_sets(self, groups_sql: str) -> str:
-        raise DialectError(
-            f"The '{self._dialect.name}' dialect does not support GROUPING SETS."
-        )
+        raise self._unsupported("GROUPING SETS")
 
     def format_value(self, value: SqlValue) -> str:
         if isinstance(value, str):
@@ -214,9 +210,10 @@ class MysqlCompiler(Compiler):
         return f"{sql} ON DUPLICATE KEY UPDATE {assignments}"
 
     def compile_returning(self, columns_sql: str) -> str:
-        raise DialectError(
-            "MySQL does not support RETURNING. Read the row back with a "
-            "second query, or use LAST_INSERT_ID() through raw SQL."
+        raise self._unsupported(
+            "RETURNING",
+            "Read the row back with a second query, or use LAST_INSERT_ID() "
+            "through raw SQL.",
         )
 
     def compile_limit_offset(
