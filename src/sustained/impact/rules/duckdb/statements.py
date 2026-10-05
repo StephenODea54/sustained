@@ -126,18 +126,7 @@ def _add_column(facts: Facts, action: Action) -> Optional[Effect]:
         return _effect(
             ADD_COLUMN, table, ALTERED_TABLE, Work.ROWS, _altered(facts, table)
         )
-    function = options.get("default_function")
-    reason = f"the default calls {function}(), which gives each row a new value"
-    confidence = Confidence.KNOWN
-    if not options.get("default_certain", True):
-        confidence = Confidence.LIKELY
-        reason = (
-            f"the default calls {function}(), which no rule knows, so it counts "
-            "as volatile: a new value for each row"
-            if function
-            else "the default was not read, so it counts as volatile: a new value "
-            "for each row"
-        )
+    reason, confidence = common.volatile_default(options)
     return _effect(
         ADD_COLUMN_VOLATILE,
         table,

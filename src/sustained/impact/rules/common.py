@@ -160,6 +160,29 @@ def each_action(
     return Outcome(tuple(effects), tuple(findings), confidence, unnamed=tuple(unnamed))
 
 
+def volatile_default(options: Mapping[str, object]) -> Tuple[str, Confidence]:
+    """
+    Why a new column's volatile default gives each row its own value,
+    and how sure that is: LIKELY when the recognizer could not tell the
+    default's function was volatile and counted it as volatile.
+    """
+    function = options.get("default_function")
+    if options.get("default_certain", True):
+        reason = f"the default calls {function}(), which gives each row a new value"
+        return reason, Confidence.KNOWN
+    if function:
+        reason = (
+            f"the default calls {function}(), which no rule knows, so it counts "
+            "as volatile: a new value for each row"
+        )
+    else:
+        reason = (
+            "the default was not read, so it counts as volatile: a new value "
+            "for each row"
+        )
+    return reason, Confidence.LIKELY
+
+
 def row_write_message(facts: Facts, table: str, detail: str = "") -> str:
     """
     The finding for an UPDATE or DELETE: writes to the rows it changes

@@ -106,19 +106,7 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
     elif options.get("generated") == "stored":
         rewrite_reason = "a stored generated column is computed for every row"
     elif volatility == "volatile":
-        function = options.get("default_function")
-        rewrite_reason = (
-            f"the default calls {function}(), which gives each row a new value"
-        )
-        if not options.get("default_certain", True):
-            confidence = Confidence.LIKELY
-            rewrite_reason = (
-                f"the default calls {function}(), which no rule knows, so it "
-                "counts as volatile: a new value for each row"
-                if function
-                else "the default was not read, so it counts as volatile: a new "
-                "value for each row"
-            )
+        rewrite_reason, confidence = common.volatile_default(options)
     else:
         checked = domain_check(facts, str(options.get("type") or ""))
         if checked is not None:
@@ -127,6 +115,7 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
     if rewrite_reason is not None:
         remedy: Tuple[str, ...] = ()
         default = options.get("default")
+        function = options.get("default_function")
         if volatility == "volatile" and default and function and options.get("type"):
             t, c = spelled(facts.statement, table), spelled(facts.statement, column)
             remedy = (
