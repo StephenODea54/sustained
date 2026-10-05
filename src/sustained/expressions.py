@@ -2,10 +2,11 @@
 SQL expression classes.
 """
 
+import warnings
 from typing import TYPE_CHECKING, Callable, List, Optional, Sequence, Tuple, Union
 
 from .rendering import Renderable, render_part
-from .types import SqlValue
+from .types import Expression, SqlValue
 
 if TYPE_CHECKING:
     from .rendering import RenderContext
@@ -264,16 +265,34 @@ def col(name: str) -> ColumnExpr:
     return ColumnExpr(name)
 
 
-class Column:
+def raw(sql: str) -> Expression:
     """
-    Represents a column name or a raw SQL expression that should not be quoted.
+    Wraps raw SQL that renders as written, without quotes or parameters.
+    It is accepted in every position that takes a column or a value.
+    Never pass text from a request through raw(), because it runs as SQL.
+    """
+    return Expression(sql)
+
+
+class Column(Expression):
+    """
+    Raw SQL that renders as written. Deprecated: use raw(), which returns
+    the same kind of object. Column will be removed in 3.0.
     """
 
     def __init__(self, name: str):
-        self.name = name
+        warnings.warn(
+            "Column() is deprecated and will be removed in 3.0. Use raw() "
+            "for raw SQL, or col() for a quoted column name.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__(name)
 
-    def __str__(self) -> str:
-        return self.name
+    @property
+    def name(self) -> str:
+        """The raw SQL text."""
+        return self.value
 
 
 class Literal:

@@ -37,6 +37,7 @@ from sustained.expressions import (
     Literal,
     Predicate,
     WindowExpression,
+    raw,
 )
 from sustained.functions import FunctionRegistry
 from sustained.naming import resolve_public_name
@@ -397,13 +398,16 @@ class QueryBuilder:
     @staticmethod
     def raw(sql: str) -> Expression:
         """
-        Allows injecting raw SQL fragments into the query.
+        Wraps raw SQL that renders as written. The same as the module-level
+        sustained.raw().
+
         Args:
             sql (str): The raw SQL string.
+
         Returns:
             Expression: An Expression object that will not be quoted.
         """
-        return Expression(sql)
+        return raw(sql)
 
     def _build_base_select_sql(self, ctx: RenderContext) -> str:
         query_parts = []

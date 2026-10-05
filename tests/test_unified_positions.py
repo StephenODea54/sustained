@@ -4,7 +4,10 @@ that plain strings keep their output.
 """
 
 import unittest
+import warnings
 
+import sustained
+from sustained.builder import QueryBuilder
 from sustained.dialects import Dialects
 from sustained.expressions import (
     AggregateExpression,
@@ -58,7 +61,7 @@ class TestPlainStringOutput(unittest.TestCase):
         self.assertEqual(str(update), 'UPDATE "things" SET "a" = a + 1 WHERE "id" = 1')
 
     def test_case_results(self) -> None:
-        case = CaseExpression("k", "z").when("a > 1", Column("b"))
+        case = CaseExpression("k", "z").when("a > 1", sustained.raw("b"))
         self.assertEqual(
             str(Thing.query().select(case)),
             'SELECT CASE WHEN a > 1 THEN b ELSE \'z\' END AS "k" FROM "things"',
@@ -90,7 +93,7 @@ class TestWrappersInEveryPosition(unittest.TestCase):
     def test_where_column_takes_raw_func_and_literal(self) -> None:
         sql = str(
             Thing.query()
-            .where(Column("a + b"), ">", 1)
+            .where(sustained.raw("a + b"), ">", 1)
             .where(Func("LOWER", "name"), "=", "x")
             .where(Literal(1), "=", 1)
         )
@@ -138,7 +141,7 @@ class TestWrappersInEveryPosition(unittest.TestCase):
             {
                 "a": Literal("x"),
                 "b": col("c"),
-                "d": Column("now()"),
+                "d": sustained.raw("now()"),
                 "e": Func("LOWER", Literal("Y")),
             }
         )
@@ -226,6 +229,37 @@ class TestFuncStringArguments(unittest.TestCase):
     def test_default_dialect_refuses_text_that_is_not_a_name(self) -> None:
         with self.assertRaises(ValueError):
             str(Thing.query().select(Func("LOWER", "not a column")))
+
+
+class TestRawAndColumn(unittest.TestCase):
+    """raw() wraps raw SQL, and Column is a deprecated alias of it."""
+
+    def test_raw_is_exported_and_matches_query_builder_raw(self) -> None:
+        self.assertIsInstance(sustained.raw("1"), Expression)
+        self.assertEqual(str(sustained.raw("now()")), "now()")
+        self.assertEqual(str(QueryBuilder.raw("now()")), "now()")
+
+    def test_column_warns_and_names_raw(self) -> None:
+        with self.assertWarnsRegex(DeprecationWarning, r"Use raw\(\)"):
+            column = Column("a + 1")
+        self.assertIsInstance(column, Expression)
+        self.assertEqual(column.name, "a + 1")
+
+    def test_column_works_where_raw_works(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            flag = Column("TRUE")
+            inner = Column("SELECT 1")
+        for value, sub in (
+            (flag, inner),
+            (sustained.raw("TRUE"), sustained.raw("SELECT 1")),
+        ):
+            with self.subTest(value=type(value).__name__):
+                sql = str(Thing.query().where("a", "IS", value).whereIn("b", sub))
+                self.assertEqual(
+                    sql,
+                    "SELECT * FROM things WHERE a IS TRUE AND b IN (SELECT 1)",
+                )
 
 
 if __name__ == "__main__":

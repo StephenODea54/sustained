@@ -29,6 +29,7 @@ from sustained.expressions import (
     Predicate,
     WindowExpression,
     col,
+    raw,
 )
 from sustained.model import Model, create_model
 from sustained.types import (
@@ -59,6 +60,7 @@ __all__ = [
     "ColumnExpr",
     "Predicate",
     "col",
+    "raw",
     "Func",
     "Literal",
     "AggregateExpression",
