@@ -2,7 +2,7 @@
 
 from sustained.dialects import Dialects
 
-from . import impact_innodb, lifecycle, queries, transactions, writes
+from . import impact_innodb, lifecycle, queries, round_trip, transactions, writes
 
 
 class MariadbLifecycle(lifecycle.ServerCase):
@@ -31,3 +31,14 @@ class MariadbTransactions(transactions.TransactionsCase):
 class MariadbImpact(impact_innodb.InnodbImpactCase):
     NAME = "mariadb"
     PROFILE = "mariadb"
+
+
+class MariadbRoundTrip(round_trip.RoundTripCase):
+    NAME = "mariadb"
+    DIALECT = Dialects.MYSQL
+    EXPECTED = {
+        "ix_rt_plain": ((False,), (None,), False),
+        "ix_rt_desc": ((True, False), (None, None), False),
+        "ux_rt_b": ((False, True), (None, None), False),
+        "ix_rt_prefix": ((False, True), (10, None), False),
+    }

@@ -2,7 +2,15 @@
 
 from sustained.dialects import Dialects
 
-from . import aio_lifecycle, impact_sqlite, lifecycle, queries, transactions, writes
+from . import (
+    aio_lifecycle,
+    impact_sqlite,
+    lifecycle,
+    queries,
+    round_trip,
+    transactions,
+    writes,
+)
 
 
 class SqliteLifecycle(lifecycle.ServerCase):
@@ -34,3 +42,14 @@ class SqliteAsync(aio_lifecycle.AsyncCase):
 
 class SqliteImpact(impact_sqlite.SqliteImpactCase):
     NAME = "sqlite"
+
+
+class SqliteRoundTrip(round_trip.RoundTripCase):
+    NAME = "sqlite"
+    DIALECT = Dialects.DEFAULT
+    EXPECTED = {
+        "ix_rt_plain": ((False,), (None,), False),
+        "ix_rt_desc": ((True, False), (None, None), False),
+        "ux_rt_b": ((False, True), (None, None), False),
+        "ix_rt_part": ((False,), (None,), True),
+    }

@@ -2,7 +2,15 @@
 
 from sustained.dialects import Dialects
 
-from . import aio_lifecycle, impact, lifecycle, queries, transactions, writes
+from . import (
+    aio_lifecycle,
+    impact,
+    lifecycle,
+    queries,
+    round_trip,
+    transactions,
+    writes,
+)
 
 
 class PostgresLifecycle(lifecycle.ServerCase):
@@ -35,3 +43,14 @@ class PostgresAsync(aio_lifecycle.AsyncCase):
 class PostgresImpact(impact.ImpactCase):
     NAME = "postgres"
     DIALECT = Dialects.POSTGRES
+
+
+class PostgresRoundTrip(round_trip.RoundTripCase):
+    NAME = "postgres"
+    DIALECT = Dialects.POSTGRES
+    EXPECTED = {
+        "ix_rt_plain": ((False,), (None,), False),
+        "ix_rt_desc": ((True, False), (None, None), False),
+        "ux_rt_b": ((False, True), (None, None), False),
+        "ix_rt_part": ((False,), (None,), True),
+    }
