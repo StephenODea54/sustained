@@ -37,12 +37,12 @@ def _column_on(reference: str, model_class: Type["Model"]) -> Optional[str]:
     or None when the reference names another table. The reference may name
     the table bare, as "orders.id", or qualified, as "sales.orders.id".
     """
-    from ..model import qualified_table_name
+    from ..model import names_model_table
 
     if "." not in reference:
         return None
     table, column = reference.rsplit(".", 1)
-    if table in (model_class.tableName, qualified_table_name(model_class)):
+    if names_model_table(table, model_class):
         return column
     return None
 
@@ -308,25 +308,12 @@ class JoinClauseBuilder:
         self, join_type: str, relation_name: str, alias: Optional[str] = None
     ) -> None:
         """Internal handler for adding a join based on a defined relation."""
-        relation = self._model_class.relationMappings.get(relation_name)
-        if not relation:
-            raise ValueError(
-                f"Relation '{relation_name}' not found in model '{self._model_class.__name__}'"
-            )
-        if "modelClass" not in relation or "join" not in relation:
-            raise ValueError(
-                f"Relation '{relation_name}' on model '{self._model_class.__name__}' "
-                "must define 'modelClass' and 'join'."
-            )
+        from ..model import resolve_relation
 
-        related_model_class = self._resolve_model_class(relation["modelClass"])
+        relation, related_model_class = resolve_relation(
+            self._model_class, relation_name
+        )
         join_info = relation["join"]
-        if "from" not in join_info or "to" not in join_info:
-            raise ValueError(
-                f"Relation '{relation_name}' on model '{self._model_class.__name__}' "
-                "must define 'from' and 'to' in its join mapping."
-            )
-
         if "through" in join_info:
             # Cast to the more specific TypedDict to satisfy mypy
             through_join_info = cast(JoinMappingWithThrough, join_info)
@@ -336,16 +323,6 @@ class JoinClauseBuilder:
         else:
             basic_join_info = join_info
             self._add_basic_join(join_type, basic_join_info, related_model_class, alias)
-
-    def _resolve_model_class(
-        self, model_class_ref: Union[Type["Model"], str]
-    ) -> Type["Model"]:
-        """Resolves a model class reference (string or class) to a class type."""
-        from ..model import resolve_model_reference
-
-        return resolve_model_reference(
-            model_class_ref, context_module=self._model_class.__module__
-        )
 
     def _add_basic_join(
         self,

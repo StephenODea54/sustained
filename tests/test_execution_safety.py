@@ -50,6 +50,40 @@ class TestSharedListPerParent(unittest.TestCase):
         self.assertEqual(parents[1].pets, [])
 
 
+class SchemaOwner(Model):
+    tableSchema = "zoo"
+    tableName = "owners"
+    relationMappings = {
+        "pets": {
+            "relation": RelationType.HasManyRelation,
+            "modelClass": "SafePet",
+            "join": {"from": "zoo.owners.id", "to": "pets.owner_id"},
+        }
+    }
+
+
+class TestEagerLoadParentSide(unittest.TestCase):
+    def test_schema_qualified_from_reference_names_the_parent(self):
+        parents = [SchemaOwner(id=1, owner_id=5)]
+        plan = plan_eager_load(SchemaOwner, parents, "pets")
+        self.assertEqual(plan.parent_keys, [1])
+        self.assertEqual(plan.child_col, "owner_id")
+
+    def test_relation_without_from_is_refused(self):
+        class NoFromOwner(Model):
+            tableName = "owners"
+            relationMappings = {
+                "pets": {
+                    "relation": RelationType.HasManyRelation,
+                    "modelClass": SafePet,
+                    "join": {"to": "pets.owner_id"},
+                }
+            }
+
+        with self.assertRaisesRegex(ValueError, "must define 'from' and 'to'"):
+            plan_eager_load(NoFromOwner, [NoFromOwner(id=1)], "pets")
+
+
 class TestTransactionThreadOwnership(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:", check_same_thread=False)

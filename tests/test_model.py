@@ -1,7 +1,13 @@
 import unittest
 from typing import Dict
 
-from sustained.model import Model, create_model, qualified_table_name
+from sustained.model import (
+    Model,
+    create_model,
+    names_model_table,
+    qualified_table_name,
+    resolve_relation,
+)
 from sustained.types import RelationMapping, RelationType
 
 
@@ -139,6 +145,56 @@ class TestModel(unittest.TestCase):
         self.assertEqual(DynamicModel.relationMappings, mappings)
         self.assertEqual(DynamicModel.tableSchema, "full_schema")
         self.assertEqual(DynamicModel.database, "full_db")
+
+
+class RelTarget(Model):
+    tableName = "targets"
+
+
+class TestResolveRelation(unittest.TestCase):
+    def _model(self, mapping):
+        class RelSource(Model):
+            tableSchema = "s"
+            tableName = "sources"
+            relationMappings = {"rel": mapping}
+
+        return RelSource
+
+    def test_returns_the_mapping_and_the_resolved_class(self):
+        mapping = {
+            "relation": RelationType.HasManyRelation,
+            "modelClass": "RelTarget",
+            "join": {"from": "sources.id", "to": "targets.source_id"},
+        }
+        relation, related = resolve_relation(self._model(mapping), "rel")
+        self.assertIs(relation, self._model(mapping).relationMappings["rel"])
+        self.assertIs(related, RelTarget)
+
+    def test_unknown_name(self):
+        with self.assertRaisesRegex(ValueError, "Relation 'nope' not found"):
+            resolve_relation(RelTarget, "nope")
+
+    def test_missing_model_class_or_join(self):
+        model = self._model({"relation": RelationType.HasManyRelation})
+        with self.assertRaisesRegex(ValueError, "must define 'modelClass'"):
+            resolve_relation(model, "rel")
+
+    def test_missing_join_keys(self):
+        model = self._model(
+            {
+                "relation": RelationType.HasManyRelation,
+                "modelClass": RelTarget,
+                "join": {"from": "sources.id"},
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "'from' and 'to'"):
+            resolve_relation(model, "rel")
+
+    def test_names_model_table_bare_and_qualified(self):
+        model = self._model({})
+        self.assertTrue(names_model_table("sources", model))
+        self.assertTrue(names_model_table("s.sources", model))
+        self.assertFalse(names_model_table("t.sources", model))
 
 
 if __name__ == "__main__":

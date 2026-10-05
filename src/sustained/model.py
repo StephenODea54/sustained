@@ -146,6 +146,45 @@ def qualified_table_name(cls: Type["Model"]) -> str:
     return ".".join(cls._table_path())
 
 
+def names_model_table(table: str, cls: Type["Model"]) -> bool:
+    """
+    Tells whether a table reference names the model's table, either bare,
+    as "orders", or qualified, as "sales.orders".
+    """
+    return table in (cls.tableName, qualified_table_name(cls))
+
+
+def resolve_relation(
+    cls: Type["Model"], name: str
+) -> Tuple[RelationMapping, Type["Model"]]:
+    """
+    Looks up a relation by name and resolves its related model class.
+
+    Raises:
+        ValueError: If the model has no relation with that name, or the
+            relation lacks 'modelClass', 'join', or the join's 'from' and
+            'to' keys.
+    """
+    relation = cls.relationMappings.get(name)
+    if not relation:
+        raise ValueError(f"Relation '{name}' not found in model '{cls.__name__}'")
+    if "modelClass" not in relation or "join" not in relation:
+        raise ValueError(
+            f"Relation '{name}' on model '{cls.__name__}' "
+            "must define 'modelClass' and 'join'."
+        )
+    join_info = relation["join"]
+    if "from" not in join_info or "to" not in join_info:
+        raise ValueError(
+            f"Relation '{name}' on model '{cls.__name__}' "
+            "must define 'from' and 'to' in its join mapping."
+        )
+    related = resolve_model_reference(
+        relation["modelClass"], context_module=cls.__module__
+    )
+    return relation, related
+
+
 def _qualified_column(cls: Type["Model"], name: str) -> str:
     """Builds the fully qualified column string for a model class."""
     return f"{qualified_table_name(cls)}.{name}"

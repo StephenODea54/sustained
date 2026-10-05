@@ -750,25 +750,6 @@ def _split_column_ref(ref: str, relation_name: str) -> Tuple[str, str]:
     return table, column
 
 
-def related_model(model_class: Type["Model"], relation_name: str) -> Type["Model"]:
-    """
-    Returns the model class on the far side of a relation.
-
-    Raises:
-        ValueError: If the model has no relation with that name.
-    """
-    relation = model_class.relationMappings.get(relation_name)
-    if not relation:
-        raise ValueError(
-            f"Relation '{relation_name}' not found in model '{model_class.__name__}'"
-        )
-    from sustained.model import resolve_model_reference
-
-    return resolve_model_reference(
-        relation["modelClass"], context_module=model_class.__module__
-    )
-
-
 def check_relation_path(model_class: Type["Model"], path: str) -> None:
     """
     Walks a dotted relation path and rejects the first unknown segment.
@@ -777,10 +758,12 @@ def check_relation_path(model_class: Type["Model"], path: str) -> None:
         ValueError: Naming the segment, the model that lacks it, and the
             full path when the path has more than one segment.
     """
+    from sustained.model import resolve_relation
+
     current = model_class
     for segment in path.split("."):
         try:
-            current = related_model(current, segment)
+            current = resolve_relation(current, segment)[1]
         except ValueError as exc:
             if "." in path:
                 raise ValueError(f"{exc} (in relation path '{path}')") from None
@@ -824,6 +807,8 @@ def eager_load_steps(
     returned, so the sync and async loaders differ only in how they run
     a query.
     """
+    from sustained.model import resolve_relation
+
     for relation_name, children in tree.items():
         if parents:
             plan = plan_eager_load(model_class, parents, relation_name)
@@ -836,7 +821,7 @@ def eager_load_steps(
         next_parents = _attached_children(parents, relation_name)
         if next_parents:
             yield from eager_load_steps(
-                related_model(model_class, relation_name), next_parents, children
+                resolve_relation(model_class, relation_name)[1], next_parents, children
             )
 
 
@@ -922,18 +907,10 @@ def plan_eager_load(
         ValueError: If the model has no relation with that name, or the
             parent rows lack the join key column.
     """
-    relation = model_class.relationMappings.get(relation_name)
-    if not relation:
-        raise ValueError(
-            f"Relation '{relation_name}' not found in model '{model_class.__name__}'"
-        )
+    from sustained.model import names_model_table, resolve_relation
+
+    relation, related_cls = resolve_relation(model_class, relation_name)
     join_info = relation["join"]
-
-    from sustained.model import resolve_model_reference
-
-    related_cls = resolve_model_reference(
-        relation["modelClass"], context_module=model_class.__module__
-    )
 
     from_table, from_col = _split_column_ref(join_info["from"], relation_name)
     to_table, to_col = _split_column_ref(join_info["to"], relation_name)
@@ -947,7 +924,7 @@ def plan_eager_load(
         )
 
     # The side whose table matches the parent model holds the parent key.
-    if from_table == model_class.tableName:
+    if names_model_table(from_table, model_class):
         parent_col, child_col = from_col, to_col
     else:
         parent_col, child_col = to_col, from_col
