@@ -52,9 +52,11 @@ _SELECT_ALIAS_RE = re.compile(r"^(?P<column>.+?)\s+AS\s+(?P<alias>.+)$", re.IGNO
 # How each dialect's name is written in prose, for error messages.
 _DISPLAY_NAMES = {
     "ATHENA": "Athena",
+    "DEFAULT": "default",
     "DUCKDB": "DuckDB",
+    "MSSQL": "SQL Server",
     "MYSQL": "MySQL",
-    "POSTGRES": "Postgres",
+    "POSTGRES": "PostgreSQL",
     "PRESTO": "Presto",
 }
 

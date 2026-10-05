@@ -176,19 +176,19 @@ class TestEnumTypeSql(unittest.TestCase):
         c = Compiler(Dialects.DEFAULT)
         with self.assertRaisesRegex(
             DialectError,
-            "^The DEFAULT dialect does not support named enum types. Enum "
+            "^The default dialect does not support named enum types. Enum "
             "columns render per the dialect's enum strategy instead.$",
         ):
             c.compile_create_enum_type("mood", ["sad"])
         with self.assertRaisesRegex(
             DialectError,
-            "^The DEFAULT dialect does not support named enum types. There is "
+            "^The default dialect does not support named enum types. There is "
             "no enum type to drop.$",
         ):
             c.compile_drop_enum_type("mood")
         with self.assertRaisesRegex(
             DialectError,
-            "^The DEFAULT dialect does not support adding a value to an enum "
+            "^The default dialect does not support adding a value to an enum "
             "type in place.$",
         ):
             c.compile_add_enum_value("mood", "ok")
@@ -275,12 +275,12 @@ class TestDefaultDialectAlter(unittest.TestCase):
         self.assertFalse(c.supports_alter_column())
         with self.assertRaisesRegex(
             DialectError,
-            "^The DEFAULT dialect does not support altering a column type in place.$",
+            "^The default dialect does not support altering a column type in place.$",
         ):
             c.compile_alter_column_type("t", "n", ColumnState("INTEGER", True))
         with self.assertRaisesRegex(
             DialectError,
-            "^The DEFAULT dialect does not support altering column nullability "
+            "^The default dialect does not support altering column nullability "
             "in place.$",
         ):
             c.compile_alter_column_nullability("t", "n", ColumnState("INTEGER", False))

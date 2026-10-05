@@ -82,7 +82,7 @@ class TestIndexCompiler(unittest.TestCase):
             )
         self.assertEqual(
             str(caught.exception),
-            "The Postgres dialect does not support index prefix lengths. "
+            "The PostgreSQL dialect does not support index prefix lengths. "
             "Index column 'a' declares one.",
         )
 
@@ -93,7 +93,7 @@ class TestIndexCompiler(unittest.TestCase):
             compiler.compile_index_column(IndexColumn("a", desc=True))
         self.assertEqual(
             str(caught.exception),
-            "The Postgres dialect does not support DESC index columns. "
+            "The PostgreSQL dialect does not support DESC index columns. "
             "Index column 'a' declares one.",
         )
 

@@ -52,9 +52,24 @@ class TestUnsupportedMessages(unittest.TestCase):
             mssql.compile_explain(False)
         self.assertEqual(
             str(caught.exception),
-            "The MSSQL dialect does not support EXPLAIN. "
+            "The SQL Server dialect does not support EXPLAIN. "
             "Use SET SHOWPLAN_XML via raw SQL.",
         )
+
+    def test_every_dialect_has_a_product_name(self):
+        expected = {
+            Dialects.ATHENA: "Athena",
+            Dialects.PRESTO: "Presto",
+            Dialects.MSSQL: "SQL Server",
+            Dialects.POSTGRES: "PostgreSQL",
+            Dialects.MYSQL: "MySQL",
+            Dialects.DUCKDB: "DuckDB",
+            Dialects.DEFAULT: "default",
+        }
+        for dialect, name in expected.items():
+            with self.subTest(dialect=dialect.name):
+                compiler = Dialects.get_compiler(dialect)
+                self.assertEqual(compiler.display_name(), name)
 
 
 if __name__ == "__main__":
