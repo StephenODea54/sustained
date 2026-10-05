@@ -82,6 +82,25 @@ def _validate_row_count(value: int, keyword: str) -> None:
         raise ValueError(f"{keyword} value must not be negative.")
 
 
+def _write_column_names(method: str, keys: Sequence[str]) -> List[str]:
+    """
+    Reads each write key with write_column_name(). Two keys that name one
+    column, such as "a" and '"a"', raise ValueError. Without the check,
+    a dict built from such keys keeps only the last value.
+    """
+    names: List[str] = []
+    seen: Dict[str, str] = {}
+    for key in keys:
+        name = write_column_name(key)
+        if name in seen:
+            raise ValueError(
+                f"{method} keys {seen[name]!r} and {key!r} name the same column."
+            )
+        seen[name] = key
+        names.append(name)
+    return names
+
+
 class QueryBuilder:
     """
     A builder for creating and executing SQL queries in a programmatic way.
@@ -898,18 +917,19 @@ class QueryBuilder:
         rows = values if isinstance(values, list) else [values]
         if not rows:
             raise ValueError("insert() requires at least one row.")
-        first_keys = list(rows[0].keys())
-        if not first_keys:
+        if not rows[0]:
             raise ValueError("insert() rows must have at least one column.")
+        first_names = _write_column_names("insert()", list(rows[0]))
+        insert_rows = []
         for row in rows:
-            if list(row.keys()) != first_keys:
+            names = _write_column_names("insert()", list(row))
+            if names != first_names:
                 raise ValueError(
                     "All rows in a multi-row insert must share the same columns."
                 )
+            insert_rows.append(dict(zip(names, row.values())))
         self._stmt_type = "insert"
-        self._insert_rows = [
-            {write_column_name(k): v for k, v in row.items()} for row in rows
-        ]
+        self._insert_rows = insert_rows
         return self
 
     def _has_expression_values(self) -> bool:
@@ -953,7 +973,7 @@ class QueryBuilder:
         if not isinstance(query, QueryBuilder):
             raise TypeError("insert_from() requires a QueryBuilder as the source.")
         self._stmt_type = "insert_from"
-        names = [write_column_name(c) for c in columns] if columns else None
+        names = _write_column_names("insert_from()", columns) if columns else None
         self._insert_from = (names, query)
         return self
 
@@ -995,7 +1015,7 @@ class QueryBuilder:
             raise ValueError("onConflict() applies to insert() statements.")
         if not columns:
             raise ValueError("onConflict() requires at least one column.")
-        names = [write_column_name(c) for c in columns]
+        names = _write_column_names("onConflict()", columns)
         insert_columns = set(self._insert_rows[0].keys())
         missing = [c for c in names if c not in insert_columns]
         if missing:
@@ -1016,7 +1036,7 @@ class QueryBuilder:
         """
         if self._conflict_columns is None:
             raise ValueError("merge() requires onConflict() first.")
-        names = [write_column_name(c) for c in columns] if columns else None
+        names = _write_column_names("merge()", columns) if columns else None
         self._conflict_action = ("merge", names)
         return self
 
@@ -1046,7 +1066,8 @@ class QueryBuilder:
         if not values:
             raise ValueError("update() requires at least one column to set.")
         self._stmt_type = "update"
-        self._update_values = {write_column_name(k): v for k, v in values.items()}
+        names = _write_column_names("update()", list(values))
+        self._update_values = dict(zip(names, values.values()))
         return self
 
     def delete(self) -> "QueryBuilder":

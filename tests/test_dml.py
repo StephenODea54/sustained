@@ -66,6 +66,46 @@ class TestInsert(unittest.TestCase):
         self.assertEqual(sql, 'INSERT INTO "users" ("name") VALUES (%s)')
 
 
+class TestDuplicateColumnKeys(unittest.TestCase):
+    def assertNamesBoth(self, call, first, second):
+        with self.assertRaises(ValueError) as caught:
+            call()
+        self.assertIn(repr(first), str(caught.exception))
+        self.assertIn(repr(second), str(caught.exception))
+
+    def test_insert_keys_naming_one_column_raise(self):
+        self.assertNamesBoth(
+            lambda: User.query().insert({"a": 1, '"a"': 2}), "a", '"a"'
+        )
+        self.assertNamesBoth(
+            lambda: User.query().insert({"name": 1, "[name]": 2}), "name", "[name]"
+        )
+
+    def test_update_keys_naming_one_column_raise(self):
+        self.assertNamesBoth(
+            lambda: User.query().update({"a": 1, "`a`": 2}), "a", "`a`"
+        )
+
+    def test_multi_row_compares_unquoted_keys(self):
+        sql, params = User.query().insert([{"a": 1}, {'"a"': 2}]).to_sql()
+        self.assertEqual(sql, "INSERT INTO users (a) VALUES (?), (?)")
+        self.assertEqual(params, (1, 2))
+
+    def test_conflict_columns_naming_one_column_raise(self):
+        query = User.query().insert({"a": 1, "b": 2})
+        self.assertNamesBoth(lambda: query.onConflict("a", "[a]"), "a", "[a]")
+
+    def test_merge_columns_naming_one_column_raise(self):
+        query = User.query().insert({"a": 1, "b": 2}).onConflict("a")
+        self.assertNamesBoth(lambda: query.merge(["b", '"b"']), "b", '"b"')
+
+    def test_insert_from_columns_naming_one_column_raise(self):
+        source = User.query().select("a", "b")
+        self.assertNamesBoth(
+            lambda: User.query().insert_from(["a", "[a]"], source), "a", "[a]"
+        )
+
+
 class TestUpdate(unittest.TestCase):
     def test_update_with_where(self):
         sql, params = (
