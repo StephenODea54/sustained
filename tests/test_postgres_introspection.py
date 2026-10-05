@@ -861,6 +861,10 @@ class TestNormalizeDefault(unittest.TestCase):
         self.assertEqual(normalize_default("'x'::character varying(255)"), "x")
         self.assertEqual(normalize_default("'a'::text[]"), "a")
         self.assertEqual(normalize_default("'{}'::jsonb"), "{}")
+        self.assertEqual(
+            normalize_default("'2020-01-01'::timestamp(3) without time zone"),
+            "2020-01-01",
+        )
 
     def test_a_string_literal_keeps_its_case(self):
         self.assertNotEqual(normalize_default("'yes'"), normalize_default("'YES'"))

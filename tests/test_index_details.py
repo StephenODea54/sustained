@@ -115,6 +115,46 @@ class TestIndexDetailsDiff(unittest.TestCase):
         )
         self.assertFalse(index_details_differ(index, actual))
 
+    def test_postgres_casts_in_predicate_match(self):
+        # Postgres stores status = 'active' on a varchar column as
+        # ((status)::text = 'active'::text).
+        index = Index("ix_a", "a", where="(status = 'active') AND (a > 0)")
+        actual = IntrospectedIndex(
+            ("a",),
+            False,
+            where="(((status)::text = 'active'::text) AND (a > 0))",
+            descending=(False,),
+            prefix_lengths=(None,),
+            details=True,
+        )
+        self.assertFalse(index_details_differ(index, actual))
+
+    def test_postgres_multiword_cast_in_predicate_matches(self):
+        index = Index("ix_a", "a", where="seen < '2020-01-01'")
+        actual = IntrospectedIndex(
+            ("a",),
+            False,
+            where="(seen < '2020-01-01 00:00:00'::timestamp(3) without time zone)",
+            descending=(False,),
+            prefix_lengths=(None,),
+            details=True,
+        )
+        self.assertTrue(index_details_differ(index, actual))
+        index = Index("ix_a", "a", where="seen < '2020-01-01 00:00:00'")
+        self.assertFalse(index_details_differ(index, actual))
+
+    def test_predicate_cast_inside_literal_is_kept(self):
+        index = Index("ix_a", "a", where="note = 'x::text'")
+        actual = IntrospectedIndex(
+            ("a",),
+            False,
+            where="(note = 'x'::text)",
+            descending=(False,),
+            prefix_lengths=(None,),
+            details=True,
+        )
+        self.assertTrue(index_details_differ(index, actual))
+
     def test_grouped_predicate_difference_is_drift(self):
         index = Index("ix_a", "a", where="(a > 0) AND (b > 0)")
         actual = IntrospectedIndex(

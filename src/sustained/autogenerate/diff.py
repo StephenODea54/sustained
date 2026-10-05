@@ -29,7 +29,7 @@ from sustained.introspect import (
     parse_inline_enum,
     type_params,
 )
-from sustained.introspect.normalize import normalize_check
+from sustained.introspect.normalize import normalize_predicate
 from sustained.schema import (
     Check,
     ForeignKey,
@@ -655,9 +655,9 @@ def index_details_differ(index: "Index", actual_index: IntrospectedIndex) -> boo
     """
     if not actual_index.details:
         return False
-    declared_where = None if index.where is None else normalize_check(index.where)
+    declared_where = None if index.where is None else normalize_predicate(index.where)
     live_where = (
-        None if actual_index.where is None else normalize_check(actual_index.where)
+        None if actual_index.where is None else normalize_predicate(actual_index.where)
     )
     if declared_where != live_where:
         return True

@@ -136,9 +136,29 @@ def normalize_check(expression: str) -> str:
 
 # A Postgres ::type cast, with the length or precision it may carry and
 # any array brackets, so 'x'::character varying(255) reduces to 'x'.
+# Postgres spells a few type names in several words. Only those names
+# may contain a space, so the match stops at the AND after 'a'::text.
 _CAST_RE = re.compile(
-    r"::\s*[a-zA-Z_][a-zA-Z_0-9 ]*(?:\s*\(\s*[\d,\s]*\))?(?:\s*\[\s*\])*"
+    r"::\s*(?:(?:timestamp|time)(?:\s*\(\s*\d+\s*\))?\s+with(?:out)?\s+time\s+zone"
+    r"|character\s+varying|double\s+precision|bit\s+varying"
+    r'|"[^"]*"|[a-zA-Z_][\w.]*)'
+    r"(?:\s*\(\s*[\d,\s]*\))?(?:\s*\[\s*\])*",
+    re.IGNORECASE,
 )
+
+
+def normalize_predicate(predicate: str) -> str:
+    """
+    Reduces a partial index predicate to a comparable form: the
+    normalize_check() form with Postgres ::type casts removed outside
+    string literals. Postgres stores status = 'active' on a varchar
+    column as ((status)::text = 'active'::text), so a declared predicate
+    without the casts would otherwise report drift on every run.
+    """
+    return normalize_check(
+        _outside_literals(predicate, lambda part: _CAST_RE.sub("", part))
+    )
+
 
 _SEQUENCE_DEFAULT_RE = re.compile(r"^\s*nextval\s*\(", re.IGNORECASE)
 
