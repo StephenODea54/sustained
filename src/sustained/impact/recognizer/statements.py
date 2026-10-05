@@ -18,6 +18,7 @@ from sustained.impact.recognizer.cursor import (
     Cursor,
     Options,
     Unrecognized,
+    depths,
     frozen,
 )
 from sustained.impact.recognizer.sources import tables_read
@@ -122,16 +123,11 @@ class Statements(Cursor):
         return False
 
     def joins_tables(self, tokens: Sequence[Token]) -> bool:
-        """Whether a comma or a JOIN outside parentheses names another table."""
-        depth = 0
-        for token in tokens:
-            if token.is_punct("("):
-                depth += 1
-            elif token.is_punct(")"):
-                depth -= 1
-            elif depth == 0 and ((token.is_punct(",")) or token.is_word(*_JOIN_WORDS)):
-                return True
-        return False
+        """Whether a comma or a JOIN outside brackets names another table."""
+        return any(
+            depth == 0 and (token.is_punct(",") or token.is_word(*_JOIN_WORDS))
+            for _, token, depth in depths(tokens)
+        )
 
     def resolve_alias(self, target: str, tail: Sequence[Token]) -> str:
         """
@@ -280,14 +276,9 @@ class Statements(Cursor):
 
     def value_rows(self, tokens: Sequence[Token]) -> int:
         rows = 0
-        depth = 0
-        for token in tokens:
-            if token.is_punct("("):
-                if depth == 0:
-                    rows += 1
-                depth += 1
-            elif token.is_punct(")"):
-                depth -= 1
+        for _, token, depth in depths(tokens):
+            if depth == 0 and token.is_punct("("):
+                rows += 1
             elif depth == 0 and token.kind == WORD:
                 break
         return rows

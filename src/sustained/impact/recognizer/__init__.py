@@ -90,7 +90,7 @@ from sustained.impact.model import UNKNOWN_KIND, ParsedStatement
 from sustained.impact.recognizer import session
 from sustained.impact.recognizer.alter import AlterTable
 from sustained.impact.recognizer.create_drop import CreateDrop
-from sustained.impact.recognizer.cursor import Unrecognized, frozen
+from sustained.impact.recognizer.cursor import Unrecognized, depths, frozen
 from sustained.impact.recognizer.statements import Statements
 from sustained.impact.recognizer.volatility import VOLATILITIES, classify_default
 from sustained.impact.tokens import (
@@ -301,16 +301,8 @@ def _named(dialect: Optional["Dialects"], *names: str) -> bool:
 
 
 def _depth_zero(tokens: Sequence[Token], start: int) -> List[bool]:
-    """For each token from `start`, whether it is outside every parenthesis."""
-    depth = 0
-    outside = []
-    for token in tokens[start:]:
-        if token.is_punct(")"):
-            depth -= 1
-        outside.append(depth == 0)
-        if token.is_punct("("):
-            depth += 1
-    return outside
+    """For each token from `start`, whether it is outside every bracket."""
+    return [depth == 0 for _, _, depth in depths(tokens, start)]
 
 
 def _body_opener(tokens: Sequence[Token], kind: int) -> int:

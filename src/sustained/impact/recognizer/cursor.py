@@ -9,10 +9,12 @@ from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Dict,
+    Iterator,
     List,
     Mapping,
     Optional,
     Sequence,
+    Tuple,
 )
 
 from sustained.impact.model import ParsedStatement
@@ -29,6 +31,22 @@ if TYPE_CHECKING:
     from sustained.dialects import Dialects
 
 Options = Dict[str, object]
+
+
+def depths(tokens: Sequence[Token], start: int = 0) -> Iterator[Tuple[int, Token, int]]:
+    """
+    Each token from `start`, with its index and the number of parentheses
+    and square brackets open around it. A bracket counts at the depth
+    outside it, so the `(` and `)` of a group at the top have depth 0.
+    """
+    depth = 0
+    for index in range(start, len(tokens)):
+        token = tokens[index]
+        if token.is_punct(")", "]"):
+            depth -= 1
+        yield index, token, depth
+        if token.is_punct("(", "["):
+            depth += 1
 
 
 class Unrecognized(Exception):
@@ -462,16 +480,8 @@ class Cursor:
         return names
 
     def top_level_word(self, tokens: Sequence[Token], *words: str) -> bool:
-        """Whether any of `words` appears outside parentheses in `tokens`."""
-        depth = 0
-        for token in tokens:
-            if token.is_punct("("):
-                depth += 1
-            elif token.is_punct(")"):
-                depth -= 1
-            elif depth == 0 and token.is_word(*words):
-                return True
-        return False
+        """Whether any of `words` appears outside brackets in `tokens`."""
+        return any(d == 0 and t.is_word(*words) for _, t, d in depths(tokens))
 
     def mysql_option(self, *words: str) -> Optional[str]:
         """A MySQL `ALGORITHM [=] value` style option, or None."""
@@ -511,18 +521,13 @@ class Cursor:
 
     @staticmethod
     def split_top(tokens: Sequence[Token]) -> List[List[Token]]:
-        """Splits tokens on the commas outside parentheses."""
+        """Splits tokens on the commas outside brackets."""
         items: List[List[Token]] = [[]]
-        depth = 0
-        for token in tokens:
-            if token.is_punct("("):
-                depth += 1
-            elif token.is_punct(")"):
-                depth -= 1
-            elif depth == 0 and token.is_punct(","):
+        for _, token, depth in depths(tokens):
+            if depth == 0 and token.is_punct(","):
                 items.append([])
-                continue
-            items[-1].append(token)
+            else:
+                items[-1].append(token)
         return [item for item in items if item]
 
     def with_options(self) -> Dict[str, str]:

@@ -10,6 +10,7 @@ from sustained.impact.recognizer import (
     classify_default,
     recognize,
 )
+from sustained.impact.recognizer.cursor import Cursor, depths
 from sustained.impact.recognizer.sources import tables_read
 from sustained.impact.tokens import tokenize
 
@@ -762,3 +763,28 @@ class BatchSeparatorTestCase(RecognizerTestCase):
 
     def test_other_dialects_keep_go(self):
         self.assertUnknown("DROP TABLE t\nGO", PG, table="t")
+
+
+class DepthsTestCase(unittest.TestCase):
+    def test_a_bracket_counts_at_the_depth_outside_it(self):
+        tokens = tokenize("a (b [c]) d", PG)
+        self.assertEqual(
+            [(t.text, d) for _, t, d in depths(tokens)],
+            [("a", 0), ("(", 0), ("b", 1), ("[", 1), ("c", 2), ("]", 1)]
+            + [(")", 0), ("d", 0)],
+        )
+
+    def test_start_skips_tokens_and_keeps_their_index(self):
+        tokens = tokenize("a ( b")
+        self.assertEqual([(i, d) for i, _, d in depths(tokens, 1)], [(1, 0), (2, 1)])
+
+    def test_square_brackets_nest_in_every_caller(self):
+        tokens = tokenize("x[1, 2], (y), z[a JOIN b]", PG)
+        cursor = Cursor("", tokens, PG)
+        self.assertEqual(len(Cursor.split_top(tokens)), 3)
+        self.assertFalse(cursor.top_level_word(tokens, "JOIN"))
+        self.assertTrue(cursor.top_level_word(tokenize("x[a] JOIN b", PG), "JOIN"))
+        parsed = recognize("INSERT INTO t VALUES (ARRAY[1, 2]), (ARRAY[3])")
+        self.assertEqual(parsed.options["rows"], 2)
+        parsed = recognize("UPDATE t SET a = b[1] FROM u WHERE t.id = u.id")
+        self.assertEqual(parsed.table, "t")
