@@ -29,12 +29,12 @@ from sustained.introspect import (
     Snapshot,
 )
 from sustained.migrations import _ReplayConnection
-from sustained.rebuild import create_indexes_sql
 from sustained.schema import (
     ColumnState,
     ForeignKey,
     bare_table_name,
     build_create_table_sql,
+    create_index_statement,
     enum_check_constraint_sql,
 )
 from sustained.type_changes import removed_enum_values
@@ -207,23 +207,11 @@ def _create_table_steps(
             table,
         )
     )
-    for index, statement in zip(
-        model.indexes or [], create_indexes_sql(compiler, model)
-    ):
-        statements.append(_index_intent(statement, table, index))
-    return statements
-
-
-def _index_intent(statement: str, table: str, index: "Index") -> str:
-    """A CREATE INDEX statement tagged with the index it builds."""
-    return with_intent(
-        statement,
-        "create_index",
-        table,
-        name=index.name,
-        columns=tuple(index.columns),
-        unique=index.unique,
+    statements.extend(
+        create_index_statement(compiler, table_sql, table, index)
+        for index in model.indexes or []
     )
+    return statements
 
 
 def _deferred_foreign_key_steps(

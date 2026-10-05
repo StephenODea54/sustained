@@ -107,7 +107,6 @@ from sustained.autogenerate.statements import (
     _deferred_foreign_key_steps,
     _extra_table_drops,
     _foreign_keys_setting,
-    _index_intent,
     _intent_table,
     _introspected_fk_sql,
     _introspected_state,

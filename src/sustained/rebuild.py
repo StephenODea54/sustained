@@ -16,7 +16,7 @@ import re
 from typing import TYPE_CHECKING, Dict, List, Set, Tuple, Type
 
 from sustained.introspect import IntrospectedColumn, IntrospectedTable, Snapshot
-from sustained.schema import bare_table_name, build_create_table_sql
+from sustained.schema import bare_table_name, build_create_table_sql, create_index_sql
 from sustained.types import Expression
 
 if TYPE_CHECKING:
@@ -88,12 +88,7 @@ def create_indexes_sql(compiler: "Compiler", model: Type["Model"]) -> List[str]:
     model is bound to.
     """
     table_sql = model._qualified_table_sql(compiler)
-    return [
-        compiler.compile_create_index(
-            index.name, table_sql, list(index.key_parts), index.unique, index.where
-        )
-        for index in model.indexes or []
-    ]
+    return [create_index_sql(compiler, table_sql, i) for i in model.indexes or []]
 
 
 def rebuild_steps(

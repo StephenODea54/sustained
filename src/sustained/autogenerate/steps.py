@@ -31,7 +31,6 @@ from sustained.autogenerate.statements import (
     _deferred_foreign_key_steps,
     _extra_table_drops,
     _foreign_keys_setting,
-    _index_intent,
     _intent_table,
     _introspected_fk_sql,
     _rebuild_needed,
@@ -46,7 +45,13 @@ from sustained.rebuild import (
     rebuild_steps,
     rebuild_turns_foreign_keys_off,
 )
-from sustained.schema import ColumnState, bare_table_name
+from sustained.schema import (
+    ColumnState,
+    Index,
+    bare_table_name,
+    create_index_sql,
+    create_index_statement,
+)
 from sustained.types import Connection
 
 if TYPE_CHECKING:
@@ -489,18 +494,10 @@ def _index_steps(state: _Generation) -> None:
             continue
         table_sql = model._qualified_table_sql(compiler)
         intent_table = _intent_table(model)
-        create = _index_intent(
-            compiler.compile_create_index(
-                index.name, table_sql, list(index.columns), index.unique
-            ),
-            intent_table,
-            index,
-        )
+        create = create_index_statement(compiler, table_sql, intent_table, index)
         drop = compiler.compile_drop_index(index.name, table_sql)
         if state.online:
-            up_steps.extend(
-                _built_online(state, model, index.name, index.columns, index.unique)
-            )
+            up_steps.extend(_built_online(state, model, index))
             down_steps.insert(0, _dropped_online(state, model, drop))
         else:
             up_steps.append(create)
@@ -522,21 +519,11 @@ def _index_steps(state: _Generation) -> None:
             actual[(model.tableName or "").lower()], actual_index
         )
         if state.online:
-            up_steps.extend(
-                _replaced_online(
-                    state, model, drop, index.name, index.columns, index.unique
-                )
-            )
+            up_steps.extend(_replaced_online(state, model, drop, index))
         else:
             up_steps.append(drop)
             up_steps.append(
-                _index_intent(
-                    compiler.compile_create_index(
-                        index.name, table_sql, list(index.columns), index.unique
-                    ),
-                    intent_table,
-                    index,
-                )
+                create_index_statement(compiler, table_sql, intent_table, index)
             )
         # An invalid index is rebuilt, and the down step leaves the
         # valid one in its place: the invalid index did nothing.
@@ -547,9 +534,7 @@ def _index_steps(state: _Generation) -> None:
                     state,
                     model,
                     str(drop),
-                    index.name,
-                    actual_columns,
-                    actual_index.unique,
+                    Index(index.name, *actual_columns, unique=actual_index.unique),
                     intent=False,
                 )
             else:
@@ -605,7 +590,9 @@ def _key_rebuild_steps(
             )
         )
         return
-    up_steps.extend(_replaced_online(state, model, drop, name, (column,), True))
+    up_steps.extend(
+        _replaced_online(state, model, drop, Index(name, column, unique=True))
+    )
     if not _is_partitioned(state, model):
         up_steps.append(unique_using_index(compiler, table_sql, table, name))
     state.online_keys.add(_key(model.tableName or "", (column,)))
@@ -620,9 +607,7 @@ def _is_partitioned(state: _Generation, model: Type["Model"]) -> bool:
 def _built_online(
     state: _Generation,
     model: Type["Model"],
-    name: str,
-    columns: Sequence[str],
-    unique: bool,
+    index: Index,
     intent: bool = True,
 ) -> List[str]:
     """
@@ -642,27 +627,20 @@ def _built_online(
                 compiler,
                 table_sql,
                 table,
-                name,
-                list(columns),
-                unique,
+                index.name,
+                list(index.columns),
+                index.unique,
                 found.partitions,
             )
         )
-    drop = compiler.compile_drop_index(name, table_sql)
-    create = compiler.compile_create_index(name, table_sql, list(columns), unique)
+    drop = compiler.compile_drop_index(index.name, table_sql)
     if not intent:
+        create = create_index_sql(compiler, table_sql, index)
         return [str(s) for s in rebuilt(drop, create)]
     return list(
         rebuilt(
-            with_intent(drop, "drop_index", table, name=name),
-            with_intent(
-                create,
-                "create_index",
-                table,
-                name=name,
-                columns=tuple(columns),
-                unique=unique,
-            ),
+            with_intent(drop, "drop_index", table, name=index.name),
+            create_index_statement(compiler, table_sql, table, index),
         )
     )
 
@@ -671,9 +649,7 @@ def _replaced_online(
     state: _Generation,
     model: Type["Model"],
     drop: str,
-    name: str,
-    columns: Sequence[str],
-    unique: bool,
+    index: Index,
     intent: bool = True,
 ) -> List[str]:
     """
@@ -681,7 +657,7 @@ def _replaced_online(
     the build, which drops the index of the same name first, and on a
     partitioned table, whose build drops nothing, `drop` before it.
     """
-    built = _built_online(state, model, name, columns, unique, intent)
+    built = _built_online(state, model, index, intent)
     if _is_partitioned(state, model):
         return [_dropped_online(state, model, drop)] + built
     return built
@@ -913,7 +889,10 @@ def _drop_steps(state: _Generation) -> None:
             model = models_by_table[table.lower()]
             up_steps.append(_dropped_online(state, model, drop))
             down_steps[0:0] = _built_online(
-                state, model, name, columns, actual_index.unique, intent=False
+                state,
+                model,
+                Index(name, *columns, unique=actual_index.unique),
+                intent=False,
             )
         for table, name in diff.extra_columns:
             if table.lower() in rebuild_tables:

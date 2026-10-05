@@ -411,20 +411,11 @@ class Model(metaclass=ModelMeta):
     def create_indexes_sql(cls) -> list[str]:
         """Renders CREATE INDEX statements for the model's indexes."""
         from sustained.dialects import Dialects
+        from sustained.schema import create_index_sql
 
         compiler = Dialects.get_compiler(cls._dialect)
-        statements = []
-        for index in cls.indexes or []:
-            statements.append(
-                compiler.compile_create_index(
-                    index.name,
-                    cls._qualified_table_sql(),
-                    list(index.key_parts),
-                    index.unique,
-                    index.where,
-                )
-            )
-        return statements
+        table_sql = cls._qualified_table_sql()
+        return [create_index_sql(compiler, table_sql, i) for i in cls.indexes or []]
 
     @classmethod
     def enum_types(cls) -> "dict[str, tuple[str, ...]]":

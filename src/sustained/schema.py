@@ -27,6 +27,7 @@ from typing import (
 from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
+    from sustained.analysis import MigrationStatement
     from sustained.compilers.base import Compiler
 
 
@@ -571,6 +572,38 @@ def bare_table_name(table_sql: str) -> str:
     """
     last = table_sql.rsplit(".", 1)[-1]
     return last.strip('"`[]')
+
+
+def create_index_sql(compiler: "Compiler", table_sql: str, index: Index) -> str:
+    """
+    Renders CREATE INDEX for a declared index, with the direction and
+    prefix length of each key part and the predicate of a partial index.
+    """
+    return compiler.compile_create_index(
+        index.name, table_sql, list(index.key_parts), index.unique, index.where
+    )
+
+
+def create_index_statement(
+    compiler: "Compiler", table_sql: str, intent_table: Optional[str], index: Index
+) -> "MigrationStatement":
+    """
+    The CREATE INDEX statement for a declared index, tagged with the
+    index it builds for the impact analysis. `intent_table` is the
+    dotted, unquoted table name.
+    """
+    # The analysis module imports the migrations module, which imports
+    # the ddl module, which imports this one.
+    from sustained.analysis import with_intent
+
+    return with_intent(
+        create_index_sql(compiler, table_sql, index),
+        "create_index",
+        intent_table,
+        name=index.name,
+        columns=tuple(index.columns),
+        unique=index.unique,
+    )
 
 
 def enum_check_constraint_sql(

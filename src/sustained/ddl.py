@@ -45,6 +45,7 @@ from sustained.schema import (
     bare_table_name,
     build_create_table_sql,
     collect_enum_types,
+    create_index_statement,
 )
 from sustained.types import Expression
 
@@ -164,13 +165,22 @@ def _canonical(value: object) -> object:
             }
         }
     if isinstance(value, Index):
-        return {
-            "$index": {
-                "name": value.name,
-                "columns": list(value.columns),
-                "unique": value.unique,
-            }
+        index: Dict[str, object] = {
+            "name": value.name,
+            "columns": list(value.columns),
+            "unique": value.unique,
         }
+        # Key-part details and a predicate join the signature only when
+        # declared. A plain index serializes without them, so applied
+        # migrations that create plain indexes keep a valid checksum.
+        if any(part.desc or part.prefix_length for part in value.key_parts):
+            index["key_parts"] = [
+                {"name": p.name, "desc": p.desc, "prefix_length": p.prefix_length}
+                for p in value.key_parts
+            ]
+        if value.where is not None:
+            index["where"] = value.where
+        return {"$index": index}
     if isinstance(value, TableOptions):
         return {
             "$options": {
@@ -294,6 +304,7 @@ def _render_create_table(args: _Args, compiler: "Compiler") -> List[str]:
     assert isinstance(columns, dict)
     table_sql = _table_sql(args, compiler)
     table = args["table"]
+    assert isinstance(table, str)
     statements: List[str] = []
     if compiler.enum_strategy() == "native":
         for name, values in collect_enum_types(columns).items():
@@ -330,19 +341,9 @@ def _render_create_table(args: _Args, compiler: "Compiler") -> List[str]:
     )
     indexes = args["indexes"]
     assert isinstance(indexes, list)
-    for index in indexes:
-        statements.append(
-            _tag(
-                compiler.compile_create_index(
-                    index.name, table_sql, list(index.columns), index.unique
-                ),
-                "create_index",
-                table,
-                name=index.name,
-                columns=tuple(index.columns),
-                unique=index.unique,
-            )
-        )
+    statements.extend(
+        create_index_statement(compiler, table_sql, table, index) for index in indexes
+    )
     return statements
 
 
@@ -811,21 +812,9 @@ def create_index(table: TableRef, index: Index) -> DdlStep:
 def _render_create_index(args: _Args, compiler: "Compiler") -> List[str]:
     index = args["index"]
     assert isinstance(index, Index)
-    return [
-        _tag(
-            compiler.compile_create_index(
-                index.name,
-                _table_sql(args, compiler),
-                list(index.columns),
-                index.unique,
-            ),
-            "create_index",
-            args["table"],
-            name=index.name,
-            columns=tuple(index.columns),
-            unique=index.unique,
-        )
-    ]
+    table = args["table"]
+    assert isinstance(table, str)
+    return [create_index_statement(compiler, _table_sql(args, compiler), table, index)]
 
 
 @_inverse_of("create_index")
