@@ -52,7 +52,6 @@ from sustained.types import (
     ColumnDescription,
     Connection,
     Cursor,
-    RelationTree,
     RowValue,
     SqlValue,
     WriteResult,
@@ -876,51 +875,13 @@ async def eager_load_paths_async(
     relation costs one query per level, batched over all the parents at
     that level, exactly as the sync loader does.
     """
-    from sustained.execution import relation_tree
+    from sustained.execution import eager_load_steps, relation_tree
 
-    await _eager_load_tree_async(model_class, adapter, parents, relation_tree(paths))
-
-
-async def _eager_load_tree_async(
-    model_class: Type["Model"],
-    adapter: AsyncAdapter,
-    parents: List["Model"],
-    tree: RelationTree,
-) -> None:
-    """Loads one level of the relation tree, then recurses into each child."""
-    from sustained.execution import _attached_children, related_model
-
-    for relation_name, children in tree.items():
-        await _eager_load_async(model_class, adapter, parents, relation_name)
-        if not children:
-            continue
-        next_parents = _attached_children(parents, relation_name)
-        if next_parents:
-            await _eager_load_tree_async(
-                related_model(model_class, relation_name),
-                adapter,
-                next_parents,
-                children,
-            )
-
-
-async def _eager_load_async(
-    model_class: Type["Model"],
-    adapter: AsyncAdapter,
-    parents: List["Model"],
-    relation_name: str,
-) -> None:
-    """
-    Async mirror of the sync eager loader. It shares the sync planner, so
-    both paths build the same query and group the rows the same way,
-    including relations that run through a link table.
-    """
-    from sustained.execution import attach_eager_load, plan_eager_load
-
-    if not parents:
-        return
-    plan = plan_eager_load(model_class, parents, relation_name)
-    children: List["Model"] = []
-    for query in plan.queries:
-        children.extend(cast(List["Model"], await run_async(query, adapter)))
-    attach_eager_load(plan, parents, children)
+    steps = eager_load_steps(model_class, parents, relation_tree(paths))
+    try:
+        query = next(steps)
+        while True:
+            rows = cast(List["Model"], await run_async(query, adapter))
+            query = steps.send(rows)
+    except StopIteration:
+        pass

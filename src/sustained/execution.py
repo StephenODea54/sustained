@@ -16,6 +16,7 @@ from typing import (
     TYPE_CHECKING,
     Callable,
     Dict,
+    Generator,
     Iterator,
     List,
     Optional,
@@ -681,6 +682,44 @@ def _attached_children(parents: List["Model"], relation_name: str) -> List["Mode
     return children
 
 
+EagerSteps = Generator["AnyQuery", List["Model"], None]
+
+
+def eager_load_steps(
+    model_class: Type["Model"], parents: List["Model"], tree: RelationTree
+) -> EagerSteps:
+    """
+    Loads one level of the relation tree, then each child level, as a
+    generator. It yields each batch query and receives the rows the query
+    returned, so the sync and async loaders differ only in how they run
+    a query.
+    """
+    for relation_name, children in tree.items():
+        if parents:
+            plan = plan_eager_load(model_class, parents, relation_name)
+            fetched: List["Model"] = []
+            for query in plan.queries:
+                fetched.extend((yield query))
+            attach_eager_load(plan, parents, fetched)
+        if not children:
+            continue
+        next_parents = _attached_children(parents, relation_name)
+        if next_parents:
+            yield from eager_load_steps(
+                related_model(model_class, relation_name), next_parents, children
+            )
+
+
+def _run_eager_steps(steps: EagerSteps, connection: Connection) -> None:
+    """Runs each query eager_load_steps() yields on the connection."""
+    try:
+        query = next(steps)
+        while True:
+            query = steps.send(cast(List["Model"], query.run(connection)))
+    except StopIteration:
+        pass
+
+
 def eager_load_paths(
     model_class: Type["Model"],
     connection: Connection,
@@ -692,28 +731,9 @@ def eager_load_paths(
     relation costs one query per level, batched over all the parents at
     that level.
     """
-    _eager_load_tree(model_class, connection, parents, relation_tree(paths))
-
-
-def _eager_load_tree(
-    model_class: Type["Model"],
-    connection: Connection,
-    parents: List["Model"],
-    tree: RelationTree,
-) -> None:
-    """Loads one level of the relation tree, then recurses into each child."""
-    for relation_name, children in tree.items():
-        eager_load_relation(model_class, connection, parents, relation_name)
-        if not children:
-            continue
-        next_parents = _attached_children(parents, relation_name)
-        if next_parents:
-            _eager_load_tree(
-                related_model(model_class, relation_name),
-                connection,
-                next_parents,
-                children,
-            )
+    _run_eager_steps(
+        eager_load_steps(model_class, parents, relation_tree(paths)), connection
+    )
 
 
 # The most join keys one eager-load query binds. MSSQL accepts 2100
@@ -741,11 +761,6 @@ class EagerPlan:
     sets the empty value on every parent. The keys are split over more
     than one query when there are more of them than EAGER_KEY_BATCH.
     """
-
-    @property
-    def query(self) -> Optional["AnyQuery"]:
-        """The first query, or None when there is nothing to fetch."""
-        return self.queries[0] if self.queries else None
 
     def __init__(
         self,
@@ -835,8 +850,7 @@ def attach_eager_load(
     Raises:
         ValueError: If the fetched rows lack the join key column.
     """
-    empty: Optional[List["Model"]] = [] if plan.is_many else None
-    if plan.query is None:
+    if not plan.queries:
         for parent in parents:
             setattr(parent, plan.relation_name, [] if plan.is_many else None)
         return
@@ -862,7 +876,7 @@ def attach_eager_load(
         if plan.is_many:
             setattr(parent, plan.relation_name, matches)
         else:
-            setattr(parent, plan.relation_name, matches[0] if matches else empty)
+            setattr(parent, plan.relation_name, matches[0] if matches else None)
 
 
 def eager_load_relation(
@@ -878,13 +892,9 @@ def eager_load_relation(
     HasManyRelation and ManyToManyRelation attach a list; the to-one relation
     types attach a single instance or None.
     """
-    if not parents:
-        return
-    plan = plan_eager_load(model_class, parents, relation_name)
-    children: List["Model"] = []
-    for query in plan.queries:
-        children.extend(cast(List["Model"], query.run(connection)))
-    attach_eager_load(plan, parents, children)
+    _run_eager_steps(
+        eager_load_steps(model_class, parents, {relation_name: {}}), connection
+    )
 
 
 def _collect_parent_keys(
