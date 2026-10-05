@@ -90,6 +90,43 @@ class TestIndexDetailsDiff(unittest.TestCase):
         )
         self.assertTrue(index_details_differ(index, actual))
 
+    def test_grouped_predicate_matches(self):
+        index = Index("ix_a", "a", where="(a > 0) AND (b > 0)")
+        actual = IntrospectedIndex(
+            ("a",),
+            False,
+            where='(("a" > 0) AND ("b" > 0))',
+            descending=(False,),
+            prefix_lengths=(None,),
+            details=True,
+        )
+        self.assertFalse(index_details_differ(index, actual))
+
+    def test_engine_spelling_of_predicate_matches(self):
+        # SQL Server reports the filter a > 0 as ([a]>(0)).
+        index = Index("ix_a", "a", where="a > 0")
+        actual = IntrospectedIndex(
+            ("a",),
+            False,
+            where="([a]>(0))",
+            descending=(False,),
+            prefix_lengths=(None,),
+            details=True,
+        )
+        self.assertFalse(index_details_differ(index, actual))
+
+    def test_grouped_predicate_difference_is_drift(self):
+        index = Index("ix_a", "a", where="(a > 0) AND (b > 0)")
+        actual = IntrospectedIndex(
+            ("a",),
+            False,
+            where="(a > 0) AND (b > 1)",
+            descending=(False,),
+            prefix_lengths=(None,),
+            details=True,
+        )
+        self.assertTrue(index_details_differ(index, actual))
+
     def test_direction_difference_is_drift(self):
         index = Index("ix_a", "a")
         actual = IntrospectedIndex(

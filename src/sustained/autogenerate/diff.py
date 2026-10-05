@@ -29,6 +29,7 @@ from sustained.introspect import (
     parse_inline_enum,
     type_params,
 )
+from sustained.introspect.normalize import normalize_check
 from sustained.schema import Check, ForeignKey, bare_table_name, collect_enum_types
 
 if TYPE_CHECKING:
@@ -655,19 +656,6 @@ def _column_type_changed(
     )
 
 
-def _normalize_predicate(predicate: Optional[str]) -> Optional[str]:
-    if predicate is None:
-        return None
-    text = predicate.strip()
-    while text.startswith("(") and text.endswith(")"):
-        text = text[1:-1].strip()
-    text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"\s*([=<>(),])\s*", r"\1", text)
-    return (
-        text.replace('"', "").replace("`", "").replace("[", "").replace("]", "").lower()
-    )
-
-
 def index_details_differ(index: "Index", actual_index: IntrospectedIndex) -> bool:
     """
     Whether the declared partial predicate, key part directions, or
@@ -677,7 +665,11 @@ def index_details_differ(index: "Index", actual_index: IntrospectedIndex) -> boo
     """
     if not actual_index.details:
         return False
-    if _normalize_predicate(index.where) != _normalize_predicate(actual_index.where):
+    declared_where = None if index.where is None else normalize_check(index.where)
+    live_where = (
+        None if actual_index.where is None else normalize_check(actual_index.where)
+    )
+    if declared_where != live_where:
         return True
     declared_desc = tuple(part.desc for part in index.key_parts)
     if declared_desc != tuple(actual_index.descending):
