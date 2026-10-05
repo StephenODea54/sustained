@@ -11,8 +11,9 @@ The handler helpers every rule profile uses.
   `rename_note()` the one for a rename.
 - `dotted_version()` reads the version number from a server's version
   text.
-- `add_stats()` keys a table's stats by `schema.table`, and by the bare
-  name when an unqualified name finds the table.
+- `keys()` are the names a table is found under: `schema.table`, and the
+  bare name when an unqualified name finds the table. `add_stats()`
+  keys a table's stats by them.
 - `with_observations()` puts a traced rehearsal's observations in place
   of a report's predictions, and `mismatch()` is the finding for a
   difference between the two. `settled_work()` picks the work to report
@@ -183,6 +184,16 @@ def dotted_version(
     return tuple(int(part) for part in match.group(1).split("."))
 
 
+def keys(schema: str, name: str, bare: bool) -> Tuple[str, ...]:
+    """
+    The lower case keys a table is found under: `schema.table`, and the
+    bare name when `bare` says an unqualified name finds it. The size
+    read, the preflight, and the trace all match names by these keys.
+    """
+    full = f"{schema}.{name}".lower()
+    return (full, name.lower()) if bare else (full,)
+
+
 def add_stats(
     found: Dict[str, TableStats],
     schema: str,
@@ -194,11 +205,8 @@ def add_stats(
     Adds a table's stats under `schema.table`, and under the bare name
     when `bare` says an unqualified name finds it. Returns the full key.
     """
-    key = f"{schema}.{name}".lower()
-    found[key] = stats
-    if bare:
-        found[name.lower()] = stats
-    return key
+    found.update(dict.fromkeys(keys(schema, name, bare), stats))
+    return keys(schema, name, False)[0]
 
 
 def mismatch(message: str) -> Finding:

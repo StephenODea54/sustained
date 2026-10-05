@@ -59,7 +59,7 @@ from sustained.impact.model import (
     TableImpact,
     Work,
 )
-from sustained.impact.rules.common import settled_work, work_mismatch
+from sustained.impact.rules.common import keys, settled_work, work_mismatch
 from sustained.impact.rules.postgres.context import SYSTEM_SCHEMAS
 from sustained.impact.rules.postgres.locks import lock_name
 from sustained.impact.window import aggregate
@@ -194,9 +194,7 @@ def sighting_plan(tables: Sequence[str]) -> Generator[str, Rows, Sighting]:
 def _name(
     names: Dict[str, int], oid: int, schema: str, name: str, visible: bool
 ) -> None:
-    names[f"{schema}.{name}".lower()] = oid
-    if visible:
-        names[name.lower()] = oid
+    names.update(dict.fromkeys(keys(schema, name, visible), oid))
 
 
 class _Seen(NamedTuple):

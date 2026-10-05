@@ -275,12 +275,6 @@ def _sizes(rows: Sequence[Sequence[object]]) -> Dict[str, TableStats]:
     return tables
 
 
-def _keys(schema: str, name: str, visible: bool) -> Tuple[str, ...]:
-    """The lower case keys a table or type is found under."""
-    full = f"{schema}.{name}".lower()
-    return (full, name.lower()) if visible else (full,)
-
-
 def _spelled(schema: str, name: str, visible: bool) -> str:
     """A table's name as a statement would write it."""
     return name if visible else f"{schema}.{name}"
@@ -305,7 +299,7 @@ def _partitions(
             default=None if default is None else names.get(int(str(default))),
             partitions=tuple(sorted(children.get(key, ()))),
         )
-        for found in _keys(str(schema), str(name), bool(visible)):
+        for found in common.keys(str(schema), str(name), bool(visible)):
             relations[found] = relation
 
 
@@ -319,7 +313,7 @@ def _columns(
     """
     columns: Dict[Tuple[str, ...], Dict[str, Optional[str]]] = {}
     for schema, name, visible, column, value in rows:
-        keys = _keys(str(schema), str(name), bool(visible))
+        keys = common.keys(str(schema), str(name), bool(visible))
         found = columns.setdefault(keys, {})
         found[str(column).lower()] = None if value is None else str(value)
     for keys, values in columns.items():
@@ -358,6 +352,6 @@ def _types(rows: Sequence[Sequence[object]]) -> Mapping[str, bool]:
 
     types: Dict[str, bool] = {}
     for oid, schema, name, visible, _, _ in rows:
-        for key in _keys(str(schema), str(name), bool(visible)):
+        for key in common.keys(str(schema), str(name), bool(visible)):
             types[key] = constrained(int(str(oid)))
     return types

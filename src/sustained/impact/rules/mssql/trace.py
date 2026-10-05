@@ -62,6 +62,7 @@ from sustained.impact.model import (
     TableImpact,
     Work,
 )
+from sustained.impact.rules import common
 from sustained.impact.rules.mssql.locks import S
 
 if TYPE_CHECKING:
@@ -193,9 +194,7 @@ def sighting_plan(tables: Sequence[str]) -> Generator[str, Rows, Sighting]:
 def _name(
     names: Dict[str, int], object_id: int, schema: str, name: str, visible: bool
 ) -> None:
-    names[f"{schema}.{name}".lower()] = object_id
-    if visible:
-        names[name.lower()] = object_id
+    names.update(dict.fromkeys(common.keys(schema, name, visible), object_id))
 
 
 def _observed_work(
@@ -384,8 +383,6 @@ def with_observations(
     predicted ones, and each migration's locks and windows read again
     from them.
     """
-    from sustained.impact.rules import common
-
     return common.with_observations(
         report,
         observations,

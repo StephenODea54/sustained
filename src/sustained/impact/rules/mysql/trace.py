@@ -90,12 +90,13 @@ def tables_plan() -> Generator[str, Rows, Optional[FrozenSet[str]]]:
     rows = yield from attempt(_TABLES_SQL)
     if rows is None:
         return None
-    names = set()
-    for schema, name, own in rows:
-        names.add(f"{schema}.{name}".lower())
-        if own is not None and int(str(own)):
-            names.add(str(name).lower())
-    return frozenset(names)
+    return frozenset(
+        key
+        for schema, name, own in rows
+        for key in common.keys(
+            str(schema), str(name), own is not None and bool(int(str(own)))
+        )
+    )
 
 
 def candidates(mariadb: bool) -> Tuple[Online, ...]:
