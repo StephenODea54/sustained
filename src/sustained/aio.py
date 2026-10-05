@@ -45,6 +45,7 @@ from typing import (
 from sustained.execution import (
     checked_columns,
     enter_autocommit,
+    insert_batch,
     notify_statement,
     total_row_count,
     transaction_sql,
@@ -793,15 +794,6 @@ async def _run_query_on(
     query: "AnyQuery", resolved: AsyncAdapter
 ) -> Union[List["Model"], WriteResult]:
     """The query itself, on one adapter that is already checked out."""
-    use_executemany = (
-        query._stmt_type == "insert"
-        and len(query._insert_rows) > 1
-        and not query._returning_columns
-        # An Expression renders as SQL text with no placeholder, so the row
-        # would bind one value too many. Those inserts go through the
-        # one-statement path, which renders every row.
-        and not query._has_expression_values()
-    )
     started = time.perf_counter()
     if query._stmt_type == "select":
         sql, params = query._compiler.prepare_execution(*query.to_sql())
@@ -814,33 +806,16 @@ async def _run_query_on(
         )
         return models
 
-    if use_executemany:
-        sql = query._first_row_sql()
-        column_names = list(query._insert_rows[0].keys())
-        prepared = [
-            query._compiler.prepare_execution(sql, tuple(row[c] for c in column_names))
-            for row in query._insert_rows
-        ]
-        # A row whose preparation rewrote the statement, such as a None
-        # parameter on Athena, cannot share the batch; those inserts run
-        # one execute per row instead.
-        if all(row_sql == sql for row_sql, _ in prepared):
-            result: WriteResult = await resolved.executemany(
-                sql, [values for _, values in prepared]
-            )
+    batch = insert_batch(query)
+    if batch is not None:
+        if batch.batchable:
+            result: WriteResult = await resolved.executemany(batch.sql, batch.values())
         else:
             counts = []
-            for row_sql, row_values in prepared:
+            for row_sql, row_values in batch.rows:
                 counts.append(await resolved.execute(row_sql, row_values))
             result = total_row_count(counts)
-        # The listener sees every row's values, flattened in the order they
-        # were sent, so an audit of a batch insert holds the same
-        # information as an audit of single-row inserts.
-        notify_statement(
-            sql,
-            tuple(v for _, values in prepared for v in values),
-            time.perf_counter() - started,
-        )
+        notify_statement(batch.sql, batch.flat_params(), time.perf_counter() - started)
     elif query._returning_columns:
         sql, params = query._compiler.prepare_execution(*query.to_sql())
         columns, rows = await resolved.fetch(sql, params)

@@ -11,6 +11,7 @@ the dialect's placeholder: qmark for the default and MSSQL dialects
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 from typing import (
     TYPE_CHECKING,
@@ -38,6 +39,7 @@ from sustained.types import (
     RelationType,
     RowValue,
     SqlValue,
+    WriteResult,
 )
 
 if TYPE_CHECKING:
@@ -611,6 +613,97 @@ def total_row_count(counts: Sequence[int]) -> int:
     if any(count < 0 for count in counts):
         return -1
     return sum(counts)
+
+
+class InsertBatch(NamedTuple):
+    """
+    A multi-row insert sent as one single-row template. `rows` lists
+    each row's statement and values after prepare_execution(), and
+    `batchable` is True when every row kept the template, so the rows
+    can go to the driver's executemany() together.
+    """
+
+    sql: str
+    rows: List[Tuple[str, Tuple[SqlValue, ...]]]
+    batchable: bool
+
+    def values(self) -> List[Tuple[SqlValue, ...]]:
+        """Each row's parameters, in order."""
+        return [values for _, values in self.rows]
+
+    def flat_params(self) -> Tuple[SqlValue, ...]:
+        """
+        Every row's values, flattened in the order they were sent, so the
+        statement listener's audit of a batch insert keeps the same
+        information as an audit of single-row inserts.
+        """
+        return tuple(v for _, values in self.rows for v in values)
+
+
+def insert_batch(query: "AnyQuery") -> Optional[InsertBatch]:
+    """
+    The batch plan of a multi-row insert, or None when the query runs as
+    one statement.
+
+    An Expression value renders as SQL text with no placeholder, so its
+    row would bind one value too many, and RETURNING needs the rows the
+    statement returns. Those inserts take the one-statement path, which
+    renders every row. A row whose preparation rewrote the statement,
+    such as a None parameter on Athena, cannot share the batch, so the
+    plan is then not batchable and each row runs on its own.
+    """
+    if (
+        query._stmt_type != "insert"
+        or len(query._insert_rows) < 2
+        or query._returning_columns
+        or query._has_expression_values()
+    ):
+        return None
+    sql = query._first_row_sql()
+    columns = list(query._insert_rows[0].keys())
+    rows = [
+        query._compiler.prepare_execution(sql, tuple(row[c] for c in columns))
+        for row in query._insert_rows
+    ]
+    return InsertBatch(sql, rows, all(row_sql == sql for row_sql, _ in rows))
+
+
+def run_query(
+    query: "AnyQuery", conn: Connection, cursor: Cursor
+) -> Union[List["Model"], WriteResult]:
+    """QueryBuilder.run() itself, on a connection and cursor already open."""
+    started = time.perf_counter()
+    per_row_count: Optional[int] = None
+    batch = insert_batch(query)
+    if batch is not None:
+        if batch.batchable:
+            cursor.executemany(batch.sql, batch.values())
+        else:
+            # The cursor reports the count of its last execute only, so
+            # the per-row counts are added up here, as arun() does.
+            counts = []
+            for row_sql, row_values in batch.rows:
+                cursor.execute(row_sql, row_values)
+                counts.append(int(cursor.rowcount))
+            per_row_count = total_row_count(counts)
+        notify_statement(batch.sql, batch.flat_params(), time.perf_counter() - started)
+    else:
+        sql, params = query._compiler.prepare_execution(*query.to_sql())
+        cursor.execute(sql, params)
+        notify_statement(sql, params, time.perf_counter() - started)
+
+    if query._stmt_type == "select":
+        models = fetch_models(query._model_class, cursor)
+        eager_load_paths(query._model_class, conn, models, query._eager_relations)
+        return models
+
+    if query._returning_columns and cursor.description is not None:
+        columns = checked_columns([desc[0] for desc in cursor.description])
+        result: WriteResult = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    else:
+        result = cursor.rowcount if per_row_count is None else per_row_count
+    commit_unless_in_transaction(conn)
+    return result
 
 
 def checked_columns(columns: Sequence[str]) -> List[str]:
