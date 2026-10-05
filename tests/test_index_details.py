@@ -27,6 +27,11 @@ class TestIndexModel(unittest.TestCase):
         self.assertTrue(index.key_parts[0].desc)
         self.assertEqual(index.where, "a > 0")
 
+    def test_blank_predicate_means_every_row(self):
+        for where in ("", "   ", "\n\t"):
+            with self.subTest(where=where):
+                self.assertIsNone(Index("ix_a", "a", where=where).where)
+
     def test_prefix_length_must_be_positive(self):
         with self.assertRaises(ValueError):
             IndexColumn("a", prefix_length=0)

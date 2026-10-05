@@ -80,6 +80,17 @@ class TestIndexDetails(GeneratedCase):
             "e68e2070c7ecbd40e76d3bfb2a25b8faeb33daf211b55b44881bccbf5e0319c9",
         )
 
+    def test_blank_predicate_matches_a_plain_index(self):
+        plain = Migration("m1", up=[create_index("t", Index("ix_b", "b"))])
+        for where in ("", "  \n "):
+            with self.subTest(where=where):
+                step = create_index("t", Index("ix_b", "b", where=where))
+                self.assertEqual(
+                    step.render(POSTGRES), ['CREATE INDEX "ix_b" ON "t" ("b")']
+                )
+                blank = Migration("m1", up=[step])
+                self.assertEqual(migration_checksum(blank), migration_checksum(plain))
+
     def test_details_change_the_checksum(self):
         plain = Migration("m1", up=[create_index("t", Index("ix_a", "a"))])
         desc = Migration("m1", up=[create_index("t", PARTIAL)])

@@ -433,7 +433,9 @@ class Index:
             each part's direction and prefix length.
         unique: Whether the index enforces uniqueness.
         where: The predicate of a partial index as SQL text, or None
-            for an index over every row.
+            for an index over every row. A blank predicate becomes None,
+            because `CREATE INDEX ... WHERE ` with no condition is not
+            valid SQL.
     """
 
     def __init__(
@@ -453,7 +455,7 @@ class Index:
         )
         self.columns: Tuple[str, ...] = tuple(part.name for part in self.key_parts)
         self.unique = unique
-        self.where = where
+        self.where = where if where and where.strip() else None
 
 
 # Each factory forwards its keyword arguments to ColumnDef, which checks
