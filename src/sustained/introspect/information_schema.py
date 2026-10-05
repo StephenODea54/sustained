@@ -13,17 +13,15 @@ from sustained.introspect.model import (
     IntrospectedColumn,
     IntrospectedForeignKey,
     IntrospectedIndex,
-    IntrospectedTable,
     SchemaPlan,
     Snapshot,
 )
 from sustained.introspect.normalize import mysql_default_sql
 from sustained.introspect.scope import (
     _add_check,
-    _declared_schema,
     _foreign_keys,
-    _one_schema_per_table,
     _scoped_filter,
+    _TableColumns,
 )
 from sustained.types import RowValue
 
@@ -167,9 +165,9 @@ def _information_schema_plan(
     # leave the caller with no way out.
     scoped_read = catalog.current_schema_sql is not None
 
-    columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
-    spelled_tables: Dict[str, str] = {}
-    table_schemas: Dict[str, str] = {}
+    # The schema each table came from, so two tables of one name in two
+    # schemas are caught instead of merged.
+    tables = _TableColumns(schemas, one_schema_per_table=scoped_read)
 
     def column_fields(with_comment: bool) -> List[Tuple[str, str]]:
         """The (key, SQL) pairs of the column read's SELECT list, in order."""
@@ -224,9 +222,6 @@ def _information_schema_plan(
     else:
         column_rows = yield columns_query(False)
 
-    # The schema each table came from, so two tables of one name in two
-    # schemas are caught instead of merged.
-    schema_of_table: Dict[str, str] = {}
     # A row shorter than the SELECT list reads its missing columns as None.
     keys = [key for key, _ in column_fields(comments_read)]
     for values in column_rows:
@@ -235,13 +230,6 @@ def _information_schema_plan(
         # MySQL reports an uncommented column as '', not NULL.
         raw_comment = row.get("comment")
         comment = str(raw_comment) if raw_comment not in (None, "") else None
-        schema = row.get("schema")
-        if schema is not None:
-            if scoped_read:
-                _one_schema_per_table(schema_of_table, str(table).lower(), str(schema))
-            declared_schema = _declared_schema(schemas, schema)
-            if declared_schema is not None:
-                table_schemas[str(table).lower()] = declared_schema
         raw_type = str(row["type"]) if row["type"] else ""
         if catalog.reads_type_params:
             raw_type = _sized_type(
@@ -260,8 +248,10 @@ def _information_schema_plan(
             default_sql = mysql_default_sql(str(default), extra, raw_type)
         collation = row.get("collation")
         on_update = _MYSQL_ON_UPDATE_RE.search(extra)
-        spelled_tables.setdefault(str(table).lower(), str(table))
-        columns_by_table.setdefault(str(table).lower(), {})[str(name).lower()] = (
+        tables.add(
+            str(table),
+            row.get("schema"),
+            str(name),
             IntrospectedColumn(
                 raw_type=raw_type,
                 nullable=str(row["nullable"]).upper() == "YES",
@@ -273,7 +263,7 @@ def _information_schema_plan(
                 collation=None if collation is None else str(collation),
                 name=str(name),
                 on_update=None if on_update is None else on_update.group(1),
-            )
+            ),
         )
 
     primary_keys: Dict[str, List[str]] = {}
@@ -336,20 +326,14 @@ def _information_schema_plan(
         checks_read=checks_read,
         comments_read=comments_read,
     )
-    for table, columns in columns_by_table.items():
-        pk = tuple(primary_keys.get(table, ()))
-        for pk_col in pk:
-            if pk_col in columns:
-                columns[pk_col] = columns[pk_col]._replace(primary_key=True)
-        schema[table] = IntrospectedTable(
-            columns=columns,
-            primary_key=pk,
-            foreign_keys=foreign_keys.get(table, {}),
-            indexes=unique_indexes.get(table, {}),
-            checks=checks.get(table, {}),
-            name=spelled_tables.get(table),
-            check_names=check_names.get(table, {}),
-            schema=table_schemas.get(table),
+    for table in tables.columns:
+        schema[table] = tables.table(
+            table,
+            tuple(primary_keys.get(table, ())),
+            foreign_keys.get(table, {}),
+            unique_indexes.get(table, {}),
+            checks.get(table, {}),
+            check_names.get(table, {}),
         )
     return schema
 

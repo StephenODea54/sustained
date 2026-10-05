@@ -5,26 +5,26 @@ indexes, foreign keys, checks, comments, enum types, and partitions.
 
 from __future__ import annotations
 
-from typing import Dict, Generator, List, Optional, Sequence, Set, Tuple, cast
+from typing import Dict, Generator, List, Optional, Sequence, Set, Tuple
 
 from sustained.introspect.model import (
     IntrospectedColumn,
     IntrospectedForeignKey,
     IntrospectedIndex,
     IntrospectedPartition,
-    IntrospectedTable,
     SchemaPlan,
     Snapshot,
-    with_details,
 )
 from sustained.introspect.normalize import is_sequence_default
 from sustained.introspect.scope import (
     _add_check,
     _apply_comments,
-    _declared_schema,
     _foreign_keys,
-    _one_schema_per_table,
+    _group_indexes,
+    _IndexPart,
+    _row_text,
     _scoped_filter,
+    _TableColumns,
 )
 from sustained.types import RowValue
 
@@ -79,9 +79,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     # beside the declared schemas, which still match in that case.
     table_filter = _scoped_filter("c.table_schema", "current_schema()", schemas)
     namespace_filter = _scoped_filter("n.nspname", "current_schema()", schemas)
-    columns_by_table: Dict[str, Dict[str, IntrospectedColumn]] = {}
-    spelled_tables: Dict[str, str] = {}
-    table_schemas: Dict[str, str] = {}
+    tables = _TableColumns(schemas)
     column_rows = yield (
         "SELECT c.table_name, c.column_name, c.data_type, c.udt_name, "
         "c.character_maximum_length, c.numeric_precision, c.numeric_scale, "
@@ -93,17 +91,13 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         "AND t.table_type = 'BASE TABLE' "
         "ORDER BY c.table_name, c.ordinal_position"
     )
-    schema_of_table: Dict[str, str] = {}
     for row in column_rows:
         table, name, data_type, udt_name = (str(v) for v in row[:4])
         char_length, precision, scale, is_nullable, default = row[4:9]
-        if len(row) > 9 and row[9] is not None:
-            _one_schema_per_table(schema_of_table, table.lower(), str(row[9]))
-            declared_schema = _declared_schema(schemas, row[9])
-            if declared_schema is not None:
-                table_schemas[table.lower()] = declared_schema
-        spelled_tables.setdefault(table.lower(), table)
-        columns_by_table.setdefault(table.lower(), {})[name.lower()] = (
+        tables.add(
+            table,
+            row[9] if len(row) > 9 else None,
+            name,
             IntrospectedColumn(
                 raw_type=_postgres_column_type(
                     data_type, udt_name, char_length, precision, scale
@@ -116,7 +110,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 # column reports a nextval() default.
                 autoincrement=(len(row) > 10 and str(row[10]).upper() == "YES")
                 or is_sequence_default(default),
-            )
+            ),
         )
 
     primary_keys: Dict[str, Tuple[str, ...]] = {}
@@ -143,64 +137,26 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             f"AND {namespace_filter} "
             "ORDER BY t.relname, i.relname, k.ord"
         )
-        index_columns: Dict[
-            Tuple[str, str, bool, bool, bool, bool], List[Optional[str]]
-        ] = {}
-        spelled_indexes: Dict[Tuple[str, str], str] = {}
         # Bit 0 of a key part's indoption is set for a DESC part. A read
         # without the indoption and indpred columns reports no details.
-        descending: Dict[Tuple[str, str], List[bool]] = {}
-        predicates: Dict[Tuple[str, str], Optional[str]] = {}
-        for row in index_rows:
-            table, index, unique, primary, attname, backs = row[:6]
-            index_key = (str(table).lower(), str(index).lower())
-            spelled_indexes[index_key] = str(index)
-            if len(row) > 8:
-                descending.setdefault(index_key, []).append(bool(int(str(row[7])) & 1))
-                predicates[index_key] = None if row[8] is None else str(row[8])
-            key = (
-                str(table).lower(),
-                str(index).lower(),
-                bool(unique),
-                bool(primary),
-                bool(backs),
+        # An expression index has no column name for a key part, and
+        # _group_indexes() leaves it out rather than crashing the read.
+        indexes, primary_keys = _group_indexes(
+            _IndexPart(
+                str(row[0]).lower(),
+                str(row[1]),
+                None if row[4] is None else str(row[4]).lower(),
+                bool(row[2]),
+                details=len(row) > 8,
+                descending=len(row) > 8 and bool(int(str(row[7])) & 1),
+                where=_row_text(row, 8),
+                primary=bool(row[3]),
+                constraint=bool(row[5]),
                 # A row without the column reads as a valid index.
-                len(row) <= 6 or row[6] is None or bool(row[6]),
+                valid=len(row) <= 6 or row[6] is None or bool(row[6]),
             )
-            index_columns.setdefault(key, []).append(
-                None if attname is None else str(attname).lower()
-            )
-        for (
-            table,
-            index,
-            unique,
-            primary,
-            backs,
-            valid,
-        ), names in index_columns.items():
-            if any(name is None for name in names):
-                # An expression index has no column name for that key part.
-                # It cannot be compared against a model's column list, so it
-                # is left out of the schema rather than crashing the read.
-                continue
-            key_columns = tuple(cast(str, name) for name in names)
-            if primary:
-                primary_keys[table] = key_columns
-            else:
-                read = IntrospectedIndex(
-                    key_columns,
-                    unique,
-                    constraint=backs,
-                    name=spelled_indexes[(table, index)],
-                    valid=valid,
-                )
-                if (table, index) in descending:
-                    read = with_details(
-                        read,
-                        predicates[(table, index)],
-                        descending[(table, index)],
-                    )
-                indexes.setdefault(table, {})[index] = read
+            for row in index_rows
+        )
     except Exception:
         # No pg_index to read; degrade to columns without keys or indexes.
         pass
@@ -264,7 +220,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "AND d.objsubid > 0 "
             f"AND {namespace_filter}"
         )
-        _apply_comments(columns_by_table, comment_rows)
+        _apply_comments(tables.columns, comment_rows)
         comments_read = True
     except Exception:
         # No pg_description to read; degrade to no comments.
@@ -300,30 +256,25 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         checks_read=checks_read,
         comments_read=comments_read,
     )
-    for table, columns in columns_by_table.items():
-        pk = primary_keys.get(table, ())
-        for pk_col in pk:
-            if pk_col in columns:
-                columns[pk_col] = columns[pk_col]._replace(primary_key=True)
+    for table, columns in tables.columns.items():
         for name, column in columns.items():
             values = enum_types.get(column.raw_type.lower())
             if values is not None:
                 columns[name] = column._replace(
                     enum_name=column.raw_type.lower(), enum_values=values
                 )
-        schema[table] = IntrospectedTable(
-            columns=columns,
-            primary_key=pk,
-            foreign_keys=foreign_keys.get(table, {}),
-            indexes=indexes.get(table, {}),
-            checks=checks.get(table, {}),
-            name=spelled_tables.get(table),
-            check_names=check_names.get(table, {}),
-            schema=table_schemas.get(table),
+        schema[table] = tables.table(
+            table,
+            primary_keys.get(table, ()),
+            foreign_keys.get(table, {}),
+            indexes.get(table, {}),
+            checks.get(table, {}),
+            check_names.get(table, {}),
+        )._replace(
             not_valid=frozenset(not_valid.get(table, ())),
             partitioned=table in partitioned,
             partitions=_partitions_of(children, table),
-            partition_of=_spelled_parent(parents.get(table), spelled_tables),
+            partition_of=_spelled_parent(parents.get(table), tables),
         )
     return schema
 
@@ -456,10 +407,9 @@ def _partitions_of(
     )
 
 
-def _spelled_parent(
-    parent: Optional[str], spelled_tables: Dict[str, str]
-) -> Optional[str]:
+def _spelled_parent(parent: Optional[str], tables: _TableColumns) -> Optional[str]:
     """The name of a partition's table as the catalog spells it."""
     if parent is None:
         return None
-    return spelled_tables.get(parent, parent)
+    spelled = tables.spelled(parent)
+    return parent if spelled is None else spelled

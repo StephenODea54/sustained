@@ -111,6 +111,26 @@ class TestMysqlIndexRead(unittest.TestCase):
         self.assertEqual(index.prefix_lengths, (10, None))
         self.assertIsNone(index.where)
 
+    def test_each_table_keeps_its_own_index_spelling(self):
+        cursor = FakeCursor(
+            {
+                "information_schema.columns": COLUMNS
+                + [("u", "a", "int", "YES", None)],
+                "information_schema.statistics": [
+                    ("t", "Idx_A", 1, "a"),
+                    ("u", "idx_a", 1, "a"),
+                ],
+            }
+        )
+        schema = introspect_schema(FakeConnection(cursor), Dialects.MYSQL)
+        self.assertEqual("Idx_A", schema["t"].indexes["idx_a"].name)
+        self.assertEqual("idx_a", schema["u"].indexes["idx_a"].name)
+
+    def test_a_row_without_details_reports_none(self):
+        index = self.read([("t", "idx_a", 1, "a")])["t"].indexes["idx_a"]
+        self.assertFalse(index.details)
+        self.assertEqual((), index.descending)
+
     def test_a_missing_statistics_view_degrades_to_no_indexes(self):
         schema = self.read(None)
         self.assertEqual({}, dict(schema["t"].indexes))

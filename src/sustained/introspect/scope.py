@@ -5,9 +5,26 @@ the catalog reads share.
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    cast,
+)
 
-from sustained.introspect.model import IntrospectedColumn, IntrospectedForeignKey
+from sustained.introspect.model import (
+    IntrospectedColumn,
+    IntrospectedForeignKey,
+    IntrospectedIndex,
+    IntrospectedTable,
+    with_details,
+)
 from sustained.types import RowValue
 
 
@@ -178,3 +195,141 @@ def _apply_comments(
         key = str(name).lower()
         if columns is not None and key in columns:
             columns[key] = columns[key]._replace(comment=str(comment))
+
+
+class _IndexPart(NamedTuple):
+    """
+    One key part of an index, as an index row reads. `table` is
+    lowercased and `name` is spelled as the catalog spells it. `column`
+    is lowercased, or None for an expression part. `details` is False
+    for a row without the direction and predicate columns, and then
+    `descending`, `where`, and `prefix` are not read.
+    """
+
+    table: str
+    name: str
+    column: Optional[str]
+    unique: bool
+    details: bool = False
+    descending: bool = False
+    where: Optional[str] = None
+    prefix: Optional[int] = None
+    primary: bool = False
+    constraint: bool = False
+    valid: bool = True
+
+
+def _group_indexes(
+    parts: Iterable[_IndexPart],
+) -> Tuple[Dict[str, Dict[str, IntrospectedIndex]], Dict[str, Tuple[str, ...]]]:
+    """
+    The indexes that `parts` list, by lowercased table and index name,
+    and the primary key of each table, from parts in key order. An index
+    with an expression part is left out, since it cannot be compared
+    against a model's column list. The predicate of an index is the one
+    its last part reads.
+    """
+    grouped: Dict[Tuple[str, str, bool, bool, bool, bool], List[_IndexPart]] = {}
+    for part in parts:
+        key = (
+            part.table,
+            part.name.lower(),
+            part.unique,
+            part.primary,
+            part.constraint,
+            part.valid,
+        )
+        grouped.setdefault(key, []).append(part)
+    indexes: Dict[str, Dict[str, IntrospectedIndex]] = {}
+    primary_keys: Dict[str, Tuple[str, ...]] = {}
+    for (table, name, unique, primary, constraint, valid), found in grouped.items():
+        columns = [part.column for part in found]
+        if any(column is None for column in columns):
+            continue
+        key_columns = tuple(cast(str, column) for column in columns)
+        if primary:
+            primary_keys[table] = key_columns
+            continue
+        read = IntrospectedIndex(
+            key_columns,
+            unique,
+            constraint=constraint,
+            name=found[-1].name,
+            valid=valid,
+        )
+        detailed = [part for part in found if part.details]
+        if detailed:
+            read = with_details(
+                read,
+                detailed[-1].where,
+                [part.descending for part in detailed],
+                [part.prefix for part in detailed],
+            )
+        indexes.setdefault(table, {})[name] = read
+    return indexes, primary_keys
+
+
+class _TableColumns:
+    """
+    The columns a catalog read finds, by lowercased table and column
+    name, with the spelled name of each table and the schema it is in
+    when the models declare that schema. With `one_schema_per_table`,
+    one table name in two schemas raises ValueError, as
+    _one_schema_per_table() describes.
+    """
+
+    def __init__(
+        self, schemas: Tuple[str, ...], one_schema_per_table: bool = True
+    ) -> None:
+        self.columns: Dict[str, Dict[str, IntrospectedColumn]] = {}
+        self._schemas = schemas
+        self._refuse_shared_names = one_schema_per_table
+        self._spelled: Dict[str, str] = {}
+        self._declared: Dict[str, str] = {}
+        self._seen: Dict[str, str] = {}
+
+    def add(
+        self, table: str, schema: RowValue, name: str, column: IntrospectedColumn
+    ) -> None:
+        """Adds one column of `table`, read from `schema` when known."""
+        key = table.lower()
+        if schema is not None:
+            if self._refuse_shared_names:
+                _one_schema_per_table(self._seen, key, str(schema))
+            declared = _declared_schema(self._schemas, schema)
+            if declared is not None:
+                self._declared[key] = declared
+        self._spelled.setdefault(key, table)
+        self.columns.setdefault(key, {})[name.lower()] = column
+
+    def table(
+        self,
+        key: str,
+        primary_key: Tuple[str, ...],
+        foreign_keys: Mapping[str, IntrospectedForeignKey],
+        indexes: Mapping[str, IntrospectedIndex],
+        checks: Mapping[str, str],
+        check_names: Mapping[str, str],
+    ) -> IntrospectedTable:
+        """
+        The table read under the lowercased name `key`, with the columns
+        of `primary_key` marked as primary key columns.
+        """
+        columns = self.columns[key]
+        for name in primary_key:
+            if name in columns:
+                columns[name] = columns[name]._replace(primary_key=True)
+        return IntrospectedTable(
+            columns=columns,
+            primary_key=primary_key,
+            foreign_keys=foreign_keys,
+            indexes=indexes,
+            checks=checks,
+            name=self._spelled.get(key),
+            check_names=check_names,
+            schema=self._declared.get(key),
+        )
+
+    def spelled(self, key: str) -> Optional[str]:
+        """The name of a table as the catalog spells it, or None."""
+        return self._spelled.get(key)

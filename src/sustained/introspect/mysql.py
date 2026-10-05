@@ -7,7 +7,7 @@ and MariaDB's json_valid checks for its JSON columns.
 from __future__ import annotations
 
 import re
-from typing import Dict, Generator, List, Optional, Sequence, Tuple, cast
+from typing import Dict, Generator, List, Sequence, Tuple
 
 from sustained.introspect.information_schema import (
     MYSQL_CATALOG,
@@ -16,13 +16,11 @@ from sustained.introspect.information_schema import (
     _replace_foreign_keys,
 )
 from sustained.introspect.model import (
-    IntrospectedIndex,
     IntrospectedTable,
     SchemaPlan,
-    with_details,
 )
 from sustained.introspect.normalize import normalize_type, parse_inline_enum
-from sustained.introspect.scope import _scoped_filter
+from sustained.introspect.scope import _group_indexes, _IndexPart, _scoped_filter
 from sustained.types import RowValue
 
 # The whole body of the CHECK constraint MariaDB writes for a JSON column.
@@ -50,45 +48,23 @@ def _mysql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             f"WHERE {table_filter} "
             "ORDER BY table_name, index_name, seq_in_index"
         )
-        parts: Dict[Tuple[str, str, bool], List[Optional[str]]] = {}
         # collation is 'D' for a DESC part, and sub_part is the character
         # count of a prefix part. A read without them reports no details.
-        descending: Dict[Tuple[str, str], List[bool]] = {}
-        prefixes: Dict[Tuple[str, str], List[Optional[int]]] = {}
-        spelled: Dict[str, str] = {}
-        for row in index_rows:
-            table, name, non_unique, column = row[:4]
-            if str(name).upper() == "PRIMARY":
-                continue
-            key = (str(table).lower(), str(name).lower(), not int(str(non_unique)))
-            parts.setdefault(key, []).append(
-                None if column is None else str(column).lower()
+        # A functional index part has no column name, and _group_indexes()
+        # leaves its index out.
+        plain, _ = _group_indexes(
+            _IndexPart(
+                str(row[0]).lower(),
+                str(row[1]),
+                None if row[3] is None else str(row[3]).lower(),
+                not int(str(row[2])),
+                details=len(row) > 5,
+                descending=len(row) > 5 and str(row[4]).upper() == "D",
+                prefix=None if len(row) <= 5 or row[5] is None else int(str(row[5])),
             )
-            spelled.setdefault(str(name).lower(), str(name))
-            if len(row) > 5:
-                descending.setdefault(key[:2], []).append(str(row[4]).upper() == "D")
-                prefixes.setdefault(key[:2], []).append(
-                    None if row[5] is None else int(str(row[5]))
-                )
-        plain: Dict[str, Dict[str, IntrospectedIndex]] = {}
-        for (table, name, unique), columns in parts.items():
-            if any(column is None for column in columns):
-                # A functional index part has no column name; it cannot
-                # be compared against a model's column list.
-                continue
-            read = IntrospectedIndex(
-                tuple(cast(str, column) for column in columns),
-                unique,
-                name=spelled[name],
-            )
-            if (table, name) in descending:
-                read = with_details(
-                    read,
-                    None,
-                    descending[(table, name)],
-                    prefixes[(table, name)],
-                )
-            plain.setdefault(table, {})[name] = read
+            for row in index_rows
+            if str(row[1]).upper() != "PRIMARY"
+        )
         _merge_plain_indexes(schema, plain)
     except Exception:
         # No statistics view; keep the constraint-derived indexes.
