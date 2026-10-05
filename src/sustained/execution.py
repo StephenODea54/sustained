@@ -19,6 +19,7 @@ from typing import (
     Generator,
     Iterator,
     List,
+    NamedTuple,
     Optional,
     Sequence,
     Tuple,
@@ -396,12 +397,58 @@ def pinned_transaction(connection: Connection, dialect: "Dialects") -> Iterator[
         cursor.close()
 
 
-def _undo_savepoint(
-    compiler: "Compiler",
-    cursor: Cursor,
-    savepoint: str,
-    error: BaseException,
-) -> None:
+class Savepoint(NamedTuple):
+    """
+    The statements of one nested transaction block: `set` opens the
+    savepoint, `release` drops it after the block, and `undo` rolls the
+    block back to it and then drops it.
+    """
+
+    set: str
+    release: Optional[str]
+    undo: List[str]
+
+
+def savepoint_for(
+    dialect: "Dialects", compiler: "Compiler", depth: int, block: str
+) -> Savepoint:
+    """
+    The savepoint statements for a block nested `depth` levels deep.
+    `block` names the context manager in the error.
+
+    A savepoint rolled back is still set, so `undo` drops it too, or
+    every later block of the same name would stack on the connection.
+
+    Raises:
+        DialectError: If the dialect has no savepoints.
+    """
+    from sustained.exceptions import DialectError
+
+    name = f"sustained_sp_{depth}"
+    set_sql = compiler.savepoint_sql(name)
+    if set_sql is None:
+        raise DialectError(
+            f"{dialect.name} has no savepoints, so a nested {block} block "
+            "cannot roll back on its own. Run the statements inside the "
+            "outer block instead."
+        )
+    release = compiler.release_savepoint_sql(name)
+    rollback = compiler.rollback_savepoint_sql(name)
+    undo = [sql for sql in (rollback, release) if sql is not None]
+    return Savepoint(set_sql, release, undo)
+
+
+def driver_controls(connection: Connection) -> bool:
+    """
+    Whether the DB-API driver ends the connection's transactions through
+    commit() and rollback(). A connection the caller put in autocommit,
+    such as sqlite3.connect(autocommit=True) or psycopg with autocommit
+    on, sends no BEGIN of its own and reads rollback() as a no-op.
+    """
+    return getattr(connection, "autocommit", False) is not True
+
+
+def _undo_savepoint(cursor: Cursor, savepoint: Savepoint, error: BaseException) -> None:
     """
     Rolls a nested block back to its savepoint and drops the savepoint.
 
@@ -409,13 +456,7 @@ def _undo_savepoint(
     here does not replace it: the original error keeps propagating with
     the rollback failure as its cause.
     """
-    statements = [
-        compiler.rollback_savepoint_sql(savepoint),
-        compiler.release_savepoint_sql(savepoint),
-    ]
-    for statement in statements:
-        if statement is None:
-            continue
+    for statement in savepoint.undo:
         try:
             cursor.execute(statement)
         except Exception as rollback_error:
@@ -483,35 +524,22 @@ def transaction(
         )
 
     if entry is not None:
-        from sustained.exceptions import DialectError
-
         compiler = Dialects.get_compiler(dialect)
         depth = entry[1] + 1
-        savepoint = f"sustained_sp_{depth}"
-        set_sql = compiler.savepoint_sql(savepoint)
-        if set_sql is None:
-            raise DialectError(
-                f"{dialect.name} has no savepoints, so a nested "
-                "transaction() block cannot roll back on its own. Run the "
-                "statements inside the outer block instead."
-            )
+        savepoint = savepoint_for(dialect, compiler, depth, "transaction()")
         cursor = entry[2]
         owner = entry[3]
         with _TRANSACTION_LOCK:
             _ACTIVE_TRANSACTIONS[key] = (connection, depth, cursor, owner)
         try:
-            cursor.execute(set_sql)
+            cursor.execute(savepoint.set)
             try:
                 yield connection
             except BaseException as error:
-                # The savepoint is taken back and then dropped: a savepoint
-                # rolled back is still set, and every later one of the same
-                # name would stack on the connection.
-                _undo_savepoint(compiler, cursor, savepoint, error)
+                _undo_savepoint(cursor, savepoint, error)
                 raise
-            release_sql = compiler.release_savepoint_sql(savepoint)
-            if release_sql is not None:
-                cursor.execute(release_sql)
+            if savepoint.release is not None:
+                cursor.execute(savepoint.release)
         finally:
             with _TRANSACTION_LOCK:
                 _ACTIVE_TRANSACTIONS[key] = (connection, depth - 1, cursor, owner)
@@ -519,13 +547,9 @@ def transaction(
 
     compiler = Dialects.get_compiler(dialect)
     cursor = connection.cursor()
-    # A connection the caller put in autocommit, such as
-    # sqlite3.connect(autocommit=True) or psycopg with autocommit on,
-    # sends no BEGIN of its own and reads rollback() as a no-op, so the
-    # block would roll nothing back.
-    driver_control = (
-        compiler.driver_transaction_control()
-        and getattr(connection, "autocommit", False) is not True
+    # On a connection in autocommit, driver calls would roll nothing back.
+    driver_control = compiler.driver_transaction_control() and driver_controls(
+        connection
     )
     if not driver_control:
         # The driver runs autocommit, so the transaction is opened, kept,

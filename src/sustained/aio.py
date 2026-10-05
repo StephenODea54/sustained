@@ -60,6 +60,7 @@ from sustained.types import (
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
     from sustained.dialects import Dialects
+    from sustained.execution import Savepoint
     from sustained.model import Model
     from sustained.types import AnyQuery
 
@@ -388,7 +389,9 @@ class DbApiAsyncAdapter(AsyncAdapter):
         # commit() closes nothing. The block is then driven with BEGIN,
         # COMMIT and ROLLBACK statements, the way it is for an adapter
         # that runs in autocommit of its own.
-        return getattr(self._connection, "autocommit", False) is not True
+        from sustained.execution import driver_controls
+
+        return driver_controls(self._connection)
 
     async def begin_where_ddl_autocommits(self) -> None:
         from sustained.execution import needs_explicit_begin
@@ -639,26 +642,16 @@ async def pinned_async_transaction(adapter: AsyncAdapter) -> AsyncIterator[None]
 
 
 async def _undo_savepoint_async(
-    compiler: "Compiler",
-    adapter: AsyncAdapter,
-    savepoint: str,
-    error: BaseException,
+    adapter: AsyncAdapter, savepoint: "Savepoint", error: BaseException
 ) -> None:
     """
     Rolls a nested block back to its savepoint and drops the savepoint.
 
-    A savepoint rolled back is still set, so every later block of the same
-    name would stack on the connection. The block failed for a reason the
-    caller cares about, so a failure here does not replace it: the original
-    error keeps propagating with the rollback failure as its cause.
+    The block failed for a reason the caller cares about, so a failure
+    here does not replace it: the original error keeps propagating with
+    the rollback failure as its cause.
     """
-    statements = [
-        compiler.rollback_savepoint_sql(savepoint),
-        compiler.release_savepoint_sql(savepoint),
-    ]
-    for statement in statements:
-        if statement is None:
-            continue
+    for statement in savepoint.undo:
         try:
             await adapter.execute(statement, ())
         except Exception as rollback_error:
@@ -679,29 +672,21 @@ async def _transaction_on(
     entry = _active_async_transactions.get(key)
 
     if entry is not None and entry[0] is adapter:
-        from sustained.exceptions import DialectError
+        from sustained.execution import savepoint_for
 
         depth = entry[1] + 1
-        savepoint = f"sustained_sp_{depth}"
-        set_sql = compiler.savepoint_sql(savepoint)
-        if set_sql is None:
-            raise DialectError(
-                f"{dialect.name} has no savepoints, so a nested "
-                "async_transaction() block cannot roll back on its own. Run "
-                "the statements inside the outer block instead."
-            )
+        savepoint = savepoint_for(dialect, compiler, depth, "async_transaction()")
         _active_async_transactions[key] = (adapter, depth)
         token = _pinned_adapter.set(adapter)
         try:
-            await adapter.execute(set_sql, ())
+            await adapter.execute(savepoint.set, ())
             try:
                 yield adapter
             except BaseException as error:
-                await _undo_savepoint_async(compiler, adapter, savepoint, error)
+                await _undo_savepoint_async(adapter, savepoint, error)
                 raise
-            release_sql = compiler.release_savepoint_sql(savepoint)
-            if release_sql is not None:
-                await adapter.execute(release_sql, ())
+            if savepoint.release is not None:
+                await adapter.execute(savepoint.release, ())
         finally:
             _pinned_adapter.reset(token)
             _active_async_transactions[key] = (adapter, depth - 1)
