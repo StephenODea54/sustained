@@ -410,6 +410,36 @@ class TestPostgresCatalogQueries(unittest.TestCase):
         (query,) = [s for s in cursor.statements if "pg_index" in s]
         self.assertIn("ix.indisvalid", query)
 
+    def test_index_directions_and_predicate_are_read(self):
+        cursor = FakeCursor(
+            columns=[
+                column_row("shows", "a", "integer"),
+                column_row("shows", "b", "integer"),
+            ],
+            indexes=[
+                ("shows", "ix_ab", False, False, "a", False, True, 3, "(a > 0)"),
+                ("shows", "ix_ab", False, False, "b", False, True, 0, "(a > 0)"),
+                ("shows", "ix_full", False, False, "a", False, True, 0, None),
+            ],
+        )
+        indexes = self.read(cursor)["shows"].indexes
+        self.assertTrue(indexes["ix_ab"].details)
+        self.assertEqual(indexes["ix_ab"].descending, (True, False))
+        self.assertEqual(indexes["ix_ab"].where, "(a > 0)")
+        self.assertEqual(indexes["ix_ab"].prefix_lengths, (None, None))
+        self.assertIsNone(indexes["ix_full"].where)
+        (query,) = [s for s in cursor.statements if "pg_index" in s]
+        self.assertIn("ix.indoption[k.ord - 1]", query)
+        self.assertIn("pg_get_expr(ix.indpred, ix.indrelid)", query)
+
+    def test_an_index_row_without_details_reports_none(self):
+        cursor = FakeCursor(
+            columns=[column_row("users", "email", "text")],
+            indexes=[("users", "ix_email", False, False, "email", False, True)],
+        )
+        index = self.read(cursor)["users"].indexes["ix_email"]
+        self.assertFalse(index.details)
+
     def test_a_foreign_key_not_validated_is_marked(self):
         cursor = FakeCursor(
             columns=[column_row("shows", "venue_id", "integer")],

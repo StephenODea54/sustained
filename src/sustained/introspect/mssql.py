@@ -6,7 +6,7 @@ sys.extended_properties for column comments.
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from sustained.introspect.information_schema import (
     MSSQL_CATALOG,
@@ -15,7 +15,7 @@ from sustained.introspect.information_schema import (
     _merge_plain_indexes,
     _replace_foreign_keys,
 )
-from sustained.introspect.model import IntrospectedIndex, SchemaPlan
+from sustained.introspect.model import IntrospectedIndex, SchemaPlan, with_details
 
 
 def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
@@ -29,7 +29,8 @@ def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     index_filter = _catalog_filter(MSSQL_CATALOG, "SCHEMA_NAME(t.schema_id)", schemas)
     try:
         index_rows = yield (
-            "SELECT t.name, i.name, i.is_unique, c.name "
+            "SELECT t.name, i.name, i.is_unique, c.name, "
+            "ic.is_descending_key, i.filter_definition "
             "FROM sys.indexes i "
             "JOIN sys.tables t ON t.object_id = i.object_id "
             "JOIN sys.index_columns ic ON ic.object_id = i.object_id "
@@ -42,16 +43,27 @@ def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "ORDER BY t.name, i.name, ic.key_ordinal"
         )
         parts: Dict[Tuple[str, str, bool], List[str]] = {}
+        # A read without is_descending_key and filter_definition reports
+        # no details.
+        descending: Dict[Tuple[str, str], List[bool]] = {}
+        predicates: Dict[Tuple[str, str], Optional[str]] = {}
         spelled: Dict[str, str] = {}
-        for table, name, is_unique, column in index_rows:
+        for row in index_rows:
+            table, name, is_unique, column = row[:4]
             key = (str(table).lower(), str(name).lower(), bool(is_unique))
             parts.setdefault(key, []).append(str(column).lower())
             spelled.setdefault(str(name).lower(), str(name))
+            if len(row) > 5:
+                descending.setdefault(key[:2], []).append(bool(row[4]))
+                predicates[key[:2]] = None if row[5] is None else str(row[5])
         plain: Dict[str, Dict[str, IntrospectedIndex]] = {}
         for (table, name, unique), columns in parts.items():
-            plain.setdefault(table, {})[name] = IntrospectedIndex(
-                tuple(columns), unique, name=spelled[name]
-            )
+            read = IntrospectedIndex(tuple(columns), unique, name=spelled[name])
+            if (table, name) in descending:
+                read = with_details(
+                    read, predicates[(table, name)], descending[(table, name)]
+                )
+            plain.setdefault(table, {})[name] = read
         _merge_plain_indexes(schema, plain)
     except Exception:
         # No sys views to read; keep the constraint-derived indexes.

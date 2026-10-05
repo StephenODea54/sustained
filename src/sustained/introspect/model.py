@@ -133,6 +133,29 @@ class IntrospectedIndex(NamedTuple):
     details: bool = False
 
 
+def with_details(
+    index: IntrospectedIndex,
+    where: Optional[str],
+    descending: Sequence[bool],
+    prefix_lengths: Optional[Sequence[Optional[int]]] = None,
+) -> IntrospectedIndex:
+    """
+    `index` with its predicate, key part directions, and prefix lengths
+    set, and `details` True. A read on an engine without prefix parts
+    passes no `prefix_lengths`, which reads as None for every part.
+    """
+    return index._replace(
+        where=where,
+        descending=tuple(descending),
+        prefix_lengths=(
+            tuple(prefix_lengths)
+            if prefix_lengths is not None
+            else (None,) * len(index.columns)
+        ),
+        details=True,
+    )
+
+
 class IntrospectedForeignKey(NamedTuple):
     """
     One foreign key constraint as reported by the database. On engines

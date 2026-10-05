@@ -15,7 +15,12 @@ from sustained.introspect.information_schema import (
     _merge_plain_indexes,
     _replace_foreign_keys,
 )
-from sustained.introspect.model import IntrospectedIndex, IntrospectedTable, SchemaPlan
+from sustained.introspect.model import (
+    IntrospectedIndex,
+    IntrospectedTable,
+    SchemaPlan,
+    with_details,
+)
 from sustained.introspect.normalize import normalize_type, parse_inline_enum
 from sustained.introspect.scope import _scoped_filter
 from sustained.types import RowValue
@@ -39,14 +44,20 @@ def _mysql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     yield from _recover_mariadb_json(schema, constraint_filter)
     try:
         index_rows = yield (
-            "SELECT table_name, index_name, non_unique, column_name "
+            "SELECT table_name, index_name, non_unique, column_name, "
+            "collation, sub_part "
             "FROM information_schema.statistics "
             f"WHERE {table_filter} "
             "ORDER BY table_name, index_name, seq_in_index"
         )
         parts: Dict[Tuple[str, str, bool], List[Optional[str]]] = {}
+        # collation is 'D' for a DESC part, and sub_part is the character
+        # count of a prefix part. A read without them reports no details.
+        descending: Dict[Tuple[str, str], List[bool]] = {}
+        prefixes: Dict[Tuple[str, str], List[Optional[int]]] = {}
         spelled: Dict[str, str] = {}
-        for table, name, non_unique, column in index_rows:
+        for row in index_rows:
+            table, name, non_unique, column = row[:4]
             if str(name).upper() == "PRIMARY":
                 continue
             key = (str(table).lower(), str(name).lower(), not int(str(non_unique)))
@@ -54,17 +65,30 @@ def _mysql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 None if column is None else str(column).lower()
             )
             spelled.setdefault(str(name).lower(), str(name))
+            if len(row) > 5:
+                descending.setdefault(key[:2], []).append(str(row[4]).upper() == "D")
+                prefixes.setdefault(key[:2], []).append(
+                    None if row[5] is None else int(str(row[5]))
+                )
         plain: Dict[str, Dict[str, IntrospectedIndex]] = {}
         for (table, name, unique), columns in parts.items():
             if any(column is None for column in columns):
                 # A functional index part has no column name; it cannot
                 # be compared against a model's column list.
                 continue
-            plain.setdefault(table, {})[name] = IntrospectedIndex(
+            read = IntrospectedIndex(
                 tuple(cast(str, column) for column in columns),
                 unique,
                 name=spelled[name],
             )
+            if (table, name) in descending:
+                read = with_details(
+                    read,
+                    None,
+                    descending[(table, name)],
+                    prefixes[(table, name)],
+                )
+            plain.setdefault(table, {})[name] = read
         _merge_plain_indexes(schema, plain)
     except Exception:
         # No statistics view; keep the constraint-derived indexes.

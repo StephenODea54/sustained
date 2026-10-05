@@ -6,7 +6,7 @@ collations, and triggers held in the SQL stored in sqlite_master.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Sequence, Tuple, cast
+from typing import Dict, List, Optional, Sequence, Tuple, cast
 
 from sustained.introspect.model import (
     IntrospectedColumn,
@@ -15,6 +15,7 @@ from sustained.introspect.model import (
     IntrospectedTable,
     SchemaPlan,
     Snapshot,
+    with_details,
 )
 from sustained.introspect.normalize import _QUOTES, _balanced_paren_body, _unquoted
 from sustained.types import RowValue
@@ -157,6 +158,32 @@ def _sqlite_unnamed_checks(create_sql: str) -> Tuple[str, ...]:
     return tuple(found)
 
 
+_SQLITE_DESC_RE = re.compile(r"\bDESC\s*$", re.IGNORECASE)
+_SQLITE_WHERE_RE = re.compile(r"^\s*WHERE\s+(.*?)[\s;]*$", re.IGNORECASE | re.DOTALL)
+
+
+def _sqlite_index_details(
+    create_sql: str,
+) -> Optional[Tuple[Optional[str], Tuple[bool, ...]]]:
+    """
+    The WHERE predicate and the DESC flag of each key part of a CREATE
+    INDEX statement, or None when the statement does not parse. PRAGMA
+    index_info reports neither, so they are read from the stored SQL.
+    """
+    start = next((at for at, char in _unquoted(create_sql) if char == "("), None)
+    if start is None:
+        return None
+    body = _balanced_paren_body(create_sql, start)
+    if body is None:
+        return None
+    parts = _sqlite_table_parts(f"({body})")
+    where = _SQLITE_WHERE_RE.match(create_sql[start + len(body) + 2 :])
+    return (
+        where.group(1) if where else None,
+        tuple(bool(_SQLITE_DESC_RE.search(part)) for part in parts),
+    )
+
+
 def _sqlite_quote(name: str) -> str:
     """
     Quotes a name for a SQLite PRAGMA.
@@ -256,13 +283,20 @@ def _sqlite_plan() -> SchemaPlan:
                 continue
             index_columns = tuple(name.lower() for name in names)
             partial = len(row) > 4 and bool(row[4])
-            indexes[index_name.lower()] = IntrospectedIndex(
+            stored = index_sql.get(index_name.lower())
+            read = IntrospectedIndex(
                 index_columns,
                 unique,
                 constraint=origin == "u",
                 name=index_name,
-                sql=index_sql.get(index_name.lower()) if partial else None,
+                sql=stored if partial else None,
             )
+            # An automatic index, which backs a UNIQUE constraint, stores
+            # no SQL and reports no details.
+            details = None if stored is None else _sqlite_index_details(stored)
+            if details is not None and len(details[1]) == len(index_columns):
+                read = with_details(read, *details)
+            indexes[index_name.lower()] = read
 
         schema[table.lower()] = IntrospectedTable(
             columns=columns,

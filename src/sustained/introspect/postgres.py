@@ -15,6 +15,7 @@ from sustained.introspect.model import (
     IntrospectedTable,
     SchemaPlan,
     Snapshot,
+    with_details,
 )
 from sustained.introspect.normalize import is_sequence_default
 from sustained.introspect.scope import (
@@ -124,7 +125,8 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "SELECT t.relname, i.relname, ix.indisunique, ix.indisprimary, "
             "a.attname, EXISTS (SELECT 1 FROM pg_catalog.pg_constraint pc "
             "WHERE pc.conindid = ix.indexrelid AND pc.contype = 'u'), "
-            "ix.indisvalid "
+            "ix.indisvalid, ix.indoption[k.ord - 1], "
+            "pg_catalog.pg_get_expr(ix.indpred, ix.indrelid) "
             "FROM pg_catalog.pg_index ix "
             "JOIN pg_catalog.pg_class t ON t.oid = ix.indrelid "
             "JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid "
@@ -144,9 +146,17 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             Tuple[str, str, bool, bool, bool, bool], List[Optional[str]]
         ] = {}
         spelled_indexes: Dict[Tuple[str, str], str] = {}
+        # Bit 0 of a key part's indoption is set for a DESC part. A read
+        # without the indoption and indpred columns reports no details.
+        descending: Dict[Tuple[str, str], List[bool]] = {}
+        predicates: Dict[Tuple[str, str], Optional[str]] = {}
         for row in index_rows:
             table, index, unique, primary, attname, backs = row[:6]
-            spelled_indexes[(str(table).lower(), str(index).lower())] = str(index)
+            index_key = (str(table).lower(), str(index).lower())
+            spelled_indexes[index_key] = str(index)
+            if len(row) > 8:
+                descending.setdefault(index_key, []).append(bool(int(str(row[7])) & 1))
+                predicates[index_key] = None if row[8] is None else str(row[8])
             key = (
                 str(table).lower(),
                 str(index).lower(),
@@ -176,13 +186,20 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             if primary:
                 primary_keys[table] = key_columns
             else:
-                indexes.setdefault(table, {})[index] = IntrospectedIndex(
+                read = IntrospectedIndex(
                     key_columns,
                     unique,
                     constraint=backs,
                     name=spelled_indexes[(table, index)],
                     valid=valid,
                 )
+                if (table, index) in descending:
+                    read = with_details(
+                        read,
+                        predicates[(table, index)],
+                        descending[(table, index)],
+                    )
+                indexes.setdefault(table, {})[index] = read
     except Exception:
         # No pg_index to read; degrade to columns without keys or indexes.
         pass

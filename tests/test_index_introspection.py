@@ -97,6 +97,20 @@ class TestMysqlIndexRead(unittest.TestCase):
         schema = self.read([("t", "idx_expr", 1, None)])
         self.assertEqual({}, dict(schema["t"].indexes))
 
+    def test_directions_and_prefix_lengths_are_read(self):
+        schema = self.read(
+            [
+                ("t", "idx_ab", 1, "a", "D", 10),
+                ("t", "idx_ab", 1, "b", "A", None),
+                ("u", "idx_ab", 1, "a", None, None),
+            ]
+        )
+        index = schema["t"].indexes["idx_ab"]
+        self.assertTrue(index.details)
+        self.assertEqual(index.descending, (True, False))
+        self.assertEqual(index.prefix_lengths, (10, None))
+        self.assertIsNone(index.where)
+
     def test_a_missing_statistics_view_degrades_to_no_indexes(self):
         schema = self.read(None)
         self.assertEqual({}, dict(schema["t"].indexes))
@@ -124,6 +138,19 @@ class TestMssqlIndexRead(unittest.TestCase):
             IntrospectedIndex(("a", "b"), True, name="uq_ab"),
             schema["t"].indexes["uq_ab"],
         )
+
+    def test_directions_and_filter_are_read(self):
+        schema = self.read(
+            [
+                ("t", "ix_ab", False, "a", True, "([a]>(0))"),
+                ("t", "ix_ab", False, "b", False, "([a]>(0))"),
+            ]
+        )
+        index = schema["t"].indexes["ix_ab"]
+        self.assertTrue(index.details)
+        self.assertEqual(index.descending, (True, False))
+        self.assertEqual(index.where, "([a]>(0))")
+        self.assertEqual(index.prefix_lengths, (None, None))
 
     def test_missing_sys_views_degrade_to_no_indexes(self):
         schema = self.read(None)

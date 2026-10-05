@@ -109,6 +109,9 @@ def _duckdb_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
     """
     schema = yield from _information_schema_plan(DUCKDB_CATALOG, schemas)
     schema_filter = _catalog_filter(DUCKDB_CATALOG, "schema_name", schemas)
+    # The SQL that duckdb_indexes() stores has no DESC on any key part,
+    # and DuckDB refuses a partial index. So these indexes report no
+    # details, and a declared DESC part does not read as drift.
     try:
         index_rows = yield (
             "SELECT table_name, index_name, is_unique, expressions "

@@ -155,6 +155,40 @@ class TestSqliteChecks(unittest.TestCase):
         self.assertEqual(schema.enum_types, {})
 
 
+class TestSqliteIndexDetails(unittest.TestCase):
+    def read(self, *statements):
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        for statement in statements:
+            conn.execute(statement)
+        return introspect_schema(conn)["t"].indexes
+
+    def test_directions_and_predicate_are_read(self):
+        indexes = self.read(
+            "CREATE TABLE t (a INT, b INT)",
+            'CREATE INDEX "ix(ab" ON t (a DESC, b COLLATE NOCASE) WHERE a > (0)',
+        )
+        index = indexes["ix(ab"]
+        self.assertTrue(index.details)
+        self.assertEqual(index.descending, (True, False))
+        self.assertEqual(index.where, "a > (0)")
+        self.assertEqual(index.prefix_lengths, (None, None))
+
+    def test_an_automatic_index_reports_no_details(self):
+        indexes = self.read("CREATE TABLE t (a INT UNIQUE)")
+        (index,) = indexes.values()
+        self.assertFalse(index.details)
+
+    def test_statements_that_do_not_parse_report_none(self):
+        from sustained.introspect.sqlite import _sqlite_index_details
+
+        self.assertIsNone(_sqlite_index_details("CREATE INDEX i"))
+        self.assertIsNone(_sqlite_index_details("CREATE INDEX i ON t (a"))
+        self.assertEqual(
+            _sqlite_index_details("CREATE INDEX i ON t(a)"), (None, (False,))
+        )
+
+
 class TestSqlitePragmaQuoting(unittest.TestCase):
     """
     A SQLite name can hold a space or a double quote, and a PRAGMA takes
