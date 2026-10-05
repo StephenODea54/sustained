@@ -174,17 +174,36 @@ class TestEnumTypeSql(unittest.TestCase):
 
     def test_default_dialect_has_no_type_statements(self):
         c = Compiler(Dialects.DEFAULT)
-        with self.assertRaises(DialectError):
+        with self.assertRaisesRegex(
+            DialectError,
+            "^The DEFAULT dialect does not support named enum types. Enum "
+            "columns render per the dialect's enum strategy instead.$",
+        ):
             c.compile_create_enum_type("mood", ["sad"])
-        with self.assertRaises(DialectError):
+        with self.assertRaisesRegex(
+            DialectError,
+            "^The DEFAULT dialect does not support named enum types. There is "
+            "no enum type to drop.$",
+        ):
             c.compile_drop_enum_type("mood")
-        with self.assertRaises(DialectError):
+        with self.assertRaisesRegex(
+            DialectError,
+            "^The DEFAULT dialect does not support adding a value to an enum "
+            "type in place.$",
+        ):
             c.compile_add_enum_value("mood", "ok")
 
     def test_presto_and_athena_refuse_the_column(self):
-        for dialect in (Dialects.PRESTO, Dialects.ATHENA):
+        for dialect, display in (
+            (Dialects.PRESTO, "Presto"),
+            (Dialects.ATHENA, "Athena"),
+        ):
             compiler = Dialects.get_compiler(dialect)
-            with self.assertRaises(DialectError):
+            with self.assertRaisesRegex(
+                DialectError,
+                f"^The {display} dialect does not support enum types. It .* "
+                "Use String\\(\\) and validate values in the application.$",
+            ):
                 compiler.validate_column_def(Enum("sad", name="mood"))
 
 
@@ -234,10 +253,18 @@ class TestConstraintSql(unittest.TestCase):
             compiler = Dialects.get_compiler(dialect)
             with self.assertRaises(DialectError) as caught:
                 compiler.compile_add_check("t", "ck", "x > 0")
-            self.assertIn(f"{display} tables have no CHECK", str(caught.exception))
+            self.assertEqual(
+                str(caught.exception),
+                f"The {display} dialect does not support CHECK constraints. "
+                "Validate rows in the application.",
+            )
             with self.assertRaises(DialectError) as caught:
                 compiler.compile_add_foreign_key("t", "fk", "a", "o", "id")
-            self.assertIn(f"{display} tables have no foreign", str(caught.exception))
+            self.assertEqual(
+                str(caught.exception),
+                f"The {display} dialect does not support foreign keys. "
+                "Enforce the relationship in the application.",
+            )
 
 
 class TestDefaultDialectAlter(unittest.TestCase):
@@ -246,9 +273,16 @@ class TestDefaultDialectAlter(unittest.TestCase):
 
         c = Compiler(Dialects.DEFAULT)
         self.assertFalse(c.supports_alter_column())
-        with self.assertRaises(DialectError):
+        with self.assertRaisesRegex(
+            DialectError,
+            "^The DEFAULT dialect does not support altering a column type in place.$",
+        ):
             c.compile_alter_column_type("t", "n", ColumnState("INTEGER", True))
-        with self.assertRaises(DialectError):
+        with self.assertRaisesRegex(
+            DialectError,
+            "^The DEFAULT dialect does not support altering column nullability "
+            "in place.$",
+        ):
             c.compile_alter_column_nullability("t", "n", ColumnState("INTEGER", False))
 
 

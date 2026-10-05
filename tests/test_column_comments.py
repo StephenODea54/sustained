@@ -227,12 +227,12 @@ class TestSetColumnComment(unittest.TestCase):
 
     def test_ansi_raises(self):
         step = set_column_comment("accounts", "email", "Login address")
-        with self.assertRaisesRegex(DialectError, "stores no column comments"):
+        with self.assertRaisesRegex(DialectError, "does not support column comments"):
             step.render(ANSI)
 
     def test_mssql_raises(self):
         step = set_column_comment("accounts", "email", "Login address")
-        with self.assertRaisesRegex(DialectError, "stores no column comments"):
+        with self.assertRaisesRegex(DialectError, "does not support column comments"):
             step.render(MSSQL)
 
     def test_athena_raises(self):

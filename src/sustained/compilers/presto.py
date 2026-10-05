@@ -1,7 +1,5 @@
 from typing import TYPE_CHECKING, Optional, Sequence, Union
 
-from sustained.exceptions import DialectError
-
 from .base import Compiler
 
 if TYPE_CHECKING:
@@ -36,10 +34,10 @@ class PrestoCompiler(Compiler):
 
     def validate_column_def(self, column: "ColumnDef") -> None:
         if column.type_name == "ENUM":
-            raise DialectError(
-                "Presto has no enum types and cannot enforce a value "
-                "list. Use String() and validate values in the "
-                "application."
+            raise self._unsupported(
+                "enum types",
+                "It cannot enforce a value list. Use String() and validate "
+                "values in the application.",
             )
 
     def rebuild_strategy(self) -> str:
@@ -51,9 +49,8 @@ class PrestoCompiler(Compiler):
     def compile_add_check(
         self, table_sql: str, constraint: str, expression: str
     ) -> str:
-        raise DialectError(
-            f"{self.display_name()} tables have no CHECK "
-            "constraints. Validate rows in the application."
+        raise self._unsupported(
+            "CHECK constraints", "Validate rows in the application."
         )
 
     def compile_add_foreign_key(
@@ -66,9 +63,8 @@ class PrestoCompiler(Compiler):
         on_delete: Optional[str] = None,
         on_update: Optional[str] = None,
     ) -> str:
-        raise DialectError(
-            f"{self.display_name()} tables have no foreign "
-            "keys. Enforce the relationship in the application."
+        raise self._unsupported(
+            "foreign keys", "Enforce the relationship in the application."
         )
 
     def compile_upsert_statement(

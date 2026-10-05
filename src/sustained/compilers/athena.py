@@ -134,10 +134,11 @@ class AthenaCompiler(PrestoCompiler):
 
     def validate_column_def(self, column: "ColumnDef") -> None:
         if column.type_name == "ENUM":
-            raise DialectError(
-                "Athena has no enum types and enforces no constraints, so "
-                "an enum column's value list cannot be held. Use String() "
-                "and validate values in the application."
+            raise self._unsupported(
+                "enum types",
+                "It enforces no constraints, so it cannot keep an enum "
+                "column's value list. Use String() and validate values in "
+                "the application.",
             )
         problems = []
         if column.primary_key:

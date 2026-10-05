@@ -803,9 +803,9 @@ class Compiler:
         if self.enum_strategy() == "native":
             values_sql = ", ".join(self.format_value(v) for v in values)
             return f"CREATE TYPE {self.quote_identifier(name)} AS ENUM ({values_sql})"
-        raise DialectError(
-            f"The '{self._dialect.name}' dialect has no named enum types. "
-            "Enum columns render per the dialect's enum strategy instead."
+        raise self._unsupported(
+            "named enum types",
+            "Enum columns render per the dialect's enum strategy instead.",
         )
 
     def compile_drop_enum_type(self, name: str, if_exists: bool = False) -> str:
@@ -815,19 +815,14 @@ class Compiler:
         if self.enum_strategy() == "native":
             exists_sql = "IF EXISTS " if if_exists else ""
             return f"DROP TYPE {exists_sql}{self.quote_identifier(name)}"
-        raise DialectError(
-            f"The '{self._dialect.name}' dialect has no named enum types " "to drop."
-        )
+        raise self._unsupported("named enum types", "There is no enum type to drop.")
 
     def compile_add_enum_value(self, name: str, value: str) -> str:
         """
         Renders the statement that appends one value to a named enum
         type, on dialects that can.
         """
-        raise DialectError(
-            f"The '{self._dialect.name}' dialect cannot add a value to an "
-            "enum type in place."
-        )
+        raise self._unsupported("adding a value to an enum type in place")
 
     _stores_column_comments = False
 
@@ -870,9 +865,9 @@ class Compiler:
             column_sql = self.quote_identifier(column_name)
             value = "NULL" if comment is None else self.format_value(comment)
             return [f"COMMENT ON COLUMN {table_sql}.{column_sql} IS {value}"]
-        raise DialectError(
-            f"The '{self._dialect.name}' dialect stores no column comments. "
-            "Keep the description on the model or in the migration file."
+        raise self._unsupported(
+            "column comments",
+            "Keep the description on the model or in the migration file.",
         )
 
     def compile_identity(self) -> str:
@@ -1444,10 +1439,7 @@ class Compiler:
             if using:
                 statement += f" USING {using}"
             return [statement]
-        raise DialectError(
-            f"The '{self._dialect.name}' dialect cannot alter a column type "
-            "in place."
-        )
+        raise self._unsupported("altering a column type in place")
 
     def compile_alter_column_nullability(
         self,
@@ -1465,10 +1457,7 @@ class Compiler:
             column_sql = self.quote_identifier(column_name)
             action = "DROP NOT NULL" if column.nullable else "SET NOT NULL"
             return [f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} {action}"]
-        raise DialectError(
-            f"The '{self._dialect.name}' dialect cannot alter column "
-            "nullability in place."
-        )
+        raise self._unsupported("altering column nullability in place")
 
     def compile_backfill(
         self,
