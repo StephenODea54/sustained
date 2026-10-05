@@ -11,6 +11,7 @@ from typing import (
     Callable,
     List,
     Optional,
+    Sequence,
     Type,
 )
 
@@ -300,10 +301,7 @@ def _cmd_migrate(
         preflight=_preflight(config, args),
         online=_online(config, args),
     )
-    if not applied:
-        print("Nothing to apply.")
-    for migration_id in applied:
-        print(f"applied  {migration_id}")
+    _print_ids("applied  ", applied, "Nothing to apply.")
     if models is not None:
         # Report only: the run has already happened, and a gap here is
         # something for the operator to look at, not a failure to raise.
@@ -320,10 +318,7 @@ def _cmd_down(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
         reverted = migrator.down_to(args.to, allow_changed=args.allow_changed)
     else:
         reverted = migrator.down(steps=args.steps, allow_changed=args.allow_changed)
-    if not reverted:
-        print("Nothing to revert.")
-    for migration_id in reverted:
-        print(f"reverted {migration_id}")
+    _print_ids("reverted ", reverted, "Nothing to revert.")
     return 0
 
 
@@ -346,10 +341,7 @@ def _cmd_repair(
     migrator: Migrator, args: argparse.Namespace, config: ModuleType
 ) -> int:
     actions = migrator.repair()
-    if not actions:
-        print("Nothing to repair.")
-    for action in actions:
-        print(f"repaired {action}")
+    _print_ids("repaired ", actions, "Nothing to repair.")
     return 0
 
 
@@ -370,11 +362,16 @@ def _cmd_baseline(
     migrator: Migrator, args: argparse.Namespace, config: ModuleType
 ) -> int:
     recorded = migrator.baseline(args.target)
-    if not recorded:
-        print("Nothing to baseline.")
-    for migration_id in recorded:
-        print(f"baselined {migration_id}")
+    _print_ids("baselined ", recorded, "Nothing to baseline.")
     return 0
+
+
+def _print_ids(prefix: str, ids: Sequence[str], empty: str) -> None:
+    """Prints one line per id after `prefix`, or `empty` when there are none."""
+    if not ids:
+        print(empty)
+    for item in ids:
+        print(f"{prefix}{item}")
 
 
 def _step_count(value: str) -> int:

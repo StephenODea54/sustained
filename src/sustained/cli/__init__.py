@@ -93,7 +93,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Tuple, Type
 
 from sustained.cli.commands import (
     _cmd_baseline,
@@ -335,6 +335,21 @@ def _check_usage(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--exact-counts on script needs --annotate")
 
 
+# The exit code for each error a command raises, checked in order. The
+# three subclasses of MigrationError come before it.
+_EXIT_CODES: Tuple[Tuple[Type[Exception], int], ...] = (
+    # A guard blocked the run, which plan reports the same way.
+    (GuardBlocked, 3),
+    # The run needs a rehearsal it does not have, which is a different
+    # thing to do from fixing a failure.
+    (RehearsalRequired, 4),
+    # Another session is in the way, which running again later can fix
+    # without any change.
+    (PreflightBlocked, 5),
+    (MigrationError, 1),
+)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -351,37 +366,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         _check_dialect_flags(args, migrator.dialect)
         return _COMMANDS[args.command](migrator, args, config)
-    except GuardBlocked as error:
-        # Exit 3 says a guard blocked the run, which plan reports the same
-        # way.
-        _print_applied(error)
-        return _fail(args, error, 3)
-    except RehearsalRequired as error:
-        # Exit 4 says the run needs a rehearsal it does not have, which is
-        # a different thing to do from fixing a failure.
-        _print_applied(error)
-        return _fail(args, error, 4)
-    except PreflightBlocked as error:
-        # Exit 5 says another session is in the way, which running again
-        # later can fix without any change.
-        _print_applied(error)
-        return _fail(args, error, 5)
-    except MigrationError as error:
-        _print_applied(error)
-        return _fail(args, error, 1)
     except Exception as error:
         # A driver raises its own error class, so a failing statement would
         # otherwise reach the shell as a traceback.
         _print_applied(error)
+        for kind, code in _EXIT_CODES:
+            if isinstance(error, kind):
+                return _fail(args, error, code)
         migration_id = getattr(error, "migration_id", None)
         where = f" in '{migration_id}'" if migration_id else ""
         return _fail(args, error, 1, where)
     finally:
         _close_quietly(connection)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
 
 
 __all__ = ["JsonValue", "main"]
