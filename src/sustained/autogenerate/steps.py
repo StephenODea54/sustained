@@ -167,6 +167,23 @@ class _Generation:
         target = self.down_steps if group is None else self.online_down[group]
         target[0:0] = statements
 
+    def drop_lists(self) -> Tuple[List[str], List[str]]:
+        """The up and down lists the drops go in."""
+        if self.online:
+            return self.online_up["drop"], self.online_down["drop"]
+        return self.up_steps, self.down_steps
+
+    def backfill_list(self) -> List[str]:
+        """The list a backfill goes in: with online, the online migration's."""
+        return self.online_up["backfill"] if self.online else self.up_steps
+
+    def irreversible(self) -> None:
+        """Marks the migration a drop goes in as one down() cannot revert."""
+        if self.online:
+            self.online_reversible = False
+        else:
+            self.reversible = False
+
     def rebuild(self, model: Type["Model"]) -> None:
         """Sends the model's table to the rebuild path."""
         self.rebuild_tables[_table_key(model)] = model
@@ -788,7 +805,7 @@ def _constraint_steps(state: _Generation) -> None:
                 state.undo(state.compiler.compile_drop_foreign_key(table_sql, fk.name))
         # With online, the drops run in the migration outside the DDL
         # transaction, after everything else, each with IF EXISTS.
-        drop_up, drop_down = _drop_lists(state)
+        drop_up, drop_down = state.drop_lists()
         dropped = if_exists if state.online else _as_is
         for table, name, actual_fk in state.diff.extra_foreign_keys:
             if table.lower() in state.rebuild_tables:
@@ -812,7 +829,7 @@ def _constraint_steps(state: _Generation) -> None:
                 state.compiler, table_sql, name, actual_fk, state.actual, table
             )
             if restore is None:
-                _irreversible(state)
+                state.irreversible()
             else:
                 drop_down.insert(0, restore)
         for table, name, expression in state.diff.extra_checks:
@@ -840,7 +857,7 @@ def _constraint_steps(state: _Generation) -> None:
 
 def _drop_steps(state: _Generation) -> None:
     """Drops the extra indexes, columns, tables, and enum types."""
-    up_steps, down_steps = _drop_lists(state)
+    up_steps, down_steps = state.drop_lists()
     # With online, every drop takes IF EXISTS, an index drops
     # concurrently, and the index a down step builds again is built
     # concurrently. On a partitioned table the index drops without
@@ -923,7 +940,7 @@ def _drop_steps(state: _Generation) -> None:
             up_steps.append(
                 dropped(with_intent(drops[-1], "drop_column", intent_table, name))
             )
-            _irreversible(state)
+            state.irreversible()
         if state.diff.extra_tables:
             drops, bare = _extra_table_drops(
                 state.compiler, state.actual, state.diff.extra_tables
@@ -931,7 +948,7 @@ def _drop_steps(state: _Generation) -> None:
             up_steps.extend(dropped(drop) for drop in drops)
             if bare and not state.online:
                 state.transactional = False
-            _irreversible(state)
+            state.irreversible()
         # A type drops after every table and column that used it.
         for type_name in state.diff.extra_enum_types:
             up_steps.append(
@@ -944,21 +961,6 @@ def _drop_steps(state: _Generation) -> None:
                     )
                 )
             )
-
-
-def _drop_lists(state: _Generation) -> Tuple[List[str], List[str]]:
-    """The up and down lists the drops go in."""
-    if state.online:
-        return state.online_up["drop"], state.online_down["drop"]
-    return state.up_steps, state.down_steps
-
-
-def _irreversible(state: _Generation) -> None:
-    """Marks the migration a drop goes in as one down() cannot revert."""
-    if state.online:
-        state.online_reversible = False
-    else:
-        state.reversible = False
 
 
 def _validate_online(

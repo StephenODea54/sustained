@@ -235,7 +235,7 @@ def _changed_column_steps(state: _Generation) -> None:
                         expected_type,
                         state.compiler.format_value(filler),
                     )
-                    _backfill_list(state).extend(
+                    state.backfill_list().extend(
                         _tagged(backfill, "backfill", intent_table, name)
                     )
                 changed_state = _preserving_state(
@@ -371,7 +371,7 @@ def _new_column_steps(state: _Generation) -> None:
                 state.compiler.compile_column_type(coldef),
                 state.compiler.format_value(coldef.backfill),
             )
-            _backfill_list(state).extend(
+            state.backfill_list().extend(
                 _tagged(backfill, "backfill", intent_table, name)
             )
             tighten = state.compiler.compile_alter_column_nullability(
@@ -558,11 +558,6 @@ def _comment_steps(state: _Generation) -> None:
             _tagged(set_new, "set_column_comment", _intent_table(model), name)
         )
         state.undo(*set_old)
-
-
-def _backfill_list(state: _Generation) -> List[str]:
-    """The list a backfill goes in: with online, the online migration's."""
-    return state.online_up["backfill"] if state.online else state.up_steps
 
 
 def _new_not_null_online(
