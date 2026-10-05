@@ -9,7 +9,7 @@ comment ends, which characters are whitespace, and whether a MySQL
 from __future__ import annotations
 
 import re
-from typing import List, Sequence
+from typing import Callable, List, Sequence
 
 from sustained.analysis import (
     _ALTER_DROP_RE,
@@ -47,6 +47,27 @@ _LOCK_TIMEOUT_RE = re.compile(
 )
 
 
+def _text_guard(
+    rule: str, level: str, matches: Callable[[str], object], postgres_only: bool = False
+) -> Guard:
+    """
+    A guard that gives `level` to each statement with a scanned form
+    that `matches`. With `postgres_only`, it is silent on every other
+    dialect.
+    """
+
+    def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
+        if postgres_only and dialect is not Dialects.POSTGRES:
+            return []
+        return [
+            Verdict(rule, level, normalize_statement(statement))
+            for statement in statements
+            if any(matches(form) for form in scannable_forms(statement, dialect))
+        ]
+
+    return guard
+
+
 def no_drops() -> Guard:
     """
     Blocks a statement that drops a table, a column, a view, a
@@ -59,18 +80,11 @@ def no_drops() -> Guard:
     rule passes it. The destructive label and the rehearsal gate in
     `migrate` still catch it.
     """
-
-    def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
-        found = []
-        for statement in statements:
-            if any(
-                _DROP_RE.search(form) or _ALTER_DROP_RE.search(form)
-                for form in scannable_forms(statement, dialect)
-            ):
-                found.append(Verdict("no_drops", BLOCK, normalize_statement(statement)))
-        return found
-
-    return guard
+    return _text_guard(
+        "no_drops",
+        BLOCK,
+        lambda form: _DROP_RE.search(form) or _ALTER_DROP_RE.search(form),
+    )
 
 
 def index_must_be_concurrent() -> Guard:
@@ -95,28 +109,14 @@ def index_must_be_concurrent() -> Guard:
     `max_blocking("ddl")` reads the impact analysis instead, which also
     passes an index on a table the same run created.
     """
-
-    def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
-        if dialect is not Dialects.POSTGRES:
-            return []
-        found = []
-        for statement in statements:
-            if any(
-                _CREATE_INDEX_RE.search(form)
-                and not _CONCURRENTLY_RE.search(form)
-                and not _ON_ONLY_RE.search(form)
-                for form in scannable_forms(statement, dialect)
-            ):
-                found.append(
-                    Verdict(
-                        "index_must_be_concurrent",
-                        BLOCK,
-                        normalize_statement(statement),
-                    )
-                )
-        return found
-
-    return guard
+    return _text_guard(
+        "index_must_be_concurrent",
+        BLOCK,
+        lambda form: _CREATE_INDEX_RE.search(form)
+        and not _CONCURRENTLY_RE.search(form)
+        and not _ON_ONLY_RE.search(form),
+        postgres_only=True,
+    )
 
 
 def no_table_rewrite() -> Guard:
@@ -133,17 +133,7 @@ def no_table_rewrite() -> Guard:
     `no_rewrite()` reads the impact analysis instead, which knows the
     engine version, which type changes coerce, and the table's size.
     """
-
-    def guard(statements: Sequence[str], dialect: Dialects) -> List[Verdict]:
-        found = []
-        for statement in statements:
-            if any(_rewrites(form) for form in scannable_forms(statement, dialect)):
-                found.append(
-                    Verdict("no_table_rewrite", WARN, normalize_statement(statement))
-                )
-        return found
-
-    return guard
+    return _text_guard("no_table_rewrite", WARN, _rewrites)
 
 
 def _rewrites(scanned: str) -> bool:
