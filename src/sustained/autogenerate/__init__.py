@@ -350,9 +350,10 @@ def autogenerate(
             The server facts are read from the connection with
             sustained.impact.read_context(). Other dialects ignore it.
     """
-    state = _generate(
+    migrations = autogenerate_migrations(
         connection,
         models,
+        id,
         dialect,
         allow_drops,
         ignore_changed_columns,
@@ -362,19 +363,9 @@ def autogenerate(
         type_casts,
         ignore_undeclared,
         snapshot,
-        online=False,
+        assert_algorithm,
     )
-    if not state.up_steps:
-        return None
-    migration = Migration(
-        id=id,
-        up=state.up_steps,
-        down=state.down_steps if state.reversible and state.down_steps else None,
-        transactional=state.transactional,
-    )
-    if not assert_algorithm or dialect is not Dialects.MYSQL:
-        return migration
-    return _asserted(connection, dialect, [migration])[0]
+    return migrations[0] if migrations else None
 
 
 def autogenerate_migrations(
