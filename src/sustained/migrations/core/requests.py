@@ -214,8 +214,10 @@ class Autocommit(NamedTuple):
 class Session(NamedTuple):
     """
     Keeps every statement of the body on one database session. The async
-    driver enters its adapter's session(); a blocking connection is one
-    session already.
+    driver enters its adapter's session(). Outside a transaction block,
+    the blocking driver opens one cursor and runs the body's pinned
+    statements on it, since on DuckDB every cursor is a session of its
+    own.
     """
 
     body: "Core[Any]"

@@ -26,6 +26,7 @@ from typing import (
 )
 
 from sustained.analysis import MigrationStatement
+from sustained.ddl import DdlStep
 from sustained.dialects import Dialects
 from sustained.impact.preflight import OLDER_THAN
 from sustained.migrations import planning
@@ -50,6 +51,7 @@ from sustained.migrations.core.requests import (
     Fire,
     ReadCatalog,
     ReadContext,
+    Session,
     T,
     Transaction,
     refuse_open_transaction,
@@ -471,15 +473,24 @@ def apply(
 
 def run_step(m: MigratorBase, step: MigrationStep) -> Core[None]:
     """
-    One migration step: each of its rendered statements on the open
-    transaction's cursor, or the callable, which the blocking driver
-    hands the connection and the async driver the adapter.
+    One migration step: its rendered statements, or the callable, which
+    the blocking driver hands the connection and the async driver the
+    adapter. The statements share one session: the open transaction's
+    cursor, or outside a transaction block one cursor for the whole step.
+    On DuckDB every cursor is a session of its own, so a TEMP table, USE
+    or SET from one statement of a transactional=False step would not
+    reach the next statement on a cursor of its own.
     """
     elements = _step_elements(step)
     if elements is None:
         assert callable(step)
         yield Fire(step)
         return
+    yield from run_in(Session, _run_statements(m, elements))
+
+
+def _run_statements(m: MigratorBase, elements: List[Union[str, DdlStep]]) -> Core[None]:
+    """Each rendered statement of a step, in order, as a pinned Execute."""
     for sql in _render_elements(elements, m._compiler):
         yield Execute(sql, pinned=True)
 

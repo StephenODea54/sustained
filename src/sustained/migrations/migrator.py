@@ -9,7 +9,7 @@ blocking connection.
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, nullcontext
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -115,6 +115,8 @@ class Migrator(MigratorBase):
             callbacks,
         )
         self._connection = connection
+        # The cursor an open Session scope runs its pinned statements on.
+        self._session_cursor: Optional[Cursor] = None
 
     @property
     def connection(self) -> Connection:
@@ -161,7 +163,7 @@ class Migrator(MigratorBase):
                     self._run_sql(request.sql, request.params)
                 return None
             scope: ContextManager[Cursor] = (
-                cursor_scope(connection)
+                self._pinned_cursor()
                 if request.pinned
                 else closing(connection.cursor())
             )
@@ -216,7 +218,14 @@ class Migrator(MigratorBase):
             finally:
                 restore()
         if isinstance(request, Session):
-            return self._drive(request.body)
+            if self._session_cursor is not None or in_transaction(connection):
+                return self._drive(request.body)
+            with closing(connection.cursor()) as cursor:
+                self._session_cursor = cursor
+                try:
+                    return self._drive(request.body)
+                finally:
+                    self._session_cursor = None
         if isinstance(request, PinnedTransaction):
             with pinned_transaction(connection):
                 return self._drive(request.body)
@@ -265,8 +274,17 @@ class Migrator(MigratorBase):
         roll DDL back, and on DuckDB, where every fresh cursor is a session
         of its own.
         """
-        with cursor_scope(self._connection) as cursor:
+        with self._pinned_cursor() as cursor:
             self._execute(cursor, sql, params)
+
+    def _pinned_cursor(self) -> ContextManager[Cursor]:
+        """
+        The cursor a pinned statement runs on: the open transaction's
+        cursor, then the cursor of an open Session scope, then a new one.
+        """
+        if self._session_cursor is not None and not in_transaction(self._connection):
+            return nullcontext(self._session_cursor)
+        return cursor_scope(self._connection)
 
     def record_rehearsal(self, key: str, outcome: str = REHEARSAL_PASSED) -> None:
         """
