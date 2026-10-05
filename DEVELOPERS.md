@@ -22,7 +22,7 @@ The `QueryBuilder` (`sustained/builder.py`) is the central component of the libr
 -   **State Management:** Rather than manage the query's state directly, it keeps each clause in its own specialized `*ClauseBuilder` object.
 -   **Composition:** When a method like `.where()` or `.select()` is called on the `QueryBuilder`, it delegates that call to the appropriate internal builder (e.g., `self._where_builder` or `self._select_clause_builder`).
 -   **Assembly:** Rendering happens through a `RenderContext` (`sustained/rendering.py`) that bundles the compiler and the value-handling mode. `str(query)` renders with values inlined as SQL literals, while `to_sql()` renders with dialect placeholders and returns the collected parameters. Clauses that contain user values store deferred render functions instead of finished strings, so both modes share one code path.
--   **Execution:** `run()` and `first()` (`sustained/execution.py`) execute the parameterized statement on a DB-API 2.0 connection and hydrate result rows into model instances.
+-   **Execution:** `run()`, `first()`, `to_dicts()`, and the other execution methods call functions in `sustained/execution.py`, which execute the parameterized statement on a DB-API 2.0 connection and hydrate result rows into model instances. The async methods call their counterparts in `sustained/aio.py`.
 
 ### The `*ClauseBuilder`s
 
