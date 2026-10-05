@@ -89,8 +89,9 @@ from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence
 from sustained.impact.model import UNKNOWN_KIND, ParsedStatement
 from sustained.impact.recognizer import session
 from sustained.impact.recognizer.alter import AlterTable
-from sustained.impact.recognizer.create_drop import CreateDrop
+from sustained.impact.recognizer.create_drop import CREATE_TABLE_DEFAULTS, CreateDrop
 from sustained.impact.recognizer.cursor import Unrecognized, depths, frozen
+from sustained.impact.recognizer.definitions import COLUMN_DEFAULTS
 from sustained.impact.recognizer.statements import Statements
 from sustained.impact.recognizer.volatility import VOLATILITIES, classify_default
 from sustained.impact.tokens import (
@@ -498,6 +499,8 @@ def recognize(sql: str, dialect: Optional["Dialects"] = None) -> ParsedStatement
 
 __all__ = [
     "ACTION_KINDS",
+    "COLUMN_DEFAULTS",
+    "CREATE_TABLE_DEFAULTS",
     "STATEMENT_KINDS",
     "VOLATILITIES",
     "Unrecognized",

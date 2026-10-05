@@ -4,8 +4,10 @@ The column and constraint definitions of CREATE TABLE and ALTER TABLE.
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import (
     List,
+    Mapping,
     Optional,
     Sequence,
 )
@@ -45,6 +47,25 @@ def not_null_column(tokens: Sequence[Token]) -> Optional[str]:
     if not all(t.is_word(w) for t, w in zip(tokens[1:], ("IS", "NOT", "NULL"))):
         return None
     return tokens[0].name
+
+
+# The options of a column definition with no type and no constraints.
+# The analyzer builds an add_column action from an intent with them.
+COLUMN_DEFAULTS: Mapping[str, object] = MappingProxyType(
+    {
+        "type": None,
+        "serial": False,
+        "not_null": None,
+        "default": None,
+        "generated": None,
+        "identity": False,
+        "references": None,
+        "unique": False,
+        "primary_key": False,
+        "check": False,
+        "position": None,
+    }
+)
 
 
 class Definitions(Cursor):
@@ -207,17 +228,9 @@ class Definitions(Cursor):
         computed = self.mssql and self.is_word("AS")
         type_tokens = [] if computed else self.column_type()
         options: Options = {
+            **COLUMN_DEFAULTS,
             "type": self.text(type_tokens) if type_tokens else None,
             "serial": bool(type_tokens) and type_tokens[0].is_word(*SERIAL_TYPES),
-            "not_null": None,
-            "default": None,
-            "generated": None,
-            "identity": False,
-            "references": None,
-            "unique": False,
-            "primary_key": False,
-            "check": False,
-            "position": None,
         }
         while not self.at_end() and not self.is_punct(","):
             if not self.column_constraint(options):

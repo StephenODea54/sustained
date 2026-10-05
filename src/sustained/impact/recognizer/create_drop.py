@@ -4,8 +4,10 @@ CREATE and DROP statements.
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import (
     List,
+    Mapping,
     Optional,
     Sequence,
     Tuple,
@@ -23,6 +25,20 @@ from sustained.impact.recognizer.cursor import (
 from sustained.impact.recognizer.sources import tables_read
 from sustained.impact.tokens import (
     Token,
+)
+
+# The options of a plain `CREATE TABLE name (...)`, with no reads. The
+# analyzer builds a create_table statement from an intent with them.
+CREATE_TABLE_DEFAULTS: Mapping[str, object] = MappingProxyType(
+    {
+        "temporary": False,
+        "if_not_exists": False,
+        "references": (),
+        "partition_of": None,
+        "default_partition": False,
+        "partitioned": False,
+        "as_select": False,
+    }
 )
 
 
@@ -139,13 +155,9 @@ class CreateDrop(Cursor):
                 raise Unrecognized(f"no rule reads the index option {self.where()}")
 
     def create_table(self, temporary: bool) -> ParsedStatement:
-        options: Options = {"temporary": temporary}
+        options: Options = {**CREATE_TABLE_DEFAULTS, "temporary": temporary}
         options["if_not_exists"] = self.accept("IF", "NOT", "EXISTS")
         table = self.target()
-        options["references"] = ()
-        options["partition_of"] = None
-        options["default_partition"] = False
-        options["as_select"] = False
         if self.accept("PARTITION", "OF"):
             options["partition_of"] = self.name()
         if self.is_punct("("):

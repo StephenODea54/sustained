@@ -58,7 +58,11 @@ from sustained.impact.model import (
     UnnamedLock,
     Work,
 )
-from sustained.impact.recognizer import recognize
+from sustained.impact.recognizer import (
+    COLUMN_DEFAULTS,
+    CREATE_TABLE_DEFAULTS,
+    recognize,
+)
 from sustained.impact.rules import Effect, Facts, Profile, profile_for, profiles_for
 from sustained.impact.state import RunState
 from sustained.impact.window import aggregate, held_in_scopes, row_scopes
@@ -269,19 +273,11 @@ def _intent_reading(
     if kind == "drop_table":
         statement["tables"] = (intent.table,)
     elif kind == "create_table":
-        statement.update(
-            temporary=False,
-            if_not_exists=False,
-            references=(),
-            partition_of=None,
-            default_partition=False,
-            partitioned=False,
-            as_select=False,
-        )
+        statement.update(CREATE_TABLE_DEFAULTS)
         unread.append("the tables its foreign keys reference")
     elif kind == "add_column":
         nullable = intent.get("nullable")
-        action.update(_UNREAD_COLUMN)
+        action.update(COLUMN_DEFAULTS)
         action["not_null"] = nullable is not True
         if nullable is None:
             unread.append("whether the column is nullable")
@@ -311,22 +307,6 @@ def _intent_reading(
             action.update(if_exists=False, cascade=False)
     return statement, action, tuple(unread)
 
-
-# The column facts an add_column intent does not give, at the values the
-# recognizer gives a column definition that does not spell them.
-_UNREAD_COLUMN: Mapping[str, object] = MappingProxyType(
-    {
-        "type": None,
-        "serial": False,
-        "generated": None,
-        "identity": False,
-        "references": None,
-        "unique": False,
-        "primary_key": False,
-        "check": False,
-        "position": None,
-    }
-)
 
 # A default whose expression is not read: an expression no rule knows,
 # which counts as volatile. The parentheses make it an expression
