@@ -5,7 +5,7 @@ and its fixtures, with the objects the fixtures name.
 
 from __future__ import annotations
 
-from sustained.impact.rules import Rule
+from sustained.impact.rules import Rule, declared
 
 DOCS = "https://learn.microsoft.com/en-us/sql/"
 _STATEMENTS = DOCS + "t-sql/statements/"
@@ -283,45 +283,7 @@ UPDATE_STATISTICS = Rule(
 )
 ONLINE_EDITION = Rule("mssql.online.edition", EDITIONS_SOURCE)
 
-RULES = (
-    ADD_COLUMN,
-    ADD_COLUMN_DEFAULT,
-    ADD_COLUMN_REWRITE,
-    DROP_COLUMN,
-    ALTER_COLUMN,
-    ALTER_COLUMN_METADATA,
-    SET_NOT_NULL,
-    ALTER_COLUMN_ONLINE,
-    ADD_CHECK,
-    ADD_CHECK_NOCHECK,
-    ADD_FOREIGN_KEY,
-    ADD_FOREIGN_KEY_NOCHECK,
-    CHECK_CONSTRAINT,
-    CONSTRAINT_STATE,
-    ADD_KEY,
-    ADD_KEY_ONLINE,
-    DROP_CONSTRAINT,
-    DEFAULT,
-    CREATE_INDEX,
-    CREATE_INDEX_ONLINE,
-    CREATE_CLUSTERED_INDEX,
-    DROP_INDEX,
-    DROP_CLUSTERED_INDEX,
-    REBUILD,
-    REORGANIZE,
-    DISABLE_INDEX,
-    SWITCH,
-    RENAME,
-    TRUNCATE,
-    DROP_TABLE,
-    TRIGGER,
-    SCHEMA_CHANGE,
-    WRITE_ROWS,
-    LOCK_ESCALATION,
-    RESUMABLE,
-    UPDATE_STATISTICS,
-    ONLINE_EDITION,
-)
+RULES = declared(globals())
 
 # The objects the fixtures above name, with rows in each table. t has
 # more rows than the 5,000 row locks that escalate a statement's locks

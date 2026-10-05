@@ -264,6 +264,15 @@ class Profile(NamedTuple):
         return self.blocks(lock) >= Blocks.WRITES
 
 
+def declared(namespace: Mapping[str, object]) -> Tuple[Rule, ...]:
+    """
+    Every rule a catalog module declares, in declaration order, from the
+    module's `globals()`. The scan would also list a Rule the module
+    imports, and no catalog imports one.
+    """
+    return tuple(value for value in namespace.values() if isinstance(value, Rule))
+
+
 def _profiles() -> Mapping[str, Tuple[Profile, ...]]:
     """Each dialect's profiles, the one assumed without a server first."""
     from sustained.impact.rules import duckdb, mssql, mysql, postgres, sqlite

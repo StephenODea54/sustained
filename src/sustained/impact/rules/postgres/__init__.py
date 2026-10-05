@@ -61,11 +61,11 @@ from sustained.impact.rules.postgres.catalog import (
     COLUMN_CATALOG,
     DOCS,
     FIXTURE_SCHEMA,
+    RULES,
     SET_STATISTICS,
     TABLE_CATALOG,
     TABLE_REWRITE,
     TRIGGER_STATE,
-    all_rules,
 )
 from sustained.impact.rules.postgres.column_types import (
     _alter_column_type,
@@ -281,7 +281,7 @@ PROFILE = Profile(
     timeout_setting="lock_timeout",
     timeout_statement=timeout_statement,
     transactional_ddl=True,
-    rules=all_rules(),
+    rules=RULES,
     timeout_source=DOCS + "runtime-config-client.html#GUC-LOCK-TIMEOUT",
     context_plan=context_plan,
     fixture_schema=FIXTURE_SCHEMA,

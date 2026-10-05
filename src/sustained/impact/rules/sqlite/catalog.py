@@ -5,7 +5,7 @@ its fixtures, with the objects the fixtures name.
 
 from __future__ import annotations
 
-from sustained.impact.rules import Rule
+from sustained.impact.rules import Rule, declared
 
 DOCS = "https://www.sqlite.org/"
 _ALTER_TABLE = DOCS + "lang_altertable.html"
@@ -86,23 +86,7 @@ WRITE_ROWS = Rule(
 ANALYZE = Rule("sqlite.analyze", DOCS + "lang_analyze.html", ("ANALYZE t",))
 VACUUM = Rule("sqlite.vacuum", DOCS + "lang_vacuum.html", ("VACUUM",))
 
-RULES = (
-    ADD_COLUMN,
-    ADD_COLUMN_CHECKED,
-    ADD_COLUMN_REFUSED,
-    DROP_COLUMN,
-    RENAME,
-    REBUILD,
-    COPY,
-    CREATE_INDEX,
-    DROP_INDEX,
-    REINDEX,
-    SCHEMA_CHANGE,
-    DROP_TABLE,
-    WRITE_ROWS,
-    ANALYZE,
-    VACUUM,
-)
+RULES = declared(globals())
 
 # The objects the fixtures above name, with rows in each table. t holds
 # enough rows to fill dozens of pages, so the ground-truth tests can

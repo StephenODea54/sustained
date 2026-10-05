@@ -5,9 +5,7 @@ and its fixtures, with the objects the fixtures name.
 
 from __future__ import annotations
 
-from typing import Tuple
-
-from sustained.impact.rules import Rule
+from sustained.impact.rules import Rule, declared
 
 DOCS = "https://www.postgresql.org/docs/current/"
 _ALTER_TABLE = DOCS + "sql-altertable.html"
@@ -392,7 +390,4 @@ FIXTURE_SCHEMA = (
     "CREATE SCHEMA s",
 )
 
-
-def all_rules() -> Tuple[Rule, ...]:
-    """Every rule this module declares, in declaration order."""
-    return tuple(value for value in globals().values() if isinstance(value, Rule))
+RULES = declared(globals())

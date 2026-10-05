@@ -5,7 +5,7 @@ its fixtures, with the objects the fixtures name.
 
 from __future__ import annotations
 
-from sustained.impact.rules import Rule
+from sustained.impact.rules import Rule, declared
 
 DOCS = "https://duckdb.org/docs/current/"
 _ALTER_TABLE = DOCS + "sql/statements/alter_table.html"
@@ -110,23 +110,7 @@ ANALYZE = Rule(
     "duckdb.analyze", DOCS + "sql/statements/analyze.html", ("ANALYZE t", "ANALYZE")
 )
 
-RULES = (
-    ADD_COLUMN,
-    ADD_COLUMN_VOLATILE,
-    DROP_COLUMN,
-    ALTER_COLUMN_TYPE,
-    SET_NOT_NULL,
-    ALTER_COLUMN,
-    RENAME,
-    CREATE_INDEX,
-    DROP_INDEX,
-    COMMENT,
-    CREATE_TABLE,
-    SCHEMA_CHANGE,
-    DROP_TABLE,
-    WRITE_ROWS,
-    ANALYZE,
-)
+RULES = declared(globals())
 
 # The objects the fixtures above name, with rows in each table. t has no
 # index, since DuckDB refuses to alter a table an index depends on, and
