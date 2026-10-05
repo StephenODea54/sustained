@@ -348,29 +348,21 @@ class _Run:
             return found
         if effect.work > Work.CATALOG and not effect.at_end:
             severity, size_note = self.rate(impact)
-            message = effect.message or self.default_message(effect, blocked)
-            found.insert(
-                0,
-                Finding(
-                    effect.rule.id,
-                    severity,
-                    message + size_note,
-                    effect.remedy,
-                    effect.rule.source,
-                ),
-            )
         elif effect.message or effect.remedy:
-            message = effect.message or self.default_message(effect, blocked)
-            found.insert(
-                0,
-                Finding(
-                    effect.rule.id,
-                    Severity.INFO,
-                    message,
-                    effect.remedy,
-                    effect.rule.source,
-                ),
-            )
+            severity, size_note = Severity.INFO, ""
+        else:
+            return found
+        message = effect.message or self.default_message(effect, blocked)
+        found.insert(
+            0,
+            Finding(
+                effect.rule.id,
+                severity,
+                message + size_note,
+                effect.remedy,
+                effect.rule.source,
+            ),
+        )
         return found
 
     def default_message(self, effect: Effect, blocked: Blocks) -> str:
