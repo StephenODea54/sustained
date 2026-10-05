@@ -486,12 +486,10 @@ def _rename(facts: Facts, action: Action) -> Outcome:
         return Outcome((Effect(RENAME, table, ACCESS_EXCLUSIVE, Work.CATALOG),))
     what = "column" if action.kind == "rename_column" else "table"
     old = action.column if action.kind == "rename_column" else table
-    note = Finding(
-        RENAME.id,
+    note = RENAME.finding(
         Severity.INFO,
         f"running application code that names the {what} {old} fails once "
         "the rename commits",
-        source=RENAME.source,
     )
     return Outcome(
         (Effect(RENAME, table, ACCESS_EXCLUSIVE, Work.CATALOG, notes=(note,)),)
@@ -656,12 +654,10 @@ def _needs_version(
     from sustained.impact.context import version_text
 
     assumed = "" if "version" in context.read else "assumed "
-    return Finding(
-        rule.id,
+    return rule.finding(
         Severity.WARN,
         f"this needs PostgreSQL {version_text(version)} or later; the {assumed}"
         f"server version is {version_text(context.version)}",
-        source=rule.source,
     )
 
 

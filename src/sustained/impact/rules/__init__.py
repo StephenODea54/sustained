@@ -43,6 +43,7 @@ from sustained.impact.model import (
     Finding,
     Intent,
     ParsedStatement,
+    Severity,
     Work,
 )
 from sustained.impact.state import RunState, sets_a_timeout
@@ -74,6 +75,12 @@ class Rule(NamedTuple):
     source: str
     fixtures: Tuple[str, ...] = ()
     versions: Callable[[Tuple[int, ...]], bool] = _every_version
+
+    def finding(
+        self, severity: Severity, message: str, remedy: Tuple[str, ...] = ()
+    ) -> Finding:
+        """A finding of this rule, with the rule's id and source."""
+        return Finding(self.id, severity, message, remedy, self.source)
 
 
 class Effect(NamedTuple):

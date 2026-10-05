@@ -225,12 +225,7 @@ def online_outcome(facts: Facts, change: Change) -> Outcome:
     requested_algorithm, requested_lock = _requested(facts)
     online = change.online
     refusal = _refusal(facts, online, requested_algorithm, requested_lock)
-    notes = [
-        Finding(
-            rules[change.rule].id, Severity.INFO, note, source=rules[change.rule].source
-        )
-        for note in change.notes
-    ]
+    notes = [rules[change.rule].finding(Severity.INFO, note) for note in change.notes]
     if refusal is not None:
         rule = rules["refused"]
         finding = Finding(
@@ -296,14 +291,12 @@ def online_outcome(facts: Facts, change: Change) -> Outcome:
         )
         if asserted is not None:
             findings.append(
-                Finding(
-                    rule.id,
+                rule.finding(
                     Severity.INFO,
                     f"{reason}; assert {online.label} so the server refuses "
                     "the statement instead of running it with a slower algorithm or "
                     "a stronger lock",
                     (asserted,),
-                    rule.source,
                 )
             )
     elif (
@@ -311,7 +304,7 @@ def online_outcome(facts: Facts, change: Change) -> Outcome:
         and confidence is not Confidence.KNOWN
         and not facts.state.is_new(table)
     ):
-        findings.append(Finding(rule.id, Severity.INFO, reason, source=rule.source))
+        findings.append(rule.finding(Severity.INFO, reason))
     effect = Effect(
         rule,
         table,

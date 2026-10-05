@@ -239,12 +239,7 @@ def _rename_table(facts: Facts) -> Outcome:
     rule = rules_for(facts)["rename"]
     effects = []
     for old, _ in facts.parsed.items("renames"):
-        note = Finding(
-            rule.id,
-            Severity.INFO,
-            rename_note("table", str(old)),
-            source=rule.source,
-        )
+        note = rule.finding(Severity.INFO, rename_note("table", str(old)))
         effects.append(
             Effect(rule, str(old), MDL_EXCLUSIVE, Work.CATALOG, notes=(note,))
         )

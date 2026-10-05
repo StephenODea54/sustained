@@ -116,12 +116,10 @@ def _effect(
 
 
 def _rename_note(what: str, old: str) -> Finding:
-    return Finding(
-        RENAME.id,
+    return RENAME.finding(
         Severity.INFO,
         f"running application code that names the {what} {old} fails once the "
         "rename commits",
-        source=RENAME.source,
     )
 
 

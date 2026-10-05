@@ -69,7 +69,7 @@ def _table_label(index: str, table: Optional[str]) -> str:
 
 def refused(rule: Rule, message: str) -> Finding:
     """The finding for a statement the server refuses to run."""
-    return Finding(rule.id, Severity.DANGER, message, source=rule.source)
+    return rule.finding(Severity.DANGER, message)
 
 
 def refused_in_transaction(facts: Facts, rule: Rule, what: str) -> List[Finding]:
@@ -118,13 +118,11 @@ def _create_index(facts: Facts) -> Outcome:
             )
         if not findings:
             findings.append(
-                Finding(
-                    CREATE_INDEX_CONCURRENTLY.id,
+                CREATE_INDEX_CONCURRENTLY.finding(
                     Severity.INFO,
                     "the build scans the table twice and waits for every "
                     f"older transaction; a failed build leaves {left} "
                     "behind, which must be dropped before a retry",
-                    source=CREATE_INDEX_CONCURRENTLY.source,
                 )
             )
         findings.extend(
@@ -613,12 +611,10 @@ def _vacuum(facts: Facts) -> Outcome:
         )
     if not tables:
         findings.append(
-            Finding(
-                VACUUM.id,
+            VACUUM.finding(
                 Severity.INFO,
                 f"{facts.parsed.kind.upper()} with no table reads every table "
                 "in the database",
-                source=VACUUM.source,
             )
         )
         return Outcome(findings=tuple(findings), confidence=Confidence.LIKELY)
@@ -711,12 +707,10 @@ def _drop_object(facts: Facts) -> Outcome:
         return Outcome()
     return Outcome(
         findings=(
-            Finding(
-                DROP_SCHEMA.id,
+            DROP_SCHEMA.finding(
                 Severity.INFO,
                 "dropping a schema locks every table in it ACCESS EXCLUSIVE; "
                 "the tables are not named in the statement",
-                source=DROP_SCHEMA.source,
             ),
         ),
         confidence=Confidence.LIKELY,

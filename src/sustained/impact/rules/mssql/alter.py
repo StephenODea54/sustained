@@ -195,13 +195,11 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
         notes: Tuple[Finding, ...] = ()
         if default is None and options.get("not_null"):
             notes = (
-                Finding(
-                    ADD_COLUMN.id,
+                ADD_COLUMN.finding(
                     Severity.WARN,
                     f"the server refuses a NOT NULL column with no DEFAULT unless "
                     f"{table} has no rows; give the column a DEFAULT, or add it "
                     "NULL, backfill it, then make it NOT NULL",
-                    source=ADD_COLUMN.source,
                 ),
             )
         return Outcome((_effect(ADD_COLUMN, table, Work.CATALOG, notes=notes),))
@@ -318,12 +316,10 @@ def _written(text: object, table: str) -> Optional[Tuple[str, Confidence]]:
 
 def _drop_column(facts: Facts, action: Action) -> Outcome:
     table = common.table(facts)
-    note = Finding(
-        DROP_COLUMN.id,
+    note = DROP_COLUMN.finding(
         Severity.INFO,
         f"DROP COLUMN leaves the column's space in each row of {table} until the "
         "table or its clustered index is rebuilt",
-        source=DROP_COLUMN.source,
     )
     return Outcome((_effect(DROP_COLUMN, table, Work.CATALOG, notes=(note,)),))
 
@@ -446,12 +442,10 @@ def _online_column(
     findings = online_findings(facts, ALTER_COLUMN_ONLINE)
     if not ALTER_COLUMN_ONLINE.versions(facts.context.version):
         findings += (
-            Finding(
-                ALTER_COLUMN_ONLINE.id,
+            ALTER_COLUMN_ONLINE.finding(
                 Severity.DANGER,
                 "ALTER COLUMN with ONLINE = ON needs SQL Server 2016 or later, so "
                 "the statement fails on this server",
-                source=ALTER_COLUMN_ONLINE.source,
             ),
         )
     # The online form builds the table again beside the old one.
@@ -484,13 +478,11 @@ def _add_constraint(facts: Facts, action: Action) -> Outcome:
 
 
 def _untrusted(rule: Rule, table: str, name: object) -> Finding:
-    return Finding(
-        rule.id,
+    return rule.finding(
         Severity.INFO,
         f"WITH NOCHECK leaves the constraint untrusted, so the optimizer does not "
         f"rely on it; ALTER TABLE {table} WITH CHECK CHECK CONSTRAINT {name} checks "
         "every row later, under the same Sch-M lock",
-        source=rule.source,
     )
 
 
@@ -650,12 +642,10 @@ def _rename(facts: Facts, action: Action) -> Outcome:
         what = f"index {action.options.get('old')}"
     else:
         what = f"column {action.column}"
-    note = Finding(
-        RENAME.id,
+    note = RENAME.finding(
         Severity.INFO,
         f"running application code that names the {what} fails once the rename "
         "commits",
-        source=RENAME.source,
     )
     return Outcome((_effect(RENAME, table, Work.CATALOG, notes=(note,)),))
 

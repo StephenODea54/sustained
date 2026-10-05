@@ -111,7 +111,7 @@ def resumable_findings(
         message = "RESUMABLE = ON needs ONLINE = ON, so the statement fails"
     else:
         return ()
-    return (Finding(rule.id, Severity.DANGER, message, source=rule.source),)
+    return (rule.finding(Severity.DANGER, message),)
 
 
 def online_findings(facts: Facts, rule: Rule) -> Tuple[Finding, ...]:
@@ -198,13 +198,11 @@ def online_effect(
         and facts.context.version >= low_priority_from
     ):
         remedy = (low_priority(facts.statement),)
-    note = Finding(
-        rule.id,
+    note = rule.finding(
         Severity.INFO,
         f"{what} runs online, but waits for the open transactions that write "
         f"{table} for the lock it takes when it starts, and {ends}",
         remedy,
-        rule.source,
     )
     return Effect(
         rule, table, final, work, notes=(note,), blocks=Blocks.DDL, waits=waits

@@ -110,12 +110,10 @@ def _effect(
 
 
 def _rename_note(what: str, old: str) -> Finding:
-    return Finding(
-        RENAME.id,
+    return RENAME.finding(
         Severity.INFO,
         f"running application code that names the {what} {old} fails once the "
         "rename commits",
-        source=RENAME.source,
     )
 
 
@@ -177,13 +175,11 @@ def _refused(
         f"rows into it, drop {table}, and rename the new table to {table}",
     )
     if options.get("unique") or options.get("primary_key"):
-        refusal = Finding(
-            ADD_COLUMN_REFUSED.id,
+        refusal = ADD_COLUMN_REFUSED.finding(
             Severity.DANGER,
             "SQLite refuses to add a UNIQUE or PRIMARY KEY column, so the "
             "migration fails",
             remedy,
-            ADD_COLUMN_REFUSED.source,
         )
         return refusal, Confidence.KNOWN
     default = options.get("default")
@@ -205,13 +201,11 @@ def _refused(
     else:
         confidence = Confidence.KNOWN
         has = f"and {table} has {rows:,}"
-    refusal = Finding(
-        ADD_COLUMN_REFUSED.id,
+    refusal = ADD_COLUMN_REFUSED.finding(
         Severity.DANGER,
         f"SQLite refuses to add {what} to a table that has rows, so the migration "
         f"fails, {has}",
         remedy,
-        ADD_COLUMN_REFUSED.source,
     )
     return refusal, confidence
 
@@ -447,12 +441,10 @@ def _vacuum(facts: Facts) -> Outcome:
     findings: Tuple[Finding, ...] = ()
     if facts.transactional:
         findings = (
-            Finding(
-                VACUUM.id,
+            VACUUM.finding(
                 Severity.DANGER,
                 "VACUUM cannot run inside a transaction, so this migration "
                 "fails; run it in a migration with transactional=False",
-                source=VACUUM.source,
             ),
         )
     effect = _effect(

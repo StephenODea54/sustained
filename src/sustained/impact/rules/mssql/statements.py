@@ -139,12 +139,10 @@ def _alter_index(facts: Facts) -> Outcome:
         notes: Tuple[Finding, ...] = ()
         if clustered and name is not None:
             notes = (
-                Finding(
-                    DISABLE_INDEX.id,
+                DISABLE_INDEX.finding(
                     Severity.DANGER,
                     f"disabling the clustered index makes {table} unreadable until "
                     "the index is rebuilt",
-                    source=DISABLE_INDEX.source,
                 ),
             )
         return Outcome(
@@ -214,12 +212,10 @@ def _reorganize(facts: Facts, table: str, clustered: bool) -> Outcome:
 
 def _rename_table(facts: Facts) -> Outcome:
     table = common.table(facts)
-    note = Finding(
-        RENAME.id,
+    note = RENAME.finding(
         Severity.INFO,
         f"running application code that names the table {table} fails once the "
         "rename commits",
-        source=RENAME.source,
     )
     return Outcome((Effect(RENAME, table, SCH_M, Work.CATALOG, notes=(note,)),))
 
@@ -326,22 +322,18 @@ def _write_rows(facts: Facts) -> Outcome:
     if facts.parsed.kind == "insert":
         if options.get("source") == "select":
             notes = (
-                Finding(
-                    LOCK_ESCALATION.id,
+                LOCK_ESCALATION.finding(
                     Severity.INFO,
                     f"an INSERT ... SELECT that inserts more than {ESCALATION_LOCKS:,} "
                     f"rows can escalate its locks to X on the whole of {table}",
-                    source=LOCK_ESCALATION.source,
                 ),
             )
     elif not options.get("limited"):
         notes = (
-            Finding(
-                LOCK_ESCALATION.id,
+            LOCK_ESCALATION.finding(
                 Severity.INFO,
                 f"a write that changes {ESCALATION_LOCKS:,} rows or more escalates "
                 f"its locks to X on the whole of {table}",
-                source=LOCK_ESCALATION.source,
             ),
         )
     return Outcome(
