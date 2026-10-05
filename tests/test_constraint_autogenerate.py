@@ -31,10 +31,11 @@ class TestNormalizeCheck(unittest.TestCase):
             normalize_check("status IN ('a', 'b')"),
         )
 
-    def test_unbalanced_outer_parens_kept(self):
-        # '(a) OR (b)' starts and ends with parens that are not one pair.
+    def test_operand_groups_of_or_come_off(self):
+        # '(a) OR (b)' starts and ends with parens that are not one pair,
+        # so each operand loses its own parentheses instead.
         self.assertEqual(
-            normalize_check("(price > 0) OR (price < 9)"), "(price>0) or (price<9)"
+            normalize_check("(price > 0) OR (price < 9)"), "price>0 or price<9"
         )
 
     def test_engine_quoting_and_spacing_come_off(self):
@@ -74,6 +75,49 @@ class TestNormalizeCheck(unittest.TestCase):
         # Casefolding may merge literals differing only by case; the safe
         # direction, since a false match never generates a drop.
         self.assertEqual(normalize_check("s = 'A'"), normalize_check("s = 'a'"))
+
+
+class TestOperandGroups(unittest.TestCase):
+    def test_postgres_groups_match_the_bare_declaration(self):
+        # Postgres stores a > 0 AND b > 0 as ((a > 0) AND (b > 0)).
+        self.assertEqual(
+            normalize_check("((a > 0) AND (b > 0))"), normalize_check("a > 0 AND b > 0")
+        )
+
+    def test_mssql_groups_match_the_bare_declaration(self):
+        self.assertEqual(
+            normalize_check("([a]>(0)) AND ([b]>(0))"),
+            normalize_check("a > 0 AND b > 0"),
+        )
+
+    def test_a_group_with_or_keeps_its_parentheses(self):
+        stored = normalize_check("(((a > 0) OR (b > 0)) AND (c > 0))")
+        self.assertEqual(stored, "(a>0 or b>0) and c>0")
+        self.assertEqual(stored, normalize_check("(a > 0 OR b > 0) AND c > 0"))
+        self.assertNotEqual(stored, normalize_check("a > 0 OR b > 0 AND c > 0"))
+
+    def test_an_arithmetic_group_keeps_its_parentheses(self):
+        self.assertEqual(normalize_check("(a + b) * c > 0"), "(a+b)*c>0")
+        self.assertNotEqual(
+            normalize_check("(a + b) * c > 0"), normalize_check("a + b * c > 0")
+        )
+
+    def test_a_call_and_not_keep_their_parentheses(self):
+        self.assertEqual(
+            normalize_check("(LENGTH(x) > 1) AND (NOT (a > 0))"),
+            "length(x)>1 and not (a>0)",
+        )
+
+    def test_a_string_literal_is_not_split(self):
+        self.assertEqual(
+            normalize_check("(s = '(x AND y)') AND (t = ')')"),
+            "s='(x and y)' and t=')'",
+        )
+
+    def test_a_between_level_is_left_alone(self):
+        self.assertEqual(
+            normalize_check("x BETWEEN 0 AND (a + b)"), "x between 0 and (a+b)"
+        )
 
 
 class SqliteConstraintTestCase(unittest.TestCase):

@@ -114,13 +114,15 @@ def normalize_check(expression: str) -> str:
     """
     Reduces a check expression to a comparable form: whitespace collapsed,
     identifier quoting removed, operator spacing and parentheses around a
-    single word taken off, balanced outer parentheses stripped, and
+    single word taken off, balanced outer parentheses stripped, the
+    parentheses around each operand of AND and OR taken off, and
     casefolded. String literals keep their spelling. A call keeps its
     parentheses, so LENGTH(name) > 5 stays a call.
 
     The rewriting is what an engine does to a check on the way in. MySQL
     and MariaDB report `price` > 0 for the expression price > 0, and
-    MSSQL reports ([price]>(0)). A model declares the bare expression, so
+    MSSQL reports ([price]>(0)). Postgres and MSSQL also put each
+    operand of AND and OR in parentheses. A model declares the bare expression, so
     without this the two would never compare equal and the difference
     would stand as a note no migration can close. Engines rewrite
     expressions further than this repairs, so two spellings that compare
@@ -131,6 +133,7 @@ def normalize_check(expression: str) -> str:
     value = _outside_literals(value, lambda part: _OPERATOR_SPACING_RE.sub(r"\1", part))
     value = _outside_literals(value, lambda part: _LONE_PARENS_RE.sub(r"\1", part))
     value = _strip_outer_parens(value)
+    value = _ungroup_operands(value)
     return value.casefold()
 
 
@@ -258,6 +261,67 @@ def _strip_outer_parens(value: str) -> str:
     ):
         value = value[1:-1].strip()
     return value
+
+
+# A word that joins the operands of a boolean expression.
+_LOGICAL_RE = re.compile(r"\b(?:and|or)\b", re.IGNORECASE)
+# BETWEEN takes an AND of its own, so its bounds are not operands.
+_BETWEEN_RE = re.compile(r"\bbetween\b", re.IGNORECASE)
+
+
+def _top_level(text: str) -> str:
+    """
+    `text` with every character inside a string literal, a quoted
+    identifier, or parentheses set to NUL. A search of the result finds
+    only the words at the top level of the expression.
+    """
+    masked = ["\0"] * len(text)
+    depth = 0
+    for position, char in _unquoted(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif depth == 0:
+            masked[position] = char
+    return "".join(masked)
+
+
+def _ungroup_operand(operand: str) -> str:
+    """
+    One operand of AND or OR without the parentheses around all of it.
+    An operand with AND or OR of its own keeps them, since taking them
+    off would change the order of evaluation, and its own operands lose
+    theirs.
+    """
+    text = operand.strip()
+    inner = _strip_outer_parens(text)
+    if inner == text:
+        return operand
+    if _LOGICAL_RE.search(_top_level(inner)):
+        inner = f"({_ungroup_operands(inner)})"
+    return operand.replace(text, inner, 1)
+
+
+def _ungroup_operands(value: str) -> str:
+    """
+    `value` with the parentheses taken off each top-level operand of AND
+    and OR that has no AND or OR of its own. Postgres stores a > 0 AND
+    b > 0 as (a > 0) AND (b > 0), and both spellings must reduce to the
+    same text. A level with BETWEEN is left as it is, because the AND of
+    BETWEEN does not join two operands.
+    """
+    top = _top_level(value)
+    if _BETWEEN_RE.search(top):
+        return value
+    parts: List[str] = []
+    start = 0
+    for match in _LOGICAL_RE.finditer(top):
+        parts.append(_ungroup_operand(value[start : match.start()]))
+        parts.append(value[match.start() : match.end()])
+        start = match.end()
+    parts.append(_ungroup_operand(value[start:]))
+    return "".join(parts)
 
 
 _MYSQL_ENUM_RE = re.compile(r"^\s*enum\s*\((.*)\)\s*$", re.IGNORECASE | re.DOTALL)
