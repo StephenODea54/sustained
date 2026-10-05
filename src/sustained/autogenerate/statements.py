@@ -78,6 +78,11 @@ def _declared_table_sql(
     return _snapshot_table_sql(compiler, actual[table.lower()], table)
 
 
+def _table_key(model: Type["Model"]) -> str:
+    """The lowercased table name a snapshot and a rebuild key a model by."""
+    return (model.tableName or "").lower()
+
+
 def _intent_table(model: Type["Model"]) -> str:
     """The dotted, unquoted table name an Intent gives a model's table."""
     return dotted_name(model.database, model.tableSchema, model.tableName)
@@ -363,7 +368,7 @@ def _lifted_indexes(
             altered.setdefault(table.lower(), set()).add(name.lower())
     for model, name, coldef in diff.new_columns:
         if not coldef.nullable and coldef.default is None:
-            key = (model.tableName or "").lower()
+            key = _table_key(model)
             altered.setdefault(key, set()).add(name.lower())
     lifted: List[Tuple[str, str, IntrospectedIndex]] = []
     for table_key, columns in altered.items():

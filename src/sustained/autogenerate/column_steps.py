@@ -33,6 +33,7 @@ from sustained.autogenerate.statements import (
     _refuse_enum_value_removal,
     _relaxed_copy,
     _table_has_rows,
+    _table_key,
     _tagged,
 )
 from sustained.autogenerate.steps import _Generation, _LateForeignKey
@@ -55,117 +56,99 @@ if TYPE_CHECKING:
 
 def _enum_checks_off(state: _Generation) -> None:
     """Takes off the enum checks whose values changed."""
-    compiler = state.compiler
-    diff = state.diff
-    up_steps = state.up_steps
-    down_steps = state.down_steps
-    rebuild_tables = state.rebuild_tables
     # An enum check whose values changed comes off before the column
     # changes and goes back on after them: SQL Server refuses to alter a
     # column that a CHECK constraint names, and a longer value widens the
     # VARCHAR in the same migration. A dialect that cannot alter in place
     # rebuilds the table, and the rebuilt CREATE TABLE writes the check.
-    for model, name, _, expression in diff.changed_enum_checks:
-        if _rebuild_needed(compiler, "change a constraint"):
-            rebuild_tables[(model.tableName or "").lower()] = model
+    for model, name, _, expression in state.diff.changed_enum_checks:
+        if _rebuild_needed(state.compiler, "change a constraint"):
+            state.rebuild(model)
             continue
         if expression is not None:
-            table_sql = model._qualified_table_sql(compiler)
+            table_sql = model._qualified_table_sql(state.compiler)
             constraint = enum_check_name(model.tableName or "", name)
-            up_steps.append(
+            state.up_steps.append(
                 with_intent(
-                    compiler.compile_drop_constraint(table_sql, constraint),
+                    state.compiler.compile_drop_constraint(table_sql, constraint),
                     "drop_constraint",
                     _intent_table(model),
                     name,
                     name=constraint,
                 )
             )
-            down_steps.insert(
-                0, compiler.compile_add_check(table_sql, constraint, expression)
+            state.down_steps.insert(
+                0, state.compiler.compile_add_check(table_sql, constraint, expression)
             )
         state.enum_check_adds.append((model, name))
 
 
 def _lift_index_steps(state: _Generation) -> None:
     """Drops the indexes an ALTER COLUMN cannot run under."""
-    compiler = state.compiler
-    diff = state.diff
-    actual = state.actual
-    models_by_table = state.models_by_table
-    up_steps = state.up_steps
-    down_steps = state.down_steps
-    ignore_changed_columns = state.ignore_changed_columns
-    lift_drops = state.lift_drops
-    lift_creates = state.lift_creates
     # An engine that refuses ALTER COLUMN while an index depends on the
     # column, or on the table, gets those indexes dropped before the
     # column changes and created again after the new columns are in.
     # The down steps wrap the reversing statements the same way.
     for table_key, index_name, lifted in _lifted_indexes(
-        compiler, diff, actual, ignore_changed_columns
+        state.compiler, state.diff, state.actual, state.ignore_changed_columns
     ):
         drop_sql, create_sql = _lift_statements(
-            compiler,
-            models_by_table[table_key]._qualified_table_sql(compiler),
-            actual[table_key],
+            state.compiler,
+            state.models_by_table[table_key]._qualified_table_sql(state.compiler),
+            state.actual[table_key],
             index_name,
             lifted,
         )
-        lift_drops.append(drop_sql)
-        lift_creates.append(create_sql)
-    up_steps.extend(lift_drops)
-    down_steps[0:0] = lift_creates
-    if lift_drops and compiler.index_drop_waits_for_commit():
+        state.lift_drops.append(drop_sql)
+        state.lift_creates.append(create_sql)
+    state.up_steps.extend(state.lift_drops)
+    state.down_steps[0:0] = state.lift_creates
+    if state.lift_drops and state.compiler.index_drop_waits_for_commit():
         state.transactional = False
 
 
 def _changed_column_steps(state: _Generation) -> None:
     """ALTER COLUMN for type and nullability changes."""
-    compiler = state.compiler
-    diff = state.diff
-    actual = state.actual
-    models_by_table = state.models_by_table
-    up_steps = state.up_steps
-    down_steps = state.down_steps
-    rebuild_tables = state.rebuild_tables
-    type_casts = state.type_casts
-    ignore_changed_columns = state.ignore_changed_columns
-    restated_states = state.restated_states
     # Changed columns: ALTER in place where the dialect can, otherwise
     # mark the table for a rebuild.
     # The state each changed column is left in by its type and
     # nullability statements, for a comment statement that restates the
     # whole column after them.
-    if not ignore_changed_columns:
-        for table, name, actual_desc, expected_desc in diff.changed_columns:
-            model = models_by_table[table.lower()]
+    if not state.ignore_changed_columns:
+        for table, name, actual_desc, expected_desc in state.diff.changed_columns:
+            model = state.models_by_table[table.lower()]
             assert model.tableColumns is not None
             coldef = model.tableColumns[name]
-            actual_col = actual[table.lower()].columns[name.lower()]
-            if _rebuild_needed(compiler, "change a column"):
-                rebuild_tables[table.lower()] = model
+            actual_col = state.actual[table.lower()].columns[name.lower()]
+            if _rebuild_needed(state.compiler, "change a column"):
+                state.rebuild_tables[table.lower()] = model
                 continue
-            table_sql = model._qualified_table_sql(compiler)
+            table_sql = model._qualified_table_sql(state.compiler)
             intent_table = _intent_table(model)
-            expected_type = compiler.compile_column_type(coldef)
-            if _column_type_changed(compiler, coldef, expected_type, actual_col):
-                using = type_casts.get(f"{table}.{name}")
-                _refuse_enum_value_removal(compiler, table, name, coldef, actual_col)
+            expected_type = state.compiler.compile_column_type(coldef)
+            if _column_type_changed(state.compiler, coldef, expected_type, actual_col):
+                using = state.type_casts.get(f"{table}.{name}")
+                _refuse_enum_value_removal(
+                    state.compiler, table, name, coldef, actual_col
+                )
                 # A narrowing change converts every value, and the down
                 # step gives back the type but not what the conversion
                 # cut, so the statements carry the destructive mark.
                 lossy = type_change_loses_data(
-                    compiler, coldef, expected_type, actual_col.raw_type
+                    state.compiler, coldef, expected_type, actual_col.raw_type
                 )
                 # A type change keeps the nullability the table has now.
                 # Tightening to NOT NULL is a separate step that runs
                 # after the backfill, and on MySQL and SQL Server the
                 # restated definition would otherwise apply it early.
                 changed_state = _preserving_state(
-                    compiler, coldef, actual_col, expected_type, actual_col.nullable
+                    state.compiler,
+                    coldef,
+                    actual_col,
+                    expected_type,
+                    actual_col.nullable,
                 )
-                restated_states[(table.lower(), name.lower())] = changed_state
+                state.restated_states[(table.lower(), name.lower())] = changed_state
                 # SQL Server refuses a type change on a column that has a
                 # default, and Postgres refuses one whose default does not
                 # cast to the new type, so the default comes off around
@@ -173,18 +156,19 @@ def _changed_column_steps(state: _Generation) -> None:
                 # writes back.
                 default_sql = actual_col.restated_default()
                 lift_default = (
-                    default_sql is not None and not compiler.alter_type_keeps_default()
+                    default_sql is not None
+                    and not state.compiler.alter_type_keeps_default()
                 )
                 if lift_default:
-                    up_steps.append(
+                    state.up_steps.append(
                         with_intent(
-                            compiler.compile_drop_column_default(table_sql, name),
+                            state.compiler.compile_drop_column_default(table_sql, name),
                             "drop_column_default",
                             intent_table,
                             name,
                         )
                     )
-                up_steps.extend(
+                state.up_steps.extend(
                     with_intent(
                         MigrationStatement(statement, destructive=lossy),
                         "alter_column_type",
@@ -195,23 +179,23 @@ def _changed_column_steps(state: _Generation) -> None:
                         using=using,
                         lossy=lossy,
                     )
-                    for statement in compiler.compile_alter_column_type(
+                    for statement in state.compiler.compile_alter_column_type(
                         table_sql, name, changed_state, using
                     )
                 )
                 if lift_default:
                     assert default_sql is not None
-                    new_default_sql = compiler.lifted_default_sql(
+                    new_default_sql = state.compiler.lifted_default_sql(
                         (
                             None
                             if coldef.default is None
-                            else compiler.format_value(coldef.default)
+                            else state.compiler.format_value(coldef.default)
                         ),
                         default_sql,
                     )
-                    up_steps.append(
+                    state.up_steps.append(
                         with_intent(
-                            compiler.compile_add_column_default(
+                            state.compiler.compile_add_column_default(
                                 table_sql, name, new_default_sql
                             ),
                             "set_column_default",
@@ -219,18 +203,18 @@ def _changed_column_steps(state: _Generation) -> None:
                             name,
                         )
                     )
-                    down_steps.insert(
+                    state.down_steps.insert(
                         0,
-                        compiler.compile_add_column_default(
+                        state.compiler.compile_add_column_default(
                             table_sql, name, default_sql
                         ),
                     )
                 for statement in reversed(
-                    compiler.compile_alter_column_type(
+                    state.compiler.compile_alter_column_type(
                         table_sql,
                         name,
                         _preserving_state(
-                            compiler,
+                            state.compiler,
                             coldef,
                             actual_col,
                             actual_col.raw_type,
@@ -238,33 +222,36 @@ def _changed_column_steps(state: _Generation) -> None:
                         ),
                     )
                 ):
-                    down_steps.insert(0, statement)
+                    state.down_steps.insert(0, statement)
                 if lift_default:
-                    down_steps.insert(
-                        0, compiler.compile_drop_column_default(table_sql, name)
+                    state.down_steps.insert(
+                        0, state.compiler.compile_drop_column_default(table_sql, name)
                     )
             if actual_col.nullable != coldef.nullable and not coldef.primary_key:
                 backfill: List[str] = []
                 if not coldef.nullable:
                     filler = tightening_filler(table, name, coldef)
-                    backfill = compiler.compile_backfill(
-                        table_sql, name, expected_type, compiler.format_value(filler)
+                    backfill = state.compiler.compile_backfill(
+                        table_sql,
+                        name,
+                        expected_type,
+                        state.compiler.format_value(filler),
                     )
                     _backfill_list(state).extend(
                         _tagged(backfill, "backfill", intent_table, name)
                     )
                 changed_state = _preserving_state(
-                    compiler, coldef, actual_col, expected_type, coldef.nullable
+                    state.compiler, coldef, actual_col, expected_type, coldef.nullable
                 )
-                restated_states[(table.lower(), name.lower())] = changed_state
-                tighten = compiler.compile_alter_column_nullability(
+                state.restated_states[(table.lower(), name.lower())] = changed_state
+                tighten = state.compiler.compile_alter_column_nullability(
                     table_sql, name, changed_state
                 )
-                restore = compiler.compile_alter_column_nullability(
+                restore = state.compiler.compile_alter_column_nullability(
                     table_sql,
                     name,
                     _preserving_state(
-                        compiler,
+                        state.compiler,
                         coldef,
                         actual_col,
                         expected_type,
@@ -276,7 +263,7 @@ def _changed_column_steps(state: _Generation) -> None:
                         state, model, table_sql, name, backfill, tighten, restore
                     )
                     continue
-                up_steps.extend(
+                state.up_steps.extend(
                     _tagged(
                         tighten,
                         "drop_not_null" if coldef.nullable else "set_not_null",
@@ -285,21 +272,18 @@ def _changed_column_steps(state: _Generation) -> None:
                     )
                 )
                 for statement in reversed(restore):
-                    down_steps.insert(0, statement)
+                    state.down_steps.insert(0, statement)
 
 
 def _enum_checks_on(state: _Generation) -> None:
     """Puts back the enum checks _enum_checks_off() took off."""
-    compiler = state.compiler
-    up_steps = state.up_steps
-    down_steps = state.down_steps
     for model, name in state.enum_check_adds:
         assert model.tableColumns is not None
         _add_enum_check(
-            compiler,
-            up_steps,
-            down_steps,
-            model._qualified_table_sql(compiler),
+            state.compiler,
+            state.up_steps,
+            state.down_steps,
+            model._qualified_table_sql(state.compiler),
             model,
             name,
             model.tableColumns[name],
@@ -308,27 +292,18 @@ def _enum_checks_on(state: _Generation) -> None:
 
 def _add_column_rebuild_scan(state: _Generation) -> None:
     """Marks the tables SQLite cannot ADD COLUMN to for a rebuild."""
-    compiler = state.compiler
-    diff = state.diff
-    rebuild_tables = state.rebuild_tables
     # SQLite refuses some columns in ADD COLUMN, and the rebuilt CREATE
     # TABLE takes them. The scan runs before any column is added, so a
     # table headed for a rebuild gets no ADD COLUMN for its other new
     # columns either.
-    if compiler.rebuild_strategy() == "rebuild":
-        for model, _, coldef in diff.new_columns:
-            if add_column_needs_rebuild(compiler, coldef):
-                rebuild_tables[(model.tableName or "").lower()] = model
+    if state.compiler.rebuild_strategy() == "rebuild":
+        for model, _, coldef in state.diff.new_columns:
+            if add_column_needs_rebuild(state.compiler, coldef):
+                state.rebuild(model)
 
 
 def _new_column_steps(state: _Generation) -> None:
     """ADD COLUMN for each new column."""
-    connection = state.connection
-    compiler = state.compiler
-    diff = state.diff
-    up_steps = state.up_steps
-    down_steps = state.down_steps
-    rebuild_tables = state.rebuild_tables
     # New columns. A NOT NULL column with no value for the rows already
     # there fails the same way on both paths, so the check runs before a
     # table headed for a rebuild is skipped. The rebuild would otherwise
@@ -336,16 +311,18 @@ def _new_column_steps(state: _Generation) -> None:
     # empty table has no such rows and takes the column. A column that
     # another new column references goes in first, so the REFERENCES
     # clause names a column that exists.
-    for model, name, coldef in _referenced_first(diff.new_columns):
-        table_key = (model.tableName or "").lower()
-        rebuilding = table_key in rebuild_tables
+    for model, name, coldef in _referenced_first(state.diff.new_columns):
+        table_key = _table_key(model)
+        rebuilding = table_key in state.rebuild_tables
         if (
             not coldef.nullable
             and coldef.default is None
             and coldef.backfill is None
             and not coldef.primary_key
             and _table_has_rows(
-                connection, compiler, model._qualified_table_sql(compiler)
+                state.connection,
+                state.compiler,
+                model._qualified_table_sql(state.compiler),
             )
         ):
             raise ValueError(
@@ -361,27 +338,27 @@ def _new_column_steps(state: _Generation) -> None:
                 "primary key and autoincrement columns need a hand-written "
                 "migration."
             )
-        table_sql = model._qualified_table_sql(compiler)
+        table_sql = model._qualified_table_sql(state.compiler)
         intent_table = _intent_table(model)
         late = _late_reference(state, coldef)
         if not coldef.nullable and coldef.default is None:
             # A dialect that rebuilds took this table in the scan above.
             # One that can neither alter nor rebuild refuses here.
-            _rebuild_needed(compiler, "add a NOT NULL column")
+            _rebuild_needed(state.compiler, "add a NOT NULL column")
             if state.online and not isinstance(coldef.backfill, Expression):
                 _new_not_null_online(state, model, table_sql, name, coldef)
                 continue
             # Add nullable, backfill, then tighten.
             relaxed = render_column_sql(
-                compiler,
+                state.compiler,
                 name,
                 _keyless_copy(coldef, True) if state.online else _relaxed_copy(coldef),
                 inline_pk=False,
                 include_references=not state.online and not late,
             )
-            up_steps.extend(
+            state.up_steps.extend(
                 add_column_statements(
-                    compiler,
+                    state.compiler,
                     table_sql,
                     intent_table,
                     name,
@@ -391,50 +368,56 @@ def _new_column_steps(state: _Generation) -> None:
                     has_default=False,
                 )
             )
-            backfill = compiler.compile_backfill(
+            backfill = state.compiler.compile_backfill(
                 table_sql,
                 name,
-                compiler.compile_column_type(coldef),
-                compiler.format_value(coldef.backfill),
+                state.compiler.compile_column_type(coldef),
+                state.compiler.format_value(coldef.backfill),
             )
             _backfill_list(state).extend(
                 _tagged(backfill, "backfill", intent_table, name)
             )
-            tighten = compiler.compile_alter_column_nullability(
+            tighten = state.compiler.compile_alter_column_nullability(
                 table_sql,
                 name,
-                ColumnState.from_column(compiler, coldef, nullable=False),
+                ColumnState.from_column(state.compiler, coldef, nullable=False),
             )
-            down_steps[0:0] = compiler.compile_drop_column_statements(
+            state.down_steps[0:0] = state.compiler.compile_drop_column_statements(
                 table_sql, name, coldef.default is not None
             )
             if state.online:
-                loosen = compiler.compile_alter_column_nullability(
+                loosen = state.compiler.compile_alter_column_nullability(
                     table_sql,
                     name,
-                    ColumnState.from_column(compiler, coldef, nullable=True),
+                    ColumnState.from_column(state.compiler, coldef, nullable=True),
                 )
                 _set_not_null_online(
                     state, model, table_sql, name, backfill, tighten, loosen
                 )
                 _column_keys_online(state, model, table_sql, name, coldef)
                 continue
-            up_steps.extend(_tagged(tighten, "set_not_null", intent_table, name))
+            state.up_steps.extend(_tagged(tighten, "set_not_null", intent_table, name))
             _add_enum_check(
-                compiler, up_steps, down_steps, table_sql, model, name, coldef
+                state.compiler,
+                state.up_steps,
+                state.down_steps,
+                table_sql,
+                model,
+                name,
+                coldef,
             )
             _new_column_foreign_key(state, model, table_sql, name, coldef, late)
             continue
         column_sql = render_column_sql(
-            compiler,
+            state.compiler,
             name,
             _keyless_copy(coldef, coldef.nullable) if state.online else coldef,
             inline_pk=False,
             include_references=not state.online and not late,
         )
-        up_steps.extend(
+        state.up_steps.extend(
             add_column_statements(
-                compiler,
+                state.compiler,
                 table_sql,
                 intent_table,
                 name,
@@ -444,13 +427,21 @@ def _new_column_steps(state: _Generation) -> None:
                 has_default=coldef.default is not None,
             )
         )
-        down_steps[0:0] = compiler.compile_drop_column_statements(
+        state.down_steps[0:0] = state.compiler.compile_drop_column_statements(
             table_sql, name, coldef.default is not None
         )
         if state.online:
             _column_keys_online(state, model, table_sql, name, coldef)
             continue
-        _add_enum_check(compiler, up_steps, down_steps, table_sql, model, name, coldef)
+        _add_enum_check(
+            state.compiler,
+            state.up_steps,
+            state.down_steps,
+            table_sql,
+            model,
+            name,
+            coldef,
+        )
         _new_column_foreign_key(state, model, table_sql, name, coldef, late)
 
 
@@ -498,18 +489,23 @@ def _new_column_foreign_key(
     On a dialect that writes REFERENCES beside the column, the late key
     takes the name the server gives that clause.
     """
-    compiler = state.compiler
     if not late:
         _add_foreign_key(
-            compiler, state.up_steps, state.down_steps, table_sql, model, name, coldef
+            state.compiler,
+            state.up_steps,
+            state.down_steps,
+            table_sql,
+            model,
+            name,
+            coldef,
         )
         return
     fkey = (
         constraint_name(bare_table_name(model.tableName or ""), name, "fkey")
-        if compiler.inline_references()
+        if state.compiler.inline_references()
         else _column_fk_name(model, name)
     )
-    fk = _column_foreign_key(compiler, model, table_sql, name, coldef, fkey)
+    fk = _column_foreign_key(state.compiler, model, table_sql, name, coldef, fkey)
     state.late_foreign_keys.append(
         _LateForeignKey(
             fk.add, fk.drop, table_sql, _intent_table(model), fkey, fk.target
@@ -519,60 +515,49 @@ def _new_column_foreign_key(
 
 def _restore_lifted_index_steps(state: _Generation) -> None:
     """Creates again the indexes _lift_index_steps() dropped."""
-    up_steps = state.up_steps
-    down_steps = state.down_steps
-    lift_drops = state.lift_drops
-    lift_creates = state.lift_creates
-    up_steps.extend(lift_creates)
-    down_steps[0:0] = lift_drops
+    state.up_steps.extend(state.lift_creates)
+    state.down_steps[0:0] = state.lift_drops
 
 
 def _comment_steps(state: _Generation) -> None:
     """The comment statements for each drifted column comment."""
-    compiler = state.compiler
-    diff = state.diff
-    actual = state.actual
-    models_by_table = state.models_by_table
-    up_steps = state.up_steps
-    down_steps = state.down_steps
-    restated_states = state.restated_states
     # Comment changes. The down step writes the database's old comment
     # back. MySQL restates the whole column, so both directions restate
     # the column as the table has it: the state the type and nullability
     # statements above leave, or else the catalog's own report. The
     # model's declaration would change the type or the default in a
     # statement meant for the comment, and down would not change it back.
-    for table, name, actual_comment, expected_comment in diff.changed_comments:
-        model = models_by_table[table.lower()]
+    for table, name, actual_comment, expected_comment in state.diff.changed_comments:
+        model = state.models_by_table[table.lower()]
         assert model.tableColumns is not None
         coldef = model.tableColumns[name]
-        table_sql = model._qualified_table_sql(compiler)
-        column_state = restated_states.get((table.lower(), name.lower()))
+        table_sql = model._qualified_table_sql(state.compiler)
+        column_state = state.restated_states.get((table.lower(), name.lower()))
         if column_state is None:
             column_state = _introspected_state(
-                actual[table.lower()].columns[name.lower()]
+                state.actual[table.lower()].columns[name.lower()]
             )
         try:
-            set_new = compiler.compile_set_column_comment(
+            set_new = state.compiler.compile_set_column_comment(
                 table_sql, name, expected_comment, coldef, column_state
             )
-            set_old = compiler.compile_set_column_comment(
+            set_old = state.compiler.compile_set_column_comment(
                 table_sql, name, actual_comment, coldef, column_state
             )
         except DialectError as error:
             # Athena reports comments but cannot change one in place.
             # The drift is real and worth saying, but it must not stop
             # the rest of the migration from being generated.
-            diff.constraint_notes.append(
+            state.diff.constraint_notes.append(
                 f"{table}.{name} comment is {actual_comment or 'none'}, "
                 f"model declares {expected_comment or 'none'}: {error}"
             )
             continue
-        up_steps.extend(
+        state.up_steps.extend(
             _tagged(set_new, "set_column_comment", _intent_table(model), name)
         )
         for statement in reversed(set_old):
-            down_steps.insert(0, statement)
+            state.down_steps.insert(0, statement)
 
 
 def _backfill_list(state: _Generation) -> List[str]:
@@ -595,10 +580,9 @@ def _new_not_null_online(
     them, and the default comes off in the same migration. No row is
     ever NULL, so the column needs no backfill and no check.
     """
-    compiler = state.compiler
     intent_table = _intent_table(model)
     column_sql = render_column_sql(
-        compiler,
+        state.compiler,
         name,
         _keyless_copy(coldef, False, coldef.backfill),
         inline_pk=False,
@@ -606,7 +590,7 @@ def _new_not_null_online(
     )
     state.up_steps.extend(
         add_column_statements(
-            compiler,
+            state.compiler,
             table_sql,
             intent_table,
             name,
@@ -619,13 +603,13 @@ def _new_not_null_online(
     if coldef.backfill is not None:
         state.up_steps.append(
             with_intent(
-                compiler.compile_drop_column_default(table_sql, name),
+                state.compiler.compile_drop_column_default(table_sql, name),
                 "drop_column_default",
                 intent_table,
                 name,
             )
         )
-    state.down_steps[0:0] = compiler.compile_drop_column_statements(
+    state.down_steps[0:0] = state.compiler.compile_drop_column_statements(
         table_sql, name, coldef.default is not None
     )
     _column_keys_online(state, model, table_sql, name, coldef)
@@ -679,10 +663,9 @@ def _column_keys_online(
     at is there, as _late_foreign_key_steps() orders it. Both take the
     names PostgreSQL gives the clauses.
     """
-    compiler = state.compiler
     table = _intent_table(model)
     bare = bare_table_name(model.tableName or "")
-    actual_table = state.actual.get((model.tableName or "").lower())
+    actual_table = state.actual.get(_table_key(model))
     partitioned = actual_table is not None and actual_table.partitioned
     if coldef.unique and not coldef.primary_key:
         key = constraint_name(bare, name, "key")
@@ -690,7 +673,7 @@ def _column_keys_online(
             assert actual_table is not None
             state.online_up["index"].extend(
                 partitioned_index(
-                    compiler,
+                    state.compiler,
                     table_sql,
                     table,
                     key,
@@ -700,19 +683,21 @@ def _column_keys_online(
                 )
             )
             state.online_down["index"].insert(
-                0, if_exists(compiler.compile_drop_index(key, table_sql))
+                0, if_exists(state.compiler.compile_drop_index(key, table_sql))
             )
         else:
             state.online_up["index"].extend(
                 rebuilt(
                     with_intent(
-                        compiler.compile_drop_index(key, table_sql),
+                        state.compiler.compile_drop_index(key, table_sql),
                         "drop_index",
                         table,
                         name=key,
                     ),
                     with_intent(
-                        compiler.compile_create_index(key, table_sql, [name], True),
+                        state.compiler.compile_create_index(
+                            key, table_sql, [name], True
+                        ),
                         "create_index",
                         table,
                         name=key,
@@ -722,16 +707,16 @@ def _column_keys_online(
                 )
             )
             state.online_up["index"].append(
-                unique_using_index(compiler, table_sql, table, key)
+                unique_using_index(state.compiler, table_sql, table, key)
             )
             state.online_down["index"].insert(
-                0, compiler.compile_drop_constraint(table_sql, key)
+                0, state.compiler.compile_drop_constraint(table_sql, key)
             )
         state.online_keys.add(_key(bare, (name,)))
     if coldef.references is None:
         return
     fkey = constraint_name(bare, name, "fkey")
-    fk = _column_foreign_key(compiler, model, table_sql, name, coldef, fkey)
+    fk = _column_foreign_key(state.compiler, model, table_sql, name, coldef, fkey)
     state.late_foreign_keys.append(
         _LateForeignKey(
             fk.add,

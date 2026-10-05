@@ -38,6 +38,7 @@ from sustained.autogenerate.statements import (
     _rebuild_needed,
     _reported_intent_table,
     _spelled_columns,
+    _table_key,
     _tagged,
 )
 from sustained.compilers.base import table_qualifier
@@ -158,6 +159,14 @@ class _Generation:
         # the whole column after them.
         self.restated_states: Dict[Tuple[str, str], ColumnState] = {}
 
+    def rebuild(self, model: Type["Model"]) -> None:
+        """Sends the model's table to the rebuild path."""
+        self.rebuild_tables[_table_key(model)] = model
+
+    def skip(self, model: Type["Model"]) -> bool:
+        """Whether the model's table goes through the rebuild path."""
+        return _table_key(model) in self.rebuild_tables
+
 
 def _refuse_undeclared(
     diff: SchemaDiff, allow_drops: bool, ignore_undeclared: bool
@@ -188,27 +197,26 @@ def _refuse_undeclared(
 
 def _table_rename_steps(state: _Generation, table_renames: Dict[str, str]) -> None:
     """RENAME TABLE for each table rename hint."""
-    compiler = state.compiler
-    actual = state.actual
-    models_by_table = state.models_by_table
-    up_steps = state.up_steps
-    down_steps = state.down_steps
     for old, new in table_renames.items():
         # The renamed table keeps its schema, so the old name takes the
         # schema the model declares for the new one.
-        new_sql = _declared_table_sql(compiler, models_by_table, actual, new)
-        old_sql = table_qualifier(new_sql) + compiler.quote_ddl_identifier(old)
-        new_model = models_by_table.get(new.lower())
+        new_sql = _declared_table_sql(
+            state.compiler, state.models_by_table, state.actual, new
+        )
+        old_sql = table_qualifier(new_sql) + state.compiler.quote_ddl_identifier(old)
+        new_model = state.models_by_table.get(new.lower())
         schema = None if new_model is None else new_model.tableSchema
-        up_steps.append(
+        state.up_steps.append(
             with_intent(
-                compiler.compile_rename_table(old_sql, new_sql),
+                state.compiler.compile_rename_table(old_sql, new_sql),
                 "rename_table",
                 f"{schema}.{old}" if schema else old,
                 new=new,
             )
         )
-        down_steps.insert(0, compiler.compile_rename_table(new_sql, old_sql))
+        state.down_steps.insert(
+            0, state.compiler.compile_rename_table(new_sql, old_sql)
+        )
 
 
 def _column_rename_steps(state: _Generation, renames: Dict[str, str]) -> None:
@@ -220,16 +228,13 @@ def _column_rename_steps(state: _Generation, renames: Dict[str, str]) -> None:
     expression but keeps the constraint's name. A dialect that cannot add
     a constraint in place rebuilds the table instead.
     """
-    compiler = state.compiler
-    actual = state.actual
-    models_by_table = state.models_by_table
-    up_steps = state.up_steps
-    down_steps = state.down_steps
     for path, new_name in renames.items():
         table, old_name = path.rsplit(".", 1)
-        table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
-        moved = actual.renamed_enum_checks.get((table.lower(), new_name.lower()))
-        model = models_by_table.get(table.lower())
+        table_sql = _declared_table_sql(
+            state.compiler, state.models_by_table, state.actual, table
+        )
+        moved = state.actual.renamed_enum_checks.get((table.lower(), new_name.lower()))
+        model = state.models_by_table.get(table.lower())
         coldef = None
         if model is not None:
             coldef = (model.tableColumns or {}).get(new_name)
@@ -237,67 +242,70 @@ def _column_rename_steps(state: _Generation, renames: Dict[str, str]) -> None:
             moved is not None
             and coldef is not None
             and coldef.type_name == "ENUM"
-            and compiler.enum_strategy() == "check"
+            and state.compiler.enum_strategy() == "check"
         )
-        if renames_check and _rebuild_needed(compiler, "change a constraint"):
+        if renames_check and _rebuild_needed(state.compiler, "change a constraint"):
             assert model is not None
             state.rebuild_tables[table.lower()] = model
             renames_check = False
         if renames_check:
             assert moved is not None and model is not None
             old_check, expression = moved
-            up_steps.append(
+            state.up_steps.append(
                 with_intent(
-                    compiler.compile_drop_constraint(table_sql, old_check),
+                    state.compiler.compile_drop_constraint(table_sql, old_check),
                     "drop_constraint",
                     _intent_table(model),
                     old_name,
                     name=old_check,
                 )
             )
-            down_steps.insert(
-                0, compiler.compile_add_check(table_sql, old_check, expression)
+            state.down_steps.insert(
+                0, state.compiler.compile_add_check(table_sql, old_check, expression)
             )
-        up_steps.append(
+        state.up_steps.append(
             with_intent(
-                compiler.compile_rename_column(table_sql, old_name, new_name),
+                state.compiler.compile_rename_column(table_sql, old_name, new_name),
                 "rename_column",
-                _reported_intent_table(models_by_table, actual, table),
+                _reported_intent_table(state.models_by_table, state.actual, table),
                 old_name,
                 new=new_name,
             )
         )
-        down_steps.insert(
-            0, compiler.compile_rename_column(table_sql, new_name, old_name)
+        state.down_steps.insert(
+            0, state.compiler.compile_rename_column(table_sql, new_name, old_name)
         )
         if renames_check:
             assert model is not None and coldef is not None
             _add_enum_check(
-                compiler, up_steps, down_steps, table_sql, model, new_name, coldef
+                state.compiler,
+                state.up_steps,
+                state.down_steps,
+                table_sql,
+                model,
+                new_name,
+                coldef,
             )
 
 
 def _enum_type_steps(state: _Generation) -> None:
     """Creates new enum types and appends declared values."""
-    compiler = state.compiler
-    diff = state.diff
-    up_steps = state.up_steps
     # Enum types first, before any table or column that references them.
     # New types are created; declared values that extend the database's
     # list are appended with ADD VALUE, which no engine takes back, so
     # such a migration has no down. Any other value change cannot run in
     # place and refuses with the recipe.
-    for type_name, values in diff.new_enum_types:
-        up_steps.append(
+    for type_name, values in state.diff.new_enum_types:
+        state.up_steps.append(
             with_intent(
-                compiler.compile_create_enum_type(type_name, list(values)),
+                state.compiler.compile_create_enum_type(type_name, list(values)),
                 "create_enum_type",
                 None,
                 name=type_name,
             )
         )
         state.created_enum_types.append(type_name)
-    for type_name, actual_values, expected_values in diff.changed_enum_types:
+    for type_name, actual_values, expected_values in state.diff.changed_enum_types:
         additions = _enum_value_additions(actual_values, expected_values)
         if additions is None:
             raise ValueError(
@@ -309,9 +317,9 @@ def _enum_type_steps(state: _Generation) -> None:
                 "USING, and drops the old type."
             )
         for value in additions:
-            up_steps.append(
+            state.up_steps.append(
                 with_intent(
-                    compiler.compile_add_enum_value(type_name, value),
+                    state.compiler.compile_add_enum_value(type_name, value),
                     "add_enum_value",
                     None,
                     name=type_name,
@@ -323,46 +331,44 @@ def _enum_type_steps(state: _Generation) -> None:
 
 def _new_table_steps(state: _Generation) -> None:
     """CREATE TABLE for each missing table."""
-    compiler = state.compiler
-    diff = state.diff
-    up_steps = state.up_steps
-    down_steps = state.down_steps
     # New tables. Where the dialect can add a constraint to a table that
     # already exists, every foreign key is left out of CREATE TABLE and
     # added afterwards, so two new tables may point at each other in any
     # order. Where it cannot, the tables were sorted into dependency
     # order by the diff and the keys stay inside CREATE TABLE.
-    defer_foreign_keys = compiler.supports_add_constraint()
+    defer_foreign_keys = state.compiler.supports_add_constraint()
     table_downs: List[str] = []
     fk_downs: List[str] = []
-    for model in diff.missing_tables:
-        up_steps.extend(_create_table_steps(compiler, model, defer_foreign_keys))
+    for model in state.diff.missing_tables:
+        state.up_steps.extend(
+            _create_table_steps(state.compiler, model, defer_foreign_keys)
+        )
         table_downs.insert(
-            0, f"DROP TABLE IF EXISTS {model._qualified_table_sql(compiler)}"
+            0, f"DROP TABLE IF EXISTS {model._qualified_table_sql(state.compiler)}"
         )
     # A key that points at a column or a unique index the same diff
     # adds to a table that exists goes in after that column and index.
     built = state.index_keys | state.column_keys
     if defer_foreign_keys:
-        for model in diff.missing_tables:
+        for model in state.diff.missing_tables:
             for add_sql, drop_sql, target in _deferred_foreign_key_steps(
-                compiler, model
+                state.compiler, model
             ):
                 if target in built:
                     state.late_foreign_keys.append(
                         _LateForeignKey(
                             add_sql,
                             drop_sql,
-                            model._qualified_table_sql(compiler),
+                            model._qualified_table_sql(state.compiler),
                             _intent_table(model),
                             _intent_name(add_sql),
                             target,
                         )
                     )
                     continue
-                up_steps.append(add_sql)
+                state.up_steps.append(add_sql)
                 fk_downs.insert(0, drop_sql)
-    down_steps[0:0] = fk_downs + table_downs
+    state.down_steps[0:0] = fk_downs + table_downs
 
 
 def _intent_name(statement: str) -> str:
@@ -404,84 +410,81 @@ def _late_foreign_key_steps(state: _Generation) -> None:
 
 def _constraint_rebuild_scan(state: _Generation) -> None:
     """Marks the tables whose constraints change for a rebuild."""
-    compiler = state.compiler
-    diff = state.diff
-    models_by_table = state.models_by_table
-    allow_drops = state.allow_drops
-    rebuild_tables = state.rebuild_tables
     # A dialect that cannot alter a table in place takes its constraint
     # changes through the rebuild: the rebuilt CREATE TABLE renders the
     # declared tableConstraints. Extra and changed constraints only
     # trigger a rebuild under allow_drops, since replacing the table
     # drops what the declaration does not carry.
-    if not compiler.supports_alter_column():
+    if not state.compiler.supports_alter_column():
         constrained_tables: List[Type["Model"]] = [
-            model for model, _ in diff.new_foreign_keys
+            model for model, _ in state.diff.new_foreign_keys
         ]
-        constrained_tables += [model for model, _ in diff.new_checks]
-        constrained_tables += [model for model, _, _ in diff.changed_checks]
-        if allow_drops:
-            constrained_tables += [model for model, _, _ in diff.changed_foreign_keys]
+        constrained_tables += [model for model, _ in state.diff.new_checks]
+        constrained_tables += [model for model, _, _ in state.diff.changed_checks]
+        if state.allow_drops:
             constrained_tables += [
-                models_by_table[table.lower()]
-                for table, _, _ in diff.extra_foreign_keys
+                model for model, _, _ in state.diff.changed_foreign_keys
             ]
             constrained_tables += [
-                models_by_table[table.lower()] for table, _, _ in diff.extra_checks
+                state.models_by_table[table.lower()]
+                for table, _, _ in state.diff.extra_foreign_keys
             ]
             constrained_tables += [
-                models_by_table[table.lower()]
-                for table, _, index in diff.extra_indexes
+                state.models_by_table[table.lower()]
+                for table, _, _ in state.diff.extra_checks
+            ]
+            constrained_tables += [
+                state.models_by_table[table.lower()]
+                for table, _, index in state.diff.extra_indexes
                 if index.constraint
             ]
         for model in constrained_tables:
-            if _rebuild_needed(compiler, "change a constraint"):
-                rebuild_tables[(model.tableName or "").lower()] = model
+            if _rebuild_needed(state.compiler, "change a constraint"):
+                state.rebuild(model)
 
 
 def _table_rebuild_steps(state: _Generation) -> None:
     """Rebuilds each table marked for a rebuild."""
-    compiler = state.compiler
-    actual = state.actual
-    allow_drops = state.allow_drops
-    up_steps = state.up_steps
-    rebuild_tables = state.rebuild_tables
     # Table rebuilds for SQLite consume every remaining change on the
     # table. They run between the statements that turn foreign key
     # enforcement off and on again, since dropping the old table would
     # otherwise fail while rows in another table still point at it.
-    if rebuild_tables:
+    if state.rebuild_tables:
         # The pragma statements only land outside a transaction, so a
         # migration that carries them runs bare. A rebuild nothing points
         # at needs no pragma and keeps its transaction.
-        guarded = rebuild_turns_foreign_keys_off(actual, rebuild_tables)
+        guarded = rebuild_turns_foreign_keys_off(state.actual, state.rebuild_tables)
         if guarded:
-            up_steps.extend(_foreign_keys_setting(compiler.rebuild_setup_sql(), "OFF"))
-        legacy_rename = rebuild_renames_under_legacy(actual)
-        for table_key, model in rebuild_tables.items():
-            up_steps.extend(
+            state.up_steps.extend(
+                _foreign_keys_setting(state.compiler.rebuild_setup_sql(), "OFF")
+            )
+        legacy_rename = rebuild_renames_under_legacy(state.actual)
+        for table_key, model in state.rebuild_tables.items():
+            state.up_steps.extend(
                 _tagged(
                     rebuild_steps(
-                        compiler, model, actual[table_key], allow_drops, legacy_rename
+                        state.compiler,
+                        model,
+                        state.actual[table_key],
+                        state.allow_drops,
+                        legacy_rename,
                     ),
                     "rebuild_table",
                     _intent_table(model),
                 )
             )
         if guarded:
-            up_steps.extend(_foreign_keys_setting(compiler.rebuild_finish_sql(), "ON"))
+            state.up_steps.extend(
+                _foreign_keys_setting(state.compiler.rebuild_finish_sql(), "ON")
+            )
             state.transactional = False
         state.reversible = False
 
 
 def _index_steps(state: _Generation) -> None:
     """Creates and rebuilds declared indexes."""
-    compiler = state.compiler
-    diff = state.diff
-    actual = state.actual
     up_steps = state.up_steps
     down_steps = state.down_steps
-    rebuild_tables = state.rebuild_tables
     # Index changes. A rebuilt table takes its declared indexes from the
     # rebuild, and its old indexes went with the old table, so none of
     # these statements apply to it.
@@ -491,13 +494,13 @@ def _index_steps(state: _Generation) -> None:
     if state.online:
         up_steps = state.online_up["index"]
         down_steps = state.online_down["index"]
-    for model, index in diff.new_indexes:
-        if (model.tableName or "").lower() in rebuild_tables:
+    for model, index in state.diff.new_indexes:
+        if state.skip(model):
             continue
-        table_sql = model._qualified_table_sql(compiler)
+        table_sql = model._qualified_table_sql(state.compiler)
         intent_table = _intent_table(model)
-        create = create_index_statement(compiler, table_sql, intent_table, index)
-        drop = compiler.compile_drop_index(index.name, table_sql)
+        create = create_index_statement(state.compiler, table_sql, intent_table, index)
+        drop = state.compiler.compile_drop_index(index.name, table_sql)
         if state.online:
             up_steps.extend(_built_online(state, model, index))
             down_steps.insert(0, _dropped_online(state, model, drop))
@@ -506,26 +509,24 @@ def _index_steps(state: _Generation) -> None:
             down_steps.insert(0, drop)
         if index.unique:
             state.online_keys.add(_key(model.tableName or "", index.columns))
-    for model, index, actual_index in diff.changed_indexes:
-        if (model.tableName or "").lower() in rebuild_tables:
+    for model, index, actual_index in state.diff.changed_indexes:
+        if state.skip(model):
             continue
-        table_sql = model._qualified_table_sql(compiler)
+        table_sql = model._qualified_table_sql(state.compiler)
         intent_table = _intent_table(model)
         drop = with_intent(
-            compiler.compile_drop_index(index.name, table_sql),
+            state.compiler.compile_drop_index(index.name, table_sql),
             "drop_index",
             intent_table,
             name=index.name,
         )
-        actual_columns = _spelled_columns(
-            actual[(model.tableName or "").lower()], actual_index
-        )
+        actual_columns = _spelled_columns(state.actual[_table_key(model)], actual_index)
         if state.online:
             up_steps.extend(_replaced_online(state, model, drop, index))
         else:
             up_steps.append(drop)
             up_steps.append(
-                create_index_statement(compiler, table_sql, intent_table, index)
+                create_index_statement(state.compiler, table_sql, intent_table, index)
             )
         # An invalid index is rebuilt, and the down step leaves the
         # valid one in its place: the invalid index did nothing.
@@ -541,16 +542,16 @@ def _index_steps(state: _Generation) -> None:
                 )
             else:
                 restore = [
-                    compiler.compile_drop_index(index.name, table_sql),
-                    compiler.compile_create_index(
+                    state.compiler.compile_drop_index(index.name, table_sql),
+                    state.compiler.compile_create_index(
                         index.name, table_sql, actual_columns, actual_index.unique
                     ),
                 ]
             down_steps[0:0] = restore
         if index.unique:
             state.online_keys.add(_key(model.tableName or "", index.columns))
-    for model, column, actual_index in diff.invalid_keys:
-        if (model.tableName or "").lower() in rebuild_tables:
+    for model, column, actual_index in state.diff.invalid_keys:
+        if state.skip(model):
             continue
         _key_rebuild_steps(state, up_steps, model, column, actual_index)
 
@@ -571,12 +572,11 @@ def _key_rebuild_steps(
     on each partition. The invalid index enforced nothing, so the down
     step leaves the key in place.
     """
-    compiler = state.compiler
-    table_sql = model._qualified_table_sql(compiler)
+    table_sql = model._qualified_table_sql(state.compiler)
     table = _intent_table(model)
     name = actual_index.name or ""
     drop = with_intent(
-        compiler.compile_drop_index(name, table_sql),
+        state.compiler.compile_drop_index(name, table_sql),
         "drop_index",
         table,
         name=name,
@@ -585,7 +585,7 @@ def _key_rebuild_steps(
         up_steps.append(drop)
         up_steps.append(
             with_intent(
-                compiler.compile_add_unique(table_sql, name, [column]),
+                state.compiler.compile_add_unique(table_sql, name, [column]),
                 "add_unique",
                 table,
                 name=name,
@@ -596,13 +596,13 @@ def _key_rebuild_steps(
         _replaced_online(state, model, drop, Index(name, column, unique=True))
     )
     if not _is_partitioned(state, model):
-        up_steps.append(unique_using_index(compiler, table_sql, table, name))
+        up_steps.append(unique_using_index(state.compiler, table_sql, table, name))
     state.online_keys.add(_key(model.tableName or "", (column,)))
 
 
 def _is_partitioned(state: _Generation, model: Type["Model"]) -> bool:
     """Whether the snapshot reads the model's table as partitioned."""
-    found = state.actual.get((model.tableName or "").lower())
+    found = state.actual.get(_table_key(model))
     return found is not None and found.partitioned
 
 
@@ -619,14 +619,13 @@ def _built_online(
     index an earlier attempt left under the name, then the build. With
     `intent` False, as in a down step, the statements have no intent.
     """
-    compiler = state.compiler
-    table_sql = model._qualified_table_sql(compiler)
+    table_sql = model._qualified_table_sql(state.compiler)
     table = _intent_table(model)
-    found = state.actual.get((model.tableName or "").lower())
+    found = state.actual.get(_table_key(model))
     if found is not None and found.partitioned:
         return list(
             partitioned_index(
-                compiler,
+                state.compiler,
                 table_sql,
                 table,
                 index.name,
@@ -635,14 +634,14 @@ def _built_online(
                 found.partitions,
             )
         )
-    drop = compiler.compile_drop_index(index.name, table_sql)
+    drop = state.compiler.compile_drop_index(index.name, table_sql)
     if not intent:
-        create = create_index_sql(compiler, table_sql, index)
+        create = create_index_sql(state.compiler, table_sql, index)
         return [str(s) for s in rebuilt(drop, create)]
     return list(
         rebuilt(
             with_intent(drop, "drop_index", table, name=index.name),
-            create_index_statement(compiler, table_sql, table, index),
+            create_index_statement(state.compiler, table_sql, table, index),
         )
     )
 
@@ -683,39 +682,35 @@ def _as_is(statement: str) -> str:
 
 def _constraint_steps(state: _Generation) -> None:
     """Adds, changes, and drops constraints in place."""
-    compiler = state.compiler
-    diff = state.diff
-    actual = state.actual
-    models_by_table = state.models_by_table
-    allow_drops = state.allow_drops
-    up_steps = state.up_steps
-    down_steps = state.down_steps
-    rebuild_tables = state.rebuild_tables
     # Constraint changes on dialects that alter in place. A table headed
     # for a rebuild gets its constraints from the rebuilt CREATE TABLE.
     # With online, a check or foreign key goes in NOT VALID, and the
     # migration outside the DDL transaction validates it.
     added = not_valid if state.online else _as_is
-    for model, check in diff.new_checks:
-        if (model.tableName or "").lower() in rebuild_tables:
+    for model, check in state.diff.new_checks:
+        if state.skip(model):
             continue
-        table_sql = model._qualified_table_sql(compiler)
-        up_steps.append(
+        table_sql = model._qualified_table_sql(state.compiler)
+        state.up_steps.append(
             added(
                 with_intent(
-                    compiler.compile_add_check(table_sql, check.name, check.expression),
+                    state.compiler.compile_add_check(
+                        table_sql, check.name, check.expression
+                    ),
                     "add_check",
                     _intent_table(model),
                     name=check.name,
                 )
             )
         )
-        down_steps.insert(0, compiler.compile_drop_constraint(table_sql, check.name))
+        state.down_steps.insert(
+            0, state.compiler.compile_drop_constraint(table_sql, check.name)
+        )
         _validate_online(state, table_sql, model, check.name)
-    for model, fk in diff.new_foreign_keys:
-        if (model.tableName or "").lower() in rebuild_tables:
+    for model, fk in state.diff.new_foreign_keys:
+        if state.skip(model):
             continue
-        table_sql = model._qualified_table_sql(compiler)
+        table_sql = model._qualified_table_sql(state.compiler)
         # A key the online migration builds is not there yet when the
         # DDL transaction runs, so a foreign key that points at it goes
         # in after the key is built. PostgreSQL before 18 refuses NOT
@@ -726,134 +721,149 @@ def _constraint_steps(state: _Generation) -> None:
         up, down = (
             (state.online_up["constraint"], state.online_down["constraint"])
             if late or partitioned
-            else (up_steps, down_steps)
+            else (state.up_steps, state.down_steps)
         )
         statement = _declared_fk_intent(
-            _declared_fk_sql(compiler, table_sql, fk), _intent_table(model), fk
+            _declared_fk_sql(state.compiler, table_sql, fk), _intent_table(model), fk
         )
         up.append(statement if partitioned else added(statement))
-        down.insert(0, compiler.compile_drop_foreign_key(table_sql, fk.name))
+        down.insert(0, state.compiler.compile_drop_foreign_key(table_sql, fk.name))
         if not partitioned:
             _validate_online(state, table_sql, model, fk.name)
     # A declared constraint the catalog reads as not validated, such as
     # one whose VALIDATE CONSTRAINT failed, is validated where it is.
-    for model, name in diff.unvalidated:
-        if (model.tableName or "").lower() in rebuild_tables:
+    for model, name in state.diff.unvalidated:
+        if state.skip(model):
             continue
-        table_sql = model._qualified_table_sql(compiler)
-        (state.online_up["validate"] if state.online else up_steps).append(
-            validate(compiler, table_sql, _intent_table(model), name)
+        table_sql = model._qualified_table_sql(state.compiler)
+        (state.online_up["validate"] if state.online else state.up_steps).append(
+            validate(state.compiler, table_sql, _intent_table(model), name)
         )
     # A check the online SET NOT NULL route added and a failed run left
     # comes off, unless the route runs again in this diff and drops it.
-    for model, name in diff.route_checks:
-        table_sql = model._qualified_table_sql(compiler)
-        drop = transient_drop(compiler, table_sql, _intent_table(model), name)
-        cleanup = state.online_up["cleanup"] if state.online else up_steps
+    for model, name in state.diff.route_checks:
+        table_sql = model._qualified_table_sql(state.compiler)
+        drop = transient_drop(state.compiler, table_sql, _intent_table(model), name)
+        cleanup = state.online_up["cleanup"] if state.online else state.up_steps
         if drop not in cleanup:
             cleanup.append(drop)
-    if allow_drops:
-        for model, fk, actual_fk in diff.changed_foreign_keys:
-            if (model.tableName or "").lower() in rebuild_tables:
+    if state.allow_drops:
+        for model, fk, actual_fk in state.diff.changed_foreign_keys:
+            if state.skip(model):
                 continue
-            table_sql = model._qualified_table_sql(compiler)
+            table_sql = model._qualified_table_sql(state.compiler)
             intent_table = _intent_table(model)
-            up_steps.append(
+            state.up_steps.append(
                 with_intent(
-                    compiler.compile_drop_foreign_key(table_sql, fk.name),
+                    state.compiler.compile_drop_foreign_key(table_sql, fk.name),
                     "drop_foreign_key",
                     intent_table,
                     name=fk.name,
                 )
             )
-            up_steps.append(
+            state.up_steps.append(
                 added(
                     _declared_fk_intent(
-                        _declared_fk_sql(compiler, table_sql, fk), intent_table, fk
+                        _declared_fk_sql(state.compiler, table_sql, fk),
+                        intent_table,
+                        fk,
                     )
                 )
             )
             _validate_online(state, table_sql, model, fk.name)
             restore = _introspected_fk_sql(
-                compiler, table_sql, fk.name, actual_fk, actual, model.tableName or ""
+                state.compiler,
+                table_sql,
+                fk.name,
+                actual_fk,
+                state.actual,
+                model.tableName or "",
             )
             if restore is None:
                 state.reversible = False
             else:
-                down_steps.insert(0, restore)
-                down_steps.insert(
-                    0, compiler.compile_drop_foreign_key(table_sql, fk.name)
+                state.down_steps.insert(0, restore)
+                state.down_steps.insert(
+                    0, state.compiler.compile_drop_foreign_key(table_sql, fk.name)
                 )
         # With online, the drops run in the migration outside the DDL
         # transaction, after everything else, each with IF EXISTS.
         drop_up, drop_down = _drop_lists(state)
         dropped = if_exists if state.online else _as_is
-        for table, name, actual_fk in diff.extra_foreign_keys:
-            if table.lower() in rebuild_tables:
+        for table, name, actual_fk in state.diff.extra_foreign_keys:
+            if table.lower() in state.rebuild_tables:
                 continue
-            table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
+            table_sql = _declared_table_sql(
+                state.compiler, state.models_by_table, state.actual, table
+            )
             drop_up.append(
                 dropped(
                     with_intent(
-                        compiler.compile_drop_foreign_key(table_sql, name),
+                        state.compiler.compile_drop_foreign_key(table_sql, name),
                         "drop_foreign_key",
-                        _reported_intent_table(models_by_table, actual, table),
+                        _reported_intent_table(
+                            state.models_by_table, state.actual, table
+                        ),
                         name=name,
                     )
                 )
             )
             restore = _introspected_fk_sql(
-                compiler, table_sql, name, actual_fk, actual, table
+                state.compiler, table_sql, name, actual_fk, state.actual, table
             )
             if restore is None:
                 _irreversible(state)
             else:
                 drop_down.insert(0, restore)
-        for table, name, expression in diff.extra_checks:
-            if table.lower() in rebuild_tables:
+        for table, name, expression in state.diff.extra_checks:
+            if table.lower() in state.rebuild_tables:
                 continue
-            table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
+            table_sql = _declared_table_sql(
+                state.compiler, state.models_by_table, state.actual, table
+            )
             drop_up.append(
                 dropped(
                     with_intent(
-                        compiler.compile_drop_constraint(table_sql, name),
+                        state.compiler.compile_drop_constraint(table_sql, name),
                         "drop_constraint",
-                        _reported_intent_table(models_by_table, actual, table),
+                        _reported_intent_table(
+                            state.models_by_table, state.actual, table
+                        ),
                         name=name,
                     )
                 )
             )
-            drop_down.insert(0, compiler.compile_add_check(table_sql, name, expression))
+            drop_down.insert(
+                0, state.compiler.compile_add_check(table_sql, name, expression)
+            )
 
 
 def _drop_steps(state: _Generation) -> None:
     """Drops the extra indexes, columns, tables, and enum types."""
-    compiler = state.compiler
-    diff = state.diff
-    actual = state.actual
-    models_by_table = state.models_by_table
-    allow_drops = state.allow_drops
-    rebuild_tables = state.rebuild_tables
     up_steps, down_steps = _drop_lists(state)
     # With online, every drop takes IF EXISTS, an index drops
     # concurrently, and the index a down step builds again is built
     # concurrently. On a partitioned table the index drops without
     # CONCURRENTLY, which PostgreSQL refuses there.
     dropped = if_exists if state.online else _as_is
-    if allow_drops:
-        for table, name, actual_index in diff.extra_indexes:
-            if table.lower() in rebuild_tables:
+    if state.allow_drops:
+        for table, name, actual_index in state.diff.extra_indexes:
+            if table.lower() in state.rebuild_tables:
                 continue
-            table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
-            intent_table = _reported_intent_table(models_by_table, actual, table)
-            actual_table = actual[table.lower()]
+            table_sql = _declared_table_sql(
+                state.compiler, state.models_by_table, state.actual, table
+            )
+            intent_table = _reported_intent_table(
+                state.models_by_table, state.actual, table
+            )
+            actual_table = state.actual[table.lower()]
             if actual_index.constraint:
                 # The index belongs to a UNIQUE constraint, and the engine
                 # refuses DROP INDEX on it.
                 up_steps.append(
                     dropped(
                         with_intent(
-                            compiler.compile_drop_constraint(table_sql, name),
+                            state.compiler.compile_drop_constraint(table_sql, name),
                             "drop_constraint",
                             intent_table,
                             name=name,
@@ -862,13 +872,13 @@ def _drop_steps(state: _Generation) -> None:
                 )
                 down_steps.insert(
                     0,
-                    compiler.compile_add_unique(
+                    state.compiler.compile_add_unique(
                         table_sql, name, _spelled_columns(actual_table, actual_index)
                     ),
                 )
                 continue
             drop = with_intent(
-                compiler.compile_drop_index(name, table_sql),
+                state.compiler.compile_drop_index(name, table_sql),
                 "drop_index",
                 intent_table,
                 name=name,
@@ -878,12 +888,12 @@ def _drop_steps(state: _Generation) -> None:
                 up_steps.append(drop)
                 down_steps.insert(
                     0,
-                    compiler.compile_create_index(
+                    state.compiler.compile_create_index(
                         name, table_sql, columns, actual_index.unique
                     ),
                 )
                 continue
-            model = models_by_table[table.lower()]
+            model = state.models_by_table[table.lower()]
             up_steps.append(_dropped_online(state, model, drop))
             down_steps[0:0] = _built_online(
                 state,
@@ -891,13 +901,17 @@ def _drop_steps(state: _Generation) -> None:
                 Index(name, *columns, unique=actual_index.unique),
                 intent=False,
             )
-        for table, name in diff.extra_columns:
-            if table.lower() in rebuild_tables:
+        for table, name in state.diff.extra_columns:
+            if table.lower() in state.rebuild_tables:
                 continue
-            table_sql = _declared_table_sql(compiler, models_by_table, actual, table)
-            intent_table = _reported_intent_table(models_by_table, actual, table)
-            actual_column = actual[table.lower()].columns.get(name)
-            drops = compiler.compile_drop_column_statements(
+            table_sql = _declared_table_sql(
+                state.compiler, state.models_by_table, state.actual, table
+            )
+            intent_table = _reported_intent_table(
+                state.models_by_table, state.actual, table
+            )
+            actual_column = state.actual[table.lower()].columns.get(name)
+            drops = state.compiler.compile_drop_column_statements(
                 table_sql,
                 name,
                 actual_column is not None and actual_column.default is not None,
@@ -910,18 +924,20 @@ def _drop_steps(state: _Generation) -> None:
                 dropped(with_intent(drops[-1], "drop_column", intent_table, name))
             )
             _irreversible(state)
-        if diff.extra_tables:
-            drops, bare = _extra_table_drops(compiler, actual, diff.extra_tables)
+        if state.diff.extra_tables:
+            drops, bare = _extra_table_drops(
+                state.compiler, state.actual, state.diff.extra_tables
+            )
             up_steps.extend(dropped(drop) for drop in drops)
             if bare and not state.online:
                 state.transactional = False
             _irreversible(state)
         # A type drops after every table and column that used it.
-        for type_name in diff.extra_enum_types:
+        for type_name in state.diff.extra_enum_types:
             up_steps.append(
                 dropped(
                     with_intent(
-                        compiler.compile_drop_enum_type(type_name),
+                        state.compiler.compile_drop_enum_type(type_name),
                         "drop_enum_type",
                         None,
                         name=type_name,
@@ -957,9 +973,7 @@ def _validate_online(
 
 def _created_enum_type_downs(state: _Generation) -> None:
     """Drops the enum types this migration created."""
-    compiler = state.compiler
-    down_steps = state.down_steps
     # Types created in this migration drop last on the way down, after
     # every table that referenced them is gone.
     for type_name in state.created_enum_types:
-        down_steps.append(compiler.compile_drop_enum_type(type_name))
+        state.down_steps.append(state.compiler.compile_drop_enum_type(type_name))
