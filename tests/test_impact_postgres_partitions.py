@@ -24,9 +24,9 @@ from sustained.impact import (
 from sustained.impact.context import Relation
 from sustained.impact.recognizer import recognize
 from sustained.impact.report import statement_data
+from sustained.impact.rules.common import name_filter
 from sustained.impact.rules.postgres import type_change
-from sustained.impact.rules.postgres.context import _types, context_plan
-from sustained.impact.rules.postgres.trace import _literal
+from sustained.impact.rules.postgres.context import _types, context_plan, literal
 from sustained.introspect.model import (
     IntrospectedColumn,
     IntrospectedForeignKey,
@@ -923,9 +923,13 @@ class QuotingTestCase(unittest.TestCase):
             ),
         )
 
-    def test_a_literal_doubles_quotes_and_backslashes(self):
-        self.assertEqual(_literal("it's"), "'it''s'")
-        self.assertEqual(_literal("a\\b'"), "E'a\\\\b'''")
+    def test_a_literal_spells_quotes_and_backslashes_in_hex(self):
+        self.assertEqual(
+            literal("a\\b'%"), "convert_from(decode('615c622725', 'hex'), 'UTF8')"
+        )
+
+    def test_a_name_filter_with_no_names_matches_nothing(self):
+        self.assertEqual(name_filter("c", [], literal), "c IN (NULL)")
 
 
 class RecognizerTestCase(unittest.TestCase):

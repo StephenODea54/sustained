@@ -51,7 +51,8 @@ from sustained.impact.model import (
     TableImpact,
     Work,
 )
-from sustained.impact.rules.postgres.context import SYSTEM_SCHEMAS
+from sustained.impact.rules.common import name_filter
+from sustained.impact.rules.postgres.context import SYSTEM_SCHEMAS, literal
 from sustained.impact.rules.postgres.locks import lock_name
 from sustained.impact.rules.sighted import add_name, ids_plan, observe_sightings
 
@@ -93,7 +94,7 @@ CROSS JOIN LATERAL (
   SELECT i.indexrelid, true FROM pg_catalog.pg_index i WHERE i.indrelid = leaf.oid
 ) f (relid, is_index)
 WHERE c.relkind IN ('r', 'p', 'm') AND {SYSTEM_SCHEMAS}
-  AND lower(c.relname) IN ({{names}})"""
+  AND {{names}}"""
 
 # A mode an unpredicted table must reach before it counts as a mismatch.
 # Weaker modes are the ones foreign key checks and catalog lookups take
@@ -128,17 +129,6 @@ def _key(name: str) -> str:
     return ".".join(part.strip('"') for part in name.split(".")).lower()
 
 
-def _literal(value: str) -> str:
-    """
-    A string literal of the value, as quote_literal() writes it: quotes
-    and backslashes doubled, and an E prefix when the value contains a
-    backslash, so the literal reads the same whatever
-    `standard_conforming_strings` is set to.
-    """
-    text = "'" + value.replace("'", "''").replace("\\", "\\\\") + "'"
-    return "E" + text if "\\" in value else text
-
-
 def tables_plan() -> Generator[str, Rows, Optional[FrozenSet[int]]]:
     """The oids of every table that exists, or None when the read failed."""
     return ids_plan(_TABLES_SQL)
@@ -159,7 +149,7 @@ def sighting_plan(tables: Sequence[str]) -> Generator[str, Rows, Sighting]:
     wanted = sorted({_key(t).rsplit(".", 1)[-1] for t in tables})
     if wanted:
         rows = yield from attempt(
-            _STORAGE_SQL.format(names=", ".join(_literal(name) for name in wanted))
+            _STORAGE_SQL.format(names=name_filter("lower(c.relname)", wanted, literal))
         )
         if rows is not None:
             read.add("storage")

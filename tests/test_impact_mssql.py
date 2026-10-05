@@ -1175,7 +1175,7 @@ class TraceTestCase(unittest.TestCase):
         ]
         storage = [(1, "dbo", "t", 1, 1, 1, 10, 40), (1, "dbo", "t", 1, 2, 1, 20, None)]
         asked, seen = drive(sighting_plan(["[dbo].[t]"]), [locks, storage, [(4096,)]])
-        self.assertIn("LOWER(t.name) IN (N't')", asked[1])
+        self.assertIn("LOWER(t.name) IN (CONVERT(nvarchar(128), 0x7400))", asked[1])
         self.assertEqual(seen.locks[1], {"Sch-M", "IX"})
         self.assertEqual(seen.locks[7], {"Sch-M"})
         self.assertEqual(seen.names, {"dbo.t": 1, "t": 1})

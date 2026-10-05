@@ -16,6 +16,7 @@ from sustained.impact import Blocks, Evidence, Hold, TableImpact, Work, analyze
 from sustained.impact.model import Severity
 from sustained.impact.rules import profile_for
 from sustained.impact.rules.postgres import PROFILE
+from sustained.impact.rules.postgres.context import literal
 from sustained.impact.rules.postgres.locks import lock_name
 from sustained.impact.rules.postgres.trace import (
     File,
@@ -100,7 +101,8 @@ class PlanTestCase(unittest.TestCase):
             ],
         )
         self.assertIn("pg_locks", asked[0])
-        self.assertIn("IN ('o''brien', 'orders')", asked[1])
+        listed = ", ".join(literal(name) for name in ["o'brien", "orders"])
+        self.assertIn(f"IN ({listed})", asked[1])
         self.assertEqual(seen.read, {"locks", "storage"})
         self.assertEqual(seen.locks[100], {"SHARE"})
         self.assertEqual(seen.names["orders"], 100)

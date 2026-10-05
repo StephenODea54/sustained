@@ -56,10 +56,8 @@ def _bytes_sql(tables: Optional[Collection[str]]) -> str:
     """The byte read, for the tables of the given names, or for all."""
     if tables is None:
         return f"{_BYTES_SQL} GROUP BY m.tbl_name"
-    listed = ", ".join(
-        "'" + name.replace("'", "''") + "'" for name in sorted(set(tables))
-    )
-    return f"{_BYTES_SQL} AND lower(m.tbl_name) IN ({listed}) GROUP BY m.tbl_name"
+    listed = common.name_filter("lower(m.tbl_name)", sorted(set(tables)), common.quoted)
+    return f"{_BYTES_SQL} AND {listed} GROUP BY m.tbl_name"
 
 
 def sqlite_version(text: str) -> Tuple[int, ...]:

@@ -25,7 +25,7 @@ The handler helpers every rule profile uses.
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from sustained.impact.context import TableStats
 from sustained.impact.model import (
@@ -242,6 +242,22 @@ def dotted_version(
     if match is None:
         return floor
     return tuple(int(part) for part in match.group(1).split("."))
+
+
+def quoted(value: str) -> str:
+    """A string literal of the value, with each quote doubled."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def name_filter(
+    column: str, names: Iterable[str], literal: Callable[[str], str]
+) -> str:
+    """
+    `column IN (...)` with each name spelled by `literal`, and with NULL,
+    which matches no row, when there are no names.
+    """
+    listed = ", ".join(literal(name) for name in names)
+    return f"{column} IN ({listed or 'NULL'})"
 
 
 def keys(schema: str, name: str, bare: bool) -> Tuple[str, ...]:

@@ -236,7 +236,7 @@ def _set_timeout(value: str) -> str:
     The statement that sets the session's lock timeout. `set_config()`
     returns a row, where `SET` returns none for the read to fetch.
     """
-    return f"SELECT pg_catalog.set_config('lock_timeout', {_text(value)}, false)"
+    return f"SELECT pg_catalog.set_config('lock_timeout', {literal(value)}, false)"
 
 
 # Reads the session's lock timeout, then sets the size read's. The
@@ -251,11 +251,11 @@ def _sized(names: Optional[Sequence[str]]) -> str:
     """The size read, for the tables of the given names, or for all."""
     if names is None:
         return _SIZES_SQL
-    listed = ", ".join(_text(name) for name in names)
-    return f"{_SIZES_SQL}\n  AND lower(c.relname) IN ({listed})"
+    listed = common.name_filter("lower(c.relname)", names, literal)
+    return f"{_SIZES_SQL}\n  AND {listed}"
 
 
-def _text(value: str) -> str:
+def literal(value: str) -> str:
     """
     A text literal spelled in hex, so no quote, backslash, or percent
     sign in the value reaches the statement.

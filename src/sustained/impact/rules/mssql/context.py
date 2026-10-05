@@ -49,18 +49,19 @@ _PAGE_BYTES = 8192
 
 
 def _sized(tables: Optional[Collection[str]]) -> str:
-    """
-    The table read, for the tables of the given names, or for all. Each
-    name is spelled as its UTF-16 bytes, so no quote in it reaches the
-    statement.
-    """
+    """The table read, for the tables of the given names, or for all."""
     if tables is None:
         return _TABLES_SQL
-    listed = ", ".join(
-        f"CONVERT(nvarchar(128), 0x{name.encode('utf-16-le').hex()})"
-        for name in sorted(set(tables))
-    )
-    return f"{_TABLES_SQL}\nWHERE LOWER(t.name) IN ({listed or 'NULL'})"
+    listed = common.name_filter("LOWER(t.name)", sorted(set(tables)), literal)
+    return f"{_TABLES_SQL}\nWHERE {listed}"
+
+
+def literal(value: str) -> str:
+    """
+    A name spelled as its UTF-16 bytes, so no quote in it reaches the
+    statement.
+    """
+    return f"CONVERT(nvarchar(128), 0x{value.encode('utf-16-le').hex()})"
 
 
 def server_version(text: str) -> Tuple[int, ...]:

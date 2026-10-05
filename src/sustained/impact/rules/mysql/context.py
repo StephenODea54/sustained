@@ -136,8 +136,12 @@ def _sized(tables: Optional[Collection[str]]) -> str:
     """
     if tables is None:
         return _SIZES_SQL
-    listed = ", ".join(f"X'{name.encode().hex()}'" for name in sorted(set(tables)))
-    return f"{_SIZES_SQL} AND LOWER(TABLE_NAME) IN ({listed or 'NULL'})"
+    listed = common.name_filter("LOWER(TABLE_NAME)", sorted(set(tables)), _hex)
+    return f"{_SIZES_SQL} AND {listed}"
+
+
+def _hex(value: str) -> str:
+    return f"X'{value.encode().hex()}'"
 
 
 _StoragePlan = Generator[str, Rows, None]

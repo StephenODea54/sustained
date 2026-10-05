@@ -58,6 +58,8 @@ from sustained.impact.model import (
     Work,
 )
 from sustained.impact.rules import common
+from sustained.impact.rules.common import name_filter
+from sustained.impact.rules.mssql.context import literal
 from sustained.impact.rules.mssql.locks import S
 from sustained.impact.rules.sighted import add_name, ids_plan, observe_sightings
 
@@ -88,7 +90,7 @@ _STORAGE_SQL = """SELECT t.object_id, s.name, t.name,
 FROM sys.tables t
 JOIN sys.schemas s ON s.schema_id = t.schema_id
 JOIN sys.partitions p ON p.object_id = t.object_id
-WHERE LOWER(t.name) IN ({names})"""
+WHERE {names}"""
 
 # The log the current transaction has written in this database. The
 # view has no row until the transaction writes here.
@@ -135,10 +137,6 @@ def _key(name: str) -> str:
     return ".".join(part.strip('[]"') for part in name.split(".")).lower()
 
 
-def _literal(value: str) -> str:
-    return "N'" + value.replace("'", "''") + "'"
-
-
 def tables_plan() -> Generator[str, Rows, Optional[FrozenSet[int]]]:
     """The object ids of every table that exists, or None when the read failed."""
     return ids_plan(_TABLES_SQL)
@@ -163,7 +161,7 @@ def sighting_plan(tables: Sequence[str]) -> Generator[str, Rows, Sighting]:
     wanted = sorted({_key(t).rsplit(".", 1)[-1] for t in tables})
     if wanted:
         rows = yield from attempt(
-            _STORAGE_SQL.format(names=", ".join(_literal(name) for name in wanted))
+            _STORAGE_SQL.format(names=name_filter("LOWER(t.name)", wanted, literal))
         )
         if rows is not None:
             read.add("storage")

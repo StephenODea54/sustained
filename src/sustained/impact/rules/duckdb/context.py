@@ -31,10 +31,8 @@ def _sized(tables: Optional[Collection[str]]) -> str:
     """The row count read, for the tables of the given names, or for all."""
     if tables is None:
         return _SIZES_SQL
-    listed = ", ".join(
-        "'" + name.replace("'", "''") + "'" for name in sorted(set(tables))
-    )
-    return f"{_SIZES_SQL} AND lower(table_name) IN ({listed or 'NULL'})"
+    listed = common.name_filter("lower(table_name)", sorted(set(tables)), common.quoted)
+    return f"{_SIZES_SQL} AND {listed}"
 
 
 def duckdb_version(text: str) -> Tuple[int, ...]:
