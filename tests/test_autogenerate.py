@@ -18,7 +18,12 @@ from sustained.autogenerate import (
 )
 from sustained.autogenerate import statements as statements_module
 from sustained.dialects import Dialects
-from sustained.introspect.model import IntrospectedIndex, with_details
+from sustained.introspect.compare import _describe_foreign_key
+from sustained.introspect.model import (
+    IntrospectedForeignKey,
+    IntrospectedIndex,
+    with_details,
+)
 from sustained.migrations import Migration, Migrator
 from sustained.schema import Boolean, Integer, String, Text
 
@@ -864,6 +869,35 @@ class DiffSnapshotsTestCase(unittest.TestCase):
         self.conn.execute("DROP TABLE snap_codes")
         self.conn.execute("CREATE TABLE snap_codes (code TEXT)")
         self.assertEqual(diff_snapshots(before, self.snapshot(), Dialects.DEFAULT), [])
+
+    def test_constraints_compare_on_a_dialect_whose_round_trip_passes(self):
+        table = self.snapshot()["snap_users"]
+        unique = IntrospectedIndex(("email",), True, constraint=True)
+        fk = IntrospectedForeignKey(("id",), "snap_people", ("id",), "CASCADE")
+        before = {
+            "snap_users": table._replace(
+                checks={"ck_id": "(id > 0)"}, indexes={"uq_email": unique}
+            )
+        }
+        after = {
+            "snap_users": table._replace(
+                checks={"ck_id": "(id > 1)"},
+                foreign_keys={"fk_people": fk._replace(target_schema="other")},
+            )
+        }
+        self.assertEqual(
+            diff_snapshots(before, after, Dialects.POSTGRES),
+            [
+                "check 'snap_users.ck_id' changed: (id > 0) became (id > 1)",
+                "unique constraint 'snap_users.uq_email' missing",
+                "foreign key 'snap_users.fk_people' left behind",
+            ],
+        )
+        self.assertEqual(diff_snapshots(before, after, Dialects.DEFAULT), [])
+        self.assertEqual(
+            _describe_foreign_key(after["snap_users"].foreign_keys["fk_people"]),
+            "(id) REFERENCES other.snap_people (id) ON DELETE CASCADE",
+        )
 
     def test_a_changed_index_names_its_prefix_lengths(self):
         table = self.snapshot()["snap_users"]

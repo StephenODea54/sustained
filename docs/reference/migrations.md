@@ -682,7 +682,7 @@ diff_snapshots(before, after, dialect=None) -> list[str]
 ```
 {: .sig #diff_snapshots}
 
-One line per difference between two introspected schemas. Tables and columns are compared. When `dialect` is `Dialects.POSTGRES`, `Dialects.MYSQL`, `Dialects.MSSQL`, or `Dialects.DEFAULT`, indexes are compared too: the key columns, uniqueness, DESC key parts, prefix lengths, and predicate of each index that no constraint owns. See [Rehearsing a migration](/schema#rehearsing-a-migration).
+One line per difference between two introspected schemas. Tables and columns are compared. When `dialect` is `Dialects.POSTGRES`, `Dialects.MYSQL`, `Dialects.MSSQL`, or `Dialects.DEFAULT`, indexes are compared too: the key columns, uniqueness, DESC key parts, prefix lengths, and predicate of each index that no constraint owns. When `dialect` is `Dialects.POSTGRES`, `Dialects.MYSQL`, or `Dialects.MSSQL`, checks, UNIQUE constraints, and foreign keys are compared too. See [Rehearsing a migration](/schema#rehearsing-a-migration).
 
 ```python
 normalize_type(raw) -> str

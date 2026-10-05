@@ -10,6 +10,7 @@ from typing import Dict, FrozenSet, List, Mapping, Optional, Tuple
 from sustained.dialects import Dialects
 from sustained.introspect.model import (
     IntrospectedColumn,
+    IntrospectedForeignKey,
     IntrospectedIndex,
     IntrospectedTable,
 )
@@ -41,6 +42,14 @@ INDEX_DIALECTS: FrozenSet[Dialects] = frozenset(
     {Dialects.POSTGRES, Dialects.MYSQL, Dialects.MSSQL, Dialects.DEFAULT}
 )
 
+# The dialects whose check, UNIQUE constraint, and foreign key reads give
+# back the same constraints after a rebuild from the read, in the same
+# round-trip test. MySQL and MariaDB report a UNIQUE constraint as a
+# unique index, which the index comparison covers.
+CONSTRAINT_DIALECTS: FrozenSet[Dialects] = frozenset(
+    {Dialects.POSTGRES, Dialects.MYSQL, Dialects.MSSQL}
+)
+
 IndexParts = Tuple[
     Tuple[str, ...], bool, Tuple[bool, ...], Tuple[Optional[int], ...], Optional[str]
 ]
@@ -61,16 +70,6 @@ def index_parts(index: IntrospectedIndex) -> IndexParts:
     )
 
 
-def _plain_indexes(table: IntrospectedTable) -> Mapping[str, IntrospectedIndex]:
-    """
-    The indexes of a table that no constraint owns. An index behind a
-    UNIQUE or PRIMARY KEY constraint belongs to the constraint.
-    """
-    return {
-        name: index for name, index in table.indexes.items() if not index.constraint
-    }
-
-
 def _describe_index(index: IntrospectedIndex) -> str:
     """An index definition in one readable phrase."""
     # A read without details reports no directions or prefix lengths.
@@ -87,23 +86,67 @@ def _describe_index(index: IntrospectedIndex) -> str:
     return text + (f" WHERE {index.where}" if index.where else "")
 
 
-def _diff_indexes(
-    table: str,
-    old: Mapping[str, IntrospectedIndex],
-    new: Mapping[str, IntrospectedIndex],
+def _describe_foreign_key(fk: IntrospectedForeignKey) -> str:
+    """A foreign key definition in one readable phrase."""
+    target = ".".join(part for part in (fk.target_schema, fk.target_table) if part)
+    actions = "".join(
+        f" ON {event} {action}"
+        for event, action in (("DELETE", fk.on_delete), ("UPDATE", fk.on_update))
+        if action
+    )
+    return (
+        f"({', '.join(fk.columns)}) REFERENCES {target} "
+        f"({', '.join(fk.target_columns)}){actions}"
+    )
+
+
+def _constraints(table: IntrospectedTable) -> Dict[str, Dict[str, str]]:
+    """
+    The constraints of a table by kind, each described in one phrase:
+    each check's expression as the catalog spells it, the columns of each
+    UNIQUE constraint, and each foreign key.
+    """
+    return {
+        "check": dict(table.checks),
+        "unique constraint": {
+            name: f"UNIQUE ({', '.join(index.columns)})"
+            for name, index in table.indexes.items()
+            if index.constraint
+        },
+        "foreign key": {
+            name: _describe_foreign_key(fk) for name, fk in table.foreign_keys.items()
+        },
+    }
+
+
+def _diff_named(
+    kind: str, table: str, old: Mapping[str, str], new: Mapping[str, str]
 ) -> List[str]:
-    """One line per index of `table` that differs between two reads."""
+    """
+    One line per object of one kind on `table` that differs between two
+    reads, given each object's description by name.
+    """
     lines = [
-        f"index '{table}.{name}' left behind" for name in sorted(set(new) - set(old))
+        f"{kind} '{table}.{name}' left behind" for name in sorted(set(new) - set(old))
     ]
-    lines += [f"index '{table}.{name}' missing" for name in sorted(set(old) - set(new))]
-    for name in sorted(set(old) & set(new)):
-        if index_parts(old[name]) != index_parts(new[name]):
-            lines.append(
-                f"index '{table}.{name}' changed: {_describe_index(old[name])} "
-                f"became {_describe_index(new[name])}"
-            )
+    lines += [
+        f"{kind} '{table}.{name}' missing" for name in sorted(set(old) - set(new))
+    ]
+    lines += [
+        f"{kind} '{table}.{name}' changed: {old[name]} became {new[name]}"
+        for name in sorted(set(old) & set(new))
+        if old[name] != new[name]
+    ]
     return lines
+
+
+def _indexes(table: IntrospectedTable) -> Dict[str, str]:
+    """The indexes no constraint owns, each described in one phrase."""
+    return {
+        name: _describe_index(index)
+        for name, index in table.indexes.items()
+        if not index.constraint
+    }
 
 
 def _describe_column(column: IntrospectedColumn) -> str:
@@ -130,9 +173,11 @@ def diff_snapshots(
     Tables and columns are compared. Indexes are compared when `dialect`
     is in INDEX_DIALECTS: the key columns, uniqueness, the direction and
     prefix length of each key part, and the predicate. An index behind a
-    constraint is not compared. Constraints, defaults, and comments are
-    not compared, because engines report them in spellings that differ
-    between an original object and a rebuilt one.
+    constraint is not compared as an index. Checks, UNIQUE constraints,
+    and foreign keys are compared when `dialect` is in
+    CONSTRAINT_DIALECTS. Defaults and comments are not compared, because
+    engines report them in spellings that differ between an original
+    object and a rebuilt one.
     """
     lines: List[str] = []
     for table in sorted(set(after) - set(before)):
@@ -153,9 +198,12 @@ def diff_snapshots(
                     f"{_describe_column(new[column])}"
                 )
         if dialect in INDEX_DIALECTS:
-            lines += _diff_indexes(
-                table,
-                _plain_indexes(before[table]),
-                _plain_indexes(after[table]),
+            lines += _diff_named(
+                "index", table, _indexes(before[table]), _indexes(after[table])
             )
+        if dialect in CONSTRAINT_DIALECTS:
+            old_kinds = _constraints(before[table])
+            new_kinds = _constraints(after[table])
+            for kind in old_kinds:
+                lines += _diff_named(kind, table, old_kinds[kind], new_kinds[kind])
     return lines
