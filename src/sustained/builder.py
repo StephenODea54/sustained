@@ -280,8 +280,8 @@ class QueryBuilder:
         self,
         function_name: str,
         alias: str,
-        partition_by: Optional[List[str]] = None,
-        order_by: Optional[List[str]] = None,
+        partition_by: Optional[Sequence[ColumnReference]] = None,
+        order_by: Optional[Sequence[ColumnReference]] = None,
         args: Optional[List[SqlValue]] = None,
         frame: Optional[str] = None,
     ) -> "QueryBuilder":

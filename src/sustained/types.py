@@ -151,11 +151,14 @@ CaseCondition = Union[str, "Predicate"]
 A WHEN condition of a CASE expression: a Predicate built from col(), or a
 string, which is raw SQL and renders as written.
 """
-ColumnReference = Union[str, "Expression", "Column", "ColumnExpr", "Literal", "Func"]
+ColumnReference = Union[
+    str, "Expression", "Column", "ColumnExpr", "Literal", "Func", "Subquery"
+]
 """
 A column in a filter, a sort, or a grouping: a column string, which the
 builder quotes and checks, col(), which follows the same rule, raw() SQL,
-which it renders as written, a Literal value, or a Func call.
+which it renders as written, a Literal value, a Func call, or a Subquery,
+whose values bind like those of any other subquery.
 """
 QueryResolvable = Union[Callable[..., "AnyQuery"], "Expression", "AnyQuery"]
 """A subquery in argument position: a builder, a callable returning one, or raw() SQL."""

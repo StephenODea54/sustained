@@ -20,7 +20,7 @@ from sustained.expressions import (
     col,
 )
 from sustained.model import Model
-from sustained.types import Expression
+from sustained.types import ColumnReference, Expression
 
 
 class Thing(Model):
@@ -118,9 +118,9 @@ class TestWrappersInEveryPosition(unittest.TestCase):
         self.assertIn("ON `things`.`id` = `other`.`tid`", sql)
 
     def test_aggregate_and_window_take_col(self) -> None:
-        agg = AggregateExpression("SUM", col("price"), "total")  # type: ignore[arg-type]
+        agg = AggregateExpression("SUM", col("price"), "total")
         window = WindowExpression(
-            "ROW_NUMBER", "rn", partition_by=[col("g")], order_by=[col("d")]  # type: ignore[list-item]
+            "ROW_NUMBER", "rn", partition_by=[col("g")], order_by=[col("d")]
         )
         sql = str(Thing.query().select(agg, window))
         self.assertIn('SUM("price") AS "total"', sql)
@@ -364,16 +364,16 @@ class TestSubqueryInColumnPositions(unittest.TestCase):
     def _sub(self) -> Subquery:
         return Subquery(Thing.query().select("n").where("k", "=", "v"), "s")
 
-    def _every_position(self, wrapper: object) -> QueryBuilder:
+    def _every_position(self, wrapper: ColumnReference) -> QueryBuilder[Thing]:
         window = WindowExpression("ROW_NUMBER", partition_by=[wrapper], alias="r")
         return (
             Thing.query()
             .select("a", window)
-            .join("other", wrapper, "=", "other.id")  # type: ignore[arg-type]
-            .where(wrapper, "=", 1)  # type: ignore[arg-type]
-            .groupBy(wrapper)  # type: ignore[arg-type]
-            .having(AggregateExpression("MAX", wrapper), ">", 2)  # type: ignore[arg-type]
-            .orderBy(wrapper)  # type: ignore[arg-type]
+            .join("other", wrapper, "=", "other.id")
+            .where(wrapper, "=", 1)
+            .groupBy(wrapper)
+            .having(AggregateExpression("MAX", wrapper), ">", 2)  # type: ignore[call-overload]
+            .orderBy(wrapper)
         )
 
     def test_values_bind_in_text_order(self) -> None:
@@ -423,8 +423,8 @@ class TestSubqueryInColumnPositions(unittest.TestCase):
             Thing.query()
             .whereBetween(sub, 1, 2)  # type: ignore[arg-type]
             .whereIn(sub, [3])  # type: ignore[arg-type]
-            .where(sub, "LIKE", "p%")  # type: ignore[arg-type]
-            .where(sub, "IS", True)  # type: ignore[arg-type]
+            .where(sub, "LIKE", "p%")
+            .where(sub, "IS", True)
             .join("other", sub, "=", Thing.query().select("m").where("j", "=", 4))
             .to_sql()
         )

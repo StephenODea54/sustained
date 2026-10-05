@@ -6,7 +6,7 @@ import warnings
 from typing import TYPE_CHECKING, Callable, List, Optional, Sequence, Tuple, Union
 
 from .rendering import Renderable, render_part
-from .types import Expression, SqlValue
+from .types import ColumnReference, Expression, SqlValue
 
 if TYPE_CHECKING:
     from .rendering import RenderContext
@@ -390,7 +390,12 @@ class AggregateExpression:
     Represents a SQL aggregate function call, like COUNT() or SUM().
     """
 
-    def __init__(self, function_name: str, column: str, alias: Optional[str] = None):
+    def __init__(
+        self,
+        function_name: str,
+        column: ColumnReference,
+        alias: Optional[str] = None,
+    ):
         """
         Initializes the aggregate expression.
 
@@ -425,8 +430,8 @@ class WindowExpression:
         self,
         function_name: str,
         alias: str,
-        partition_by: Optional[List[str]] = None,
-        order_by: Optional[List[str]] = None,
+        partition_by: Optional[Sequence[ColumnReference]] = None,
+        order_by: Optional[Sequence[ColumnReference]] = None,
         args: Optional[List[SqlValue]] = None,
         frame: Optional[str] = None,
     ):
