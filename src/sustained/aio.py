@@ -829,7 +829,11 @@ async def _run_query_on(
         names = checked_columns(columns)
         models = [query._model_class(**dict(zip(names, row))) for row in rows]
         await eager_load_paths_async(
-            query._model_class, resolved, models, query._eager_relations
+            query._model_class,
+            resolved,
+            models,
+            query._eager_relations,
+            query._dialect,
         )
         return models
 
@@ -865,6 +869,7 @@ async def eager_load_paths_async(
     adapter: AsyncAdapter,
     parents: List["Model"],
     paths: List[str],
+    dialect: Optional[Dialects] = None,
 ) -> None:
     """
     Loads every dotted relation path for a list of parent instances. Each
@@ -873,7 +878,7 @@ async def eager_load_paths_async(
     """
     from sustained.execution import eager_load_steps, relation_tree
 
-    steps = eager_load_steps(model_class, parents, relation_tree(paths))
+    steps = eager_load_steps(model_class, parents, relation_tree(paths), dialect)
     try:
         query = next(steps)
         while True:

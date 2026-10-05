@@ -84,6 +84,60 @@ class TestEagerLoadParentSide(unittest.TestCase):
             plan_eager_load(NoFromOwner, [NoFromOwner(id=1)], "pets")
 
 
+class ThroughOwner(Model):
+    tableName = "owners"
+    relationMappings = {
+        "pets": {
+            "relation": RelationType.ManyToManyRelation,
+            "modelClass": "SafePet",
+            "join": {
+                "from": "owners.id",
+                "through": {
+                    "from": {"table": "owner_pets", "key": "owner_id"},
+                    "to": {"table": "owner_pets", "key": "pet_id"},
+                },
+                "to": "pets.id",
+            },
+        }
+    }
+
+
+class TestEagerLoadDialect(unittest.TestCase):
+    def test_child_query_uses_the_given_dialect(self):
+        for owner in (SafeOwner, ThroughOwner):
+            with self.subTest(owner=owner.__name__):
+                plan = plan_eager_load(
+                    owner, [owner(id=1)], "pets", dialect=Dialects.POSTGRES
+                )
+                sql, _ = plan.queries[0].to_sql()
+                self.assertIn('"pets"', sql)
+                self.assertIn("%s", sql)
+
+    def test_run_loads_children_in_the_query_dialect(self):
+        import duckdb
+
+        from sustained import QueryBuilder
+        from sustained.execution import set_statement_listener
+
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+        connection.execute("CREATE TABLE owners (id INTEGER)")
+        connection.execute("CREATE TABLE pets (id INTEGER, owner_id INTEGER)")
+        connection.execute("INSERT INTO owners VALUES (1)")
+        connection.execute("INSERT INTO pets VALUES (7, 1)")
+        statements = []
+        set_statement_listener(lambda sql, params, duration: statements.append(sql))
+        self.addCleanup(set_statement_listener, None)
+
+        owners = (
+            QueryBuilder(SafeOwner, dialect=Dialects.DUCKDB)
+            .withGraphFetched("pets")
+            .run(connection)
+        )
+        self.assertEqual([pet.id for pet in owners[0].pets], [7])
+        self.assertEqual(statements[1], 'SELECT * FROM "pets" WHERE "owner_id" IN (?)')
+
+
 class TestTransactionThreadOwnership(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:", check_same_thread=False)

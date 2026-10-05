@@ -745,7 +745,9 @@ def run_query(
 
     if query._stmt_type == "select":
         models = fetch_models(query._model_class, cursor)
-        eager_load_paths(query._model_class, conn, models, query._eager_relations)
+        eager_load_paths(
+            query._model_class, conn, models, query._eager_relations, query._dialect
+        )
         return models
 
     if query._returning_columns and cursor.description is not None:
@@ -952,19 +954,23 @@ EagerSteps = Generator["AnyQuery", List["Model"], None]
 
 
 def eager_load_steps(
-    model_class: Type["Model"], parents: List["Model"], tree: RelationTree
+    model_class: Type["Model"],
+    parents: List["Model"],
+    tree: RelationTree,
+    dialect: Optional[Dialects] = None,
 ) -> EagerSteps:
     """
     Loads one level of the relation tree, then each child level, as a
     generator. It yields each batch query and receives the rows the query
     returned, so the sync and async loaders differ only in how they run
-    a query.
+    a query. Every child query renders in the dialect of the parent query,
+    which runs on the same connection.
     """
     from sustained.model import resolve_relation
 
     for relation_name, children in tree.items():
         if parents:
-            plan = plan_eager_load(model_class, parents, relation_name)
+            plan = plan_eager_load(model_class, parents, relation_name, dialect)
             fetched: List["Model"] = []
             for query in plan.queries:
                 fetched.extend((yield query))
@@ -974,7 +980,10 @@ def eager_load_steps(
         next_parents = _attached_children(parents, relation_name)
         if next_parents:
             yield from eager_load_steps(
-                resolve_relation(model_class, relation_name)[1], next_parents, children
+                resolve_relation(model_class, relation_name)[1],
+                next_parents,
+                children,
+                dialect,
             )
 
 
@@ -993,6 +1002,7 @@ def eager_load_paths(
     connection: Connection,
     parents: List["Model"],
     paths: List[str],
+    dialect: Optional[Dialects] = None,
 ) -> None:
     """
     Loads every dotted relation path for a list of parent instances. Each
@@ -1000,7 +1010,8 @@ def eager_load_paths(
     that level.
     """
     _run_eager_steps(
-        eager_load_steps(model_class, parents, relation_tree(paths)), connection
+        eager_load_steps(model_class, parents, relation_tree(paths), dialect),
+        connection,
     )
 
 
@@ -1051,10 +1062,12 @@ def plan_eager_load(
     model_class: Type["Model"],
     parents: List["Model"],
     relation_name: str,
+    dialect: Optional[Dialects] = None,
 ) -> EagerPlan:
     """
     Builds the query that loads a relation for a list of parents, batched
-    over their join keys.
+    over their join keys. The query renders in the given dialect, or in the
+    related model's own dialect when none is given.
 
     Raises:
         ValueError: If the model has no relation with that name, or the
@@ -1073,7 +1086,13 @@ def plan_eager_load(
         # type checker cannot read it, so the narrowing is spelled out.
         through_join = cast(JoinMappingWithThrough, join_info)
         return _plan_eager_load_through(
-            related_cls, parents, relation_name, through_join, from_col, to_col
+            related_cls,
+            parents,
+            relation_name,
+            through_join,
+            from_col,
+            to_col,
+            dialect,
         )
 
     # The side whose table matches the parent model holds the parent key.
@@ -1092,7 +1111,7 @@ def plan_eager_load(
         parent_keys,
         is_many,
         queries=[
-            related_cls.query().whereIn(child_col, batch)
+            _child_query(related_cls, dialect).whereIn(child_col, batch)
             for batch in _key_batches(unique_keys)
         ],
         child_col=child_col,
@@ -1157,6 +1176,13 @@ def eager_load_relation(
     )
 
 
+def _child_query(related_cls: Type["Model"], dialect: Optional[Dialects]) -> "AnyQuery":
+    """A query on the related model in the given dialect, or its own."""
+    from sustained.builder import QueryBuilder
+
+    return QueryBuilder(related_cls, dialect=dialect or related_cls._dialect)
+
+
 def _collect_parent_keys(
     parents: List["Model"], parent_col: str, relation_name: str
 ) -> List[RowValue]:
@@ -1187,6 +1213,7 @@ def _plan_eager_load_through(
     join_info: JoinMappingWithThrough,
     parent_col: str,
     related_col: str,
+    dialect: Optional[Dialects],
 ) -> EagerPlan:
     """
     Plans a many-to-many load as one query that joins the related table to
@@ -1214,7 +1241,7 @@ def _plan_eager_load_through(
         return EagerPlan(relation_name, parent_keys, is_many=True)
 
     queries = [
-        related_cls.query()
+        _child_query(related_cls, dialect)
         .select(
             f"{related_table}.*",
             f"{through_table}.{through_from_key} AS {_PARENT_KEY_ALIAS}",
