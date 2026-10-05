@@ -21,6 +21,7 @@ from sustained.impact.model import (
     Confidence,
     StatementImpact,
     TableImpact,
+    UnnamedLock,
     Work,
 )
 
@@ -69,6 +70,22 @@ def _impact_guard(rule: str, blocks: Callable[[StatementImpact], bool]) -> Guard
 
     setattr(guard, "reads_impact", True)
     return guard
+
+
+def _sized_guard(
+    rule: str, size: _Size, test: Callable[[Union[TableImpact, UnnamedLock]], bool]
+) -> Guard:
+    """
+    A guard that blocks a statement with confidence `unknown`, a table
+    that passes `test` and counts at `size`, or a lock on an unnamed
+    table that passes `test` when `size` counts unnamed tables.
+    """
+    return _impact_guard(
+        rule,
+        lambda impact: _unknown(impact)
+        or any(test(table) and size.counts(table) for table in impact.tables)
+        or (size.unnamed() and any(test(lock) for lock in impact.unnamed_locks)),
+    )
 
 
 class _Size:
@@ -154,15 +171,7 @@ def max_blocking(
     ceiling = Blocks(limit)
     size = _Size("max_blocking", over_rows, over_bytes, assume_small)
     rule = f"max_blocking({', '.join([str(ceiling)] + size.label())})"
-    return _impact_guard(
-        rule,
-        lambda impact: _unknown(impact)
-        or any(table.blocks > ceiling and size.counts(table) for table in impact.tables)
-        or (
-            size.unnamed()
-            and any(lock.blocks > ceiling for lock in impact.unnamed_locks)
-        ),
-    )
+    return _sized_guard(rule, size, lambda lock: lock.blocks > ceiling)
 
 
 def no_rewrite(
@@ -179,16 +188,10 @@ def no_rewrite(
     thresholds.
     """
     size = _Size("no_rewrite", over_rows, over_bytes, assume_small)
-    return _impact_guard(
+    return _sized_guard(
         f"no_rewrite({', '.join(size.label())})",
-        lambda impact: _unknown(impact)
-        or any(
-            table.work >= Work.REWRITE and size.counts(table) for table in impact.tables
-        )
-        or (
-            size.unnamed()
-            and any(lock.work >= Work.REWRITE for lock in impact.unnamed_locks)
-        ),
+        size,
+        lambda lock: lock.work >= Work.REWRITE,
     )
 
 
