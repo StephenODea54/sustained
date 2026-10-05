@@ -168,34 +168,46 @@ class ConditionalClauseBuilder:
         op_like_override: Optional[str] = None,
     ) -> None:
         """Internal handler for adding `EXISTS` and `NOT EXISTS` clauses."""
+        actual_op = "NOT EXISTS" if op_override else "EXISTS"
+        inner = self._subquery(
+            query,
+            "EXISTS",
+            "Argument for exists must be a callable, QueryBuilder.raw(), or "
+            "QueryBuilder instance.",
+        )
+
+        def render(ctx: RenderContext) -> str:
+            return f"{actual_op} ({inner(ctx)})"
+
+        self._clauses.append((conjunction, render))
+
+    def _subquery(
+        self, arg: QueryResolvable, operator: str, wrong_type_message: str
+    ) -> Callable[[RenderContext], str]:
+        """
+        Resolves a subquery argument: a QueryBuilder, a callable that
+        builds one on a fresh query of this model, or raw SQL through
+        QueryBuilder.raw(). Returns a function that renders the inner SQL.
+        A plain string raises, because it would go into the SQL as written.
+        """
         from ..builder import QueryBuilder
 
-        actual_op = "NOT EXISTS" if op_override else "EXISTS"
-
-        sub_builder: Optional["AnyQuery"] = None
-        raw_sql: Optional[str] = None
-        if isinstance(query, QueryBuilder):
-            sub_builder = query
-        elif callable(query):
+        if isinstance(arg, Expression):
+            raw_sql = arg.value
+            return lambda ctx: raw_sql
+        if isinstance(arg, str):
+            raise ValueError(_raw_subquery_message(operator, arg))
+        sub_builder: "AnyQuery"
+        if isinstance(arg, QueryBuilder):
+            sub_builder = arg
+        elif callable(arg):
             sub_builder = QueryBuilder(
                 self._model_class, dialect=self._compiler._dialect
             )
-            query(sub_builder)
-        elif isinstance(query, Expression):
-            raw_sql = query.value
-        elif isinstance(query, str):
-            raise ValueError(_raw_subquery_message("EXISTS", query))
+            arg(sub_builder)
         else:
-            raise ValueError(
-                "Argument for exists must be a callable, QueryBuilder.raw(), or QueryBuilder instance."
-            )
-
-        def render(ctx: RenderContext) -> str:
-            if sub_builder is not None:
-                return f"{actual_op} ({render_nested(sub_builder, ctx)})"
-            return f"{actual_op} ({raw_sql})"
-
-        self._clauses.append((conjunction, render))
+            raise ValueError(wrong_type_message)
+        return lambda ctx: render_nested(sub_builder, ctx)
 
     def _add_like_internal(
         self,
@@ -351,8 +363,6 @@ class ConditionalClauseBuilder:
         op_like_override: Optional[str] = None,
     ) -> None:
         """Internal handler for adding `IN` and `NOT IN` clauses."""
-        from ..builder import QueryBuilder
-
         actual_op = "NOT IN" if op_override else "IN"
         quoted_col = self._quote_column(col)
 
@@ -372,28 +382,15 @@ class ConditionalClauseBuilder:
             self._clauses.append((conjunction, render))
             return
 
-        sub_builder: Optional["AnyQuery"] = None
-        raw_sql: Optional[str] = None
-        if isinstance(vals, QueryBuilder):
-            sub_builder = vals
-        elif isinstance(vals, Expression):
-            raw_sql = vals.value
-        elif isinstance(vals, str):
-            raise ValueError(_raw_subquery_message(actual_op, vals))
-        elif callable(vals):
-            sub_builder = QueryBuilder(
-                self._model_class, dialect=self._compiler._dialect
-            )
-            vals(sub_builder)
-        else:
-            raise ValueError(
-                "Argument for In/NotIn must be a list, a callable, QueryBuilder.raw(), or QueryBuilder instance."
-            )
+        inner = self._subquery(
+            vals,
+            actual_op,
+            "Argument for In/NotIn must be a list, a callable, "
+            "QueryBuilder.raw(), or QueryBuilder instance.",
+        )
 
         def render_sub(ctx: RenderContext) -> str:
-            if sub_builder is not None:
-                return f"{quoted_col} {actual_op} ({render_nested(sub_builder, ctx)})"
-            return f"{quoted_col} {actual_op} ({raw_sql})"
+            return f"{quoted_col} {actual_op} ({inner(ctx)})"
 
         self._clauses.append((conjunction, render_sub))
 
