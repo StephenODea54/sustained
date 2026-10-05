@@ -62,6 +62,46 @@ def _cmd_status(
     return 0
 
 
+def _models(config: ModuleType) -> Optional[List[Type[Model]]]:
+    """The config module's models, or None when it names none."""
+    return list(getattr(config, "models", None) or []) or None
+
+
+def _rehearse(
+    migrator: Migrator,
+    config: ModuleType,
+    args: argparse.Namespace,
+    models: Optional[List[Type[Model]]],
+    scratch: bool = False,
+    trace: bool = False,
+) -> Rehearsal:
+    """A rehearsal with the flags the command and the config module set."""
+    return migrator.rehearse(
+        scratch=scratch,
+        models=models,
+        trace=trace,
+        assert_algorithm=_assert_algorithm(config, args),
+        online=_online(config, args),
+        lock_timeout=_rehearsal_lock_timeout(config),
+    )
+
+
+def _rehearse_on_scratch(
+    config: ModuleType,
+    factory: Callable[[], Connection],
+    args: argparse.Namespace,
+    models: Optional[List[Type[Model]]],
+    trace: bool = False,
+) -> Rehearsal:
+    """A rehearsal on a connection from `factory`, closed afterwards."""
+    connection = factory()
+    try:
+        migrator = _migrator_on(connection, config)
+        return _rehearse(migrator, config, args, models, scratch=True, trace=trace)
+    finally:
+        _close_quietly(connection)
+
+
 def _generated_on_scratch(
     config: ModuleType,
     factory: Callable[[], Connection],
@@ -75,17 +115,7 @@ def _generated_on_scratch(
     ValueError when a pending migration fails there, since the diff then
     never ran. A generated migration that fails there is still returned.
     """
-    connection = factory()
-    try:
-        results = _migrator_on(connection, config).rehearse(
-            scratch=True,
-            models=models,
-            assert_algorithm=_assert_algorithm(config, args),
-            online=_online(config, args),
-            lock_timeout=_rehearsal_lock_timeout(config),
-        )
-    finally:
-        _close_quietly(connection)
+    results = _rehearse_on_scratch(config, factory, args, models)
     generated = {g.id for g in results.generated}
     failed = [r for r in results if r.up_ok is False and r.id not in generated]
     if failed:
@@ -108,7 +138,7 @@ def _cmd_impact(
     applying the pending migrations shows the schema it would read, and
     the report says so.
     """
-    models = list(getattr(config, "models", None) or []) or None
+    models = _models(config)
     analyzed = migrator
     diffed: Optional[bool] = None if models is None else True
     if models is not None and migrator.pending():
@@ -237,34 +267,17 @@ def _rehearsal_json(
 def _cmd_rehearse(
     migrator: Migrator, args: argparse.Namespace, config: ModuleType
 ) -> int:
-    models = list(getattr(config, "models", None) or []) or None
+    models = _models(config)
     factory = getattr(config, "get_rehearsal_connection", None)
     scratch = factory is not None
     note: Optional[str] = None
     if factory is None:
-        results = migrator.rehearse(
-            models=models,
-            trace=args.trace,
-            assert_algorithm=_assert_algorithm(config, args),
-            online=_online(config, args),
-            lock_timeout=_rehearsal_lock_timeout(config),
-        )
+        results = _rehearse(migrator, config, args, models, trace=args.trace)
         key, recorded = results.key, results.recorded
         if recorded and results.ok:
             note = "rehearsal row recorded"
     else:
-        connection = factory()
-        try:
-            results = _migrator_on(connection, config).rehearse(
-                scratch=True,
-                models=models,
-                trace=args.trace,
-                assert_algorithm=_assert_algorithm(config, args),
-                online=_online(config, args),
-                lock_timeout=_rehearsal_lock_timeout(config),
-            )
-        finally:
-            _close_quietly(connection)
+        results = _rehearse_on_scratch(config, factory, args, models, args.trace)
         key, recorded = results.key, False
         if results.ok:
             recorded_key = migrator.record_scratch_rehearsal(results)
@@ -285,7 +298,7 @@ def _cmd_rehearse(
 def _cmd_migrate(
     migrator: Migrator, args: argparse.Namespace, config: ModuleType
 ) -> int:
-    models = list(getattr(config, "models", None) or []) or None
+    models = _models(config)
     if args.target is not None:
         # A generated migration always runs last, so a targeted run
         # applies the registered migrations only.

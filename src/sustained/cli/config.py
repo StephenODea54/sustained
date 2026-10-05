@@ -64,16 +64,18 @@ def _load_config(module_name: str) -> ModuleType:
             pass
 
 
+def _flag(config: ModuleType, args: argparse.Namespace, name: str) -> bool:
+    """Whether the command's flag or the config module's attribute is set."""
+    return bool(getattr(args, name, False) or getattr(config, name, False))
+
+
 def _assert_algorithm(config: ModuleType, args: argparse.Namespace) -> bool:
     """
     Whether the models' statements get asserted ALGORITHM and LOCK
     clauses: the command's --assert-algorithm flag, or the config
     module's assert_algorithm attribute.
     """
-    return bool(
-        getattr(args, "assert_algorithm", False)
-        or getattr(config, "assert_algorithm", False)
-    )
+    return _flag(config, args, "assert_algorithm")
 
 
 # The dialects each flag of the models' diff changes anything on.
@@ -112,9 +114,7 @@ def _exact_counts(config: ModuleType, args: argparse.Namespace) -> bool:
     Whether the SQLite context read counts rows: the command's
     --exact-counts flag, or the config module's exact_counts attribute.
     """
-    return bool(
-        getattr(args, "exact_counts", False) or getattr(config, "exact_counts", False)
-    )
+    return _flag(config, args, "exact_counts")
 
 
 def _online(config: ModuleType, args: argparse.Namespace) -> bool:
@@ -122,7 +122,7 @@ def _online(config: ModuleType, args: argparse.Namespace) -> bool:
     Whether the models generate the online form of their migration: the
     command's --online flag, or the config module's online attribute.
     """
-    return bool(getattr(args, "online", False) or getattr(config, "online", False))
+    return _flag(config, args, "online")
 
 
 def _preflight(
