@@ -50,6 +50,7 @@ from sustained.impact.report import (
 from sustained.impact.rules import postgres
 from sustained.impact.rules.mssql import preflight as mssql_preflight
 from sustained.impact.rules.mysql import preflight as mysql_preflight
+from sustained.impact.rules.postgres import locks as pg_locks
 from sustained.impact.rules.postgres import preflight as pg_preflight
 from sustained.migrations import Migration, Migrator, PreflightCheck
 from tests.test_impact_context import (
@@ -193,12 +194,12 @@ class GenericMatchingTestCase(unittest.TestCase):
 
 
 class PostgresPreflightTestCase(unittest.TestCase):
-    def test_mode_name(self):
-        self.assertEqual(pg_preflight.mode_name("AccessShareLock"), "ACCESS SHARE")
+    def test_lock_name(self):
+        self.assertEqual(pg_locks.lock_name("AccessShareLock"), "ACCESS SHARE")
         self.assertEqual(
-            pg_preflight.mode_name("ShareUpdateExclusiveLock"), "SHARE UPDATE EXCLUSIVE"
+            pg_locks.lock_name("ShareUpdateExclusiveLock"), "SHARE UPDATE EXCLUSIVE"
         )
-        self.assertEqual(pg_preflight.mode_name("ExclusiveLock"), "EXCLUSIVE")
+        self.assertEqual(pg_locks.lock_name("ExclusiveLock"), "EXCLUSIVE")
 
     def test_conflicts_follow_the_documented_table(self):
         def conflicts(lock, mode, rule=None):

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
-from sustained.impact.context import EngineContext
+from sustained.impact.context import EngineContext, version_text
 from sustained.impact.model import Blocks
 
 SCH_S = "Sch-S"
@@ -92,6 +92,6 @@ def enterprise(context: EngineContext) -> Optional[bool]:
 
 def release(version: Tuple[int, ...]) -> str:
     """A version as its release, such as `2022 (16.0.4135.4)`."""
-    number = ".".join(str(part) for part in version)
+    number = version_text(version)
     year = _RELEASES.get(version[0]) if version else None
     return f"{year} ({number})" if year else number

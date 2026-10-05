@@ -43,7 +43,7 @@ LEVELS = ("NONE", "SHARED", "EXCLUSIVE")
 
 # lock_wait_timeout is in seconds. MySQL's default is a year and
 # MariaDB's a day, so a value of a day or more bounds nothing.
-_UNBOUNDED_SECONDS = 86400
+UNBOUNDED_SECONDS = 86400
 
 
 class Online(NamedTuple):
@@ -135,7 +135,7 @@ def bounded(value: str) -> bool:
         seconds = float(value)
     except ValueError:
         return False
-    return 0 < seconds < _UNBOUNDED_SECONDS
+    return 0 < seconds < UNBOUNDED_SECONDS
 
 
 def timeout_statement(transactional: bool) -> str:

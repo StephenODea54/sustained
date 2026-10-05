@@ -5,6 +5,7 @@ statement that bounds how long a lock may queue.
 
 from __future__ import annotations
 
+import re
 from typing import Mapping, Optional
 
 from sustained.impact.model import (
@@ -58,3 +59,10 @@ def timeout_statement(transactional: bool) -> str:
     """The statement that bounds how long the next locks may queue."""
     scope = "LOCAL " if transactional else ""
     return f"SET {scope}lock_timeout = '5s'"
+
+
+def lock_name(mode: str) -> str:
+    """A `pg_locks.mode` value as the rules name it: `ShareLock` is `SHARE`."""
+    if mode.endswith("Lock"):
+        mode = mode[: -len("Lock")]
+    return " ".join(re.findall(r"[A-Z][a-z]*", mode)).upper()

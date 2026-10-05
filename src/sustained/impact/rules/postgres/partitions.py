@@ -36,7 +36,7 @@ from typing import Dict, List, Optional, Tuple
 
 from sustained.impact.context import Relation
 from sustained.impact.model import Confidence, Finding, Severity, Work
-from sustained.impact.rules import Effect, Facts, Outcome, Rule
+from sustained.impact.rules import Effect, Facts, Outcome, Rule, listed
 from sustained.impact.rules.postgres.catalog import DOCS
 
 # The id of the finding for a statement whose answer depends on the
@@ -147,12 +147,6 @@ def locked_below(table: str, lock: Optional[str]) -> str:
     )
 
 
-def _listed(names: List[str]) -> str:
-    if len(names) < 3:
-        return " and ".join(names)
-    return ", ".join(names[:-1]) + ", and " + names[-1]
-
-
 def merge_unread(facts: Facts, outcome: Outcome) -> Outcome:
     """
     The outcome with its `unread()` findings joined into one finding,
@@ -197,7 +191,7 @@ def _unread_note(names: List[str], clauses: str) -> Finding:
     unknown = (
         f"whether {names[0]} is a partitioned table or a partition"
         if len(names) == 1
-        else f"whether {_listed(names)} are partitioned tables or partitions"
+        else f"whether {listed(names)} are partitioned tables or partitions"
     )
     return Finding(
         UNREAD,

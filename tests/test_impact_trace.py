@@ -16,10 +16,10 @@ from sustained.impact import Blocks, Evidence, Hold, TableImpact, Work, analyze
 from sustained.impact.model import Severity
 from sustained.impact.rules import profile_for
 from sustained.impact.rules.postgres import PROFILE
+from sustained.impact.rules.postgres.locks import lock_name
 from sustained.impact.rules.postgres.trace import (
     File,
     Sighting,
-    lock_name,
     observe,
     sighting_plan,
     tables_plan,

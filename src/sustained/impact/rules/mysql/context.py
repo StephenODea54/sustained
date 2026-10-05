@@ -32,7 +32,7 @@ from sustained.impact.rules import common
 
 _SETTINGS_SQL = "SELECT VERSION(), @@foreign_key_checks, @@lock_wait_timeout"
 
-_SYSTEM_SCHEMAS = "('mysql', 'information_schema', 'performance_schema', 'sys')"
+SYSTEM_SCHEMAS = "('mysql', 'information_schema', 'performance_schema', 'sys')"
 
 # One row per base table outside the system schemas: its schema, its
 # name, whether it is in the current database, the estimated rows, the
@@ -46,12 +46,12 @@ _SIZES_SQL = (
     "COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0), UPPER(ROW_FORMAT), "
     "LOWER(TABLE_COLLATION) "
     "FROM information_schema.TABLES "
-    f"WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA NOT IN {_SYSTEM_SCHEMAS}"
+    f"WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA NOT IN {SYSTEM_SCHEMAS}"
 )
 
 _FULLTEXT_SQL = (
     "SELECT DISTINCT TABLE_SCHEMA, TABLE_NAME FROM information_schema.STATISTICS "
-    f"WHERE INDEX_TYPE = 'FULLTEXT' AND TABLE_SCHEMA NOT IN {_SYSTEM_SCHEMAS}"
+    f"WHERE INDEX_TYPE = 'FULLTEXT' AND TABLE_SCHEMA NOT IN {SYSTEM_SCHEMAS}"
 )
 
 # MySQL 8.0.29 and later count the instant column changes of each table.

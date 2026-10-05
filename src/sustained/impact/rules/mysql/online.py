@@ -36,6 +36,7 @@ from sustained.impact.rules.mysql.locks import (
     LEVELS,
     MDL_EXCLUSIVE,
     NOCOPY_NONE,
+    UNBOUNDED_SECONDS,
     Online,
     blocks,
     parse_label,
@@ -51,10 +52,7 @@ if TYPE_CHECKING:
 # the statement runs.
 ONLINE = (INSTANT, NOCOPY_NONE, INPLACE_NONE)
 
-_ASSERTED = ("alter_table", "create_index", "drop_index")
-
-# A WAIT of a day or more bounds nothing, as lock_wait_timeout does not.
-_UNBOUNDED_WAIT = 86400
+ASSERTED_KINDS = ("alter_table", "create_index", "drop_index")
 
 
 def assertion(
@@ -164,7 +162,7 @@ def _asserted(
 ) -> Optional[str]:
     """The statement with its asserted clause, or None to leave it."""
     parsed = impact.parsed
-    if parsed is None or parsed.kind not in _ASSERTED or parsed.table is None:
+    if parsed is None or parsed.kind not in ASSERTED_KINDS or parsed.table is None:
         return None
     if parsed.options.get("algorithm") or parsed.options.get("lock"):
         return None
@@ -335,7 +333,7 @@ def _bounds_its_wait(facts: Facts) -> bool:
     if wait is None or not is_mariadb(facts):
         return False
     try:
-        return float(str(wait)) < _UNBOUNDED_WAIT
+        return float(str(wait)) < UNBOUNDED_SECONDS
     except ValueError:
         return False
 

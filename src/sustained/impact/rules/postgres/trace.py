@@ -60,21 +60,18 @@ from sustained.impact.model import (
     Work,
 )
 from sustained.impact.rules.common import settled_work, work_mismatch
+from sustained.impact.rules.postgres.context import SYSTEM_SCHEMAS
+from sustained.impact.rules.postgres.locks import lock_name
 from sustained.impact.window import aggregate
 
 if TYPE_CHECKING:
     from sustained.impact.rules import Profile
 
 
-_SYSTEM_SCHEMAS = (
-    "n.nspname NOT IN ('pg_catalog', 'information_schema') "
-    "AND n.nspname !~ '^pg_(toast|temp_)'"
-)
-
 # Every table, partitioned table, and materialized view that exists.
 _TABLES_SQL = f"""SELECT c.oid FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-WHERE c.relkind IN ('r', 'p', 'm') AND {_SYSTEM_SCHEMAS}"""
+WHERE c.relkind IN ('r', 'p', 'm') AND {SYSTEM_SCHEMAS}"""
 
 # The table locks our own backend holds, one row per table and mode.
 _LOCKS_SQL = f"""SELECT c.oid, n.nspname, c.relname, pg_catalog.pg_table_is_visible(c.oid),
@@ -83,7 +80,7 @@ FROM pg_catalog.pg_locks l
 JOIN pg_catalog.pg_class c ON c.oid = l.relation
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE l.pid = pg_catalog.pg_backend_pid() AND l.locktype = 'relation'
-  AND l.granted AND c.relkind IN ('r', 'p', 'm') AND {_SYSTEM_SCHEMAS}"""
+  AND l.granted AND c.relkind IN ('r', 'p', 'm') AND {SYSTEM_SCHEMAS}"""
 
 # The files of the named tables and their indexes: one row per table and
 # relation with storage, which is the table itself, or each leaf
@@ -104,7 +101,7 @@ CROSS JOIN LATERAL (
   UNION ALL
   SELECT i.indexrelid, true FROM pg_catalog.pg_index i WHERE i.indrelid = leaf.oid
 ) f (relid, is_index)
-WHERE c.relkind IN ('r', 'p', 'm') AND {_SYSTEM_SCHEMAS}
+WHERE c.relkind IN ('r', 'p', 'm') AND {SYSTEM_SCHEMAS}
   AND lower(c.relname) IN ({{names}})"""
 
 # A mode an unpredicted table must reach before it counts as a mismatch.
@@ -134,13 +131,6 @@ class Sighting(NamedTuple):
     names: Mapping[str, int] = MappingProxyType({})
     storage: Mapping[int, Mapping[int, File]] = MappingProxyType({})
     read: FrozenSet[str] = frozenset()
-
-
-def lock_name(mode: str) -> str:
-    """A `pg_locks.mode` value as the rules name it: `ShareLock` is `SHARE`."""
-    if mode.endswith("Lock"):
-        mode = mode[: -len("Lock")]
-    return " ".join(re.findall(r"[A-Z][a-z]*", mode)).upper()
 
 
 def _key(name: str) -> str:

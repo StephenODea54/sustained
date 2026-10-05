@@ -42,6 +42,7 @@ from sustained.impact.preflight import (
     text,
 )
 from sustained.impact.rules.postgres import locks
+from sustained.impact.rules.postgres.context import SYSTEM_SCHEMAS
 
 # Which modes conflict with each mode, from the table-level lock
 # conflict table in the PostgreSQL documentation.
@@ -102,10 +103,6 @@ _WAITS_FOR_SNAPSHOTS = frozenset(
     {"pg.create_index.concurrently", "pg.reindex.concurrently"}
 )
 
-_SYSTEM_SCHEMAS = (
-    "n.nspname NOT IN ('pg_catalog', 'information_schema') "
-    "AND n.nspname !~ '^pg_(toast|temp_)'"
-)
 
 # One row per table lock another backend in this database was granted
 # or is waiting for. A prepared transaction's locks have no pid; its
@@ -125,7 +122,7 @@ WHERE l.locktype = 'relation'
                     WHERE datname = current_database())
   AND l.pid IS DISTINCT FROM pg_catalog.pg_backend_pid()
   AND c.relkind IN ('r', 'p', 'm')
-  AND {_SYSTEM_SCHEMAS}"""
+  AND {SYSTEM_SCHEMAS}"""
 
 # One row per other client backend in this database with a transaction
 # open, and whether the transaction has a snapshot or a transaction id.
@@ -144,14 +141,6 @@ _PREPARED_SQL = """SELECT gid, owner::text,
   extract(epoch FROM now() - prepared)::float8
 FROM pg_catalog.pg_prepared_xacts
 WHERE database = current_database()"""
-
-
-def mode_name(mode: str) -> str:
-    """A `pg_locks` mode, such as `AccessShareLock`, as `ACCESS SHARE`."""
-    if mode.endswith("Lock"):
-        mode = mode[: -len("Lock")]
-    words = re.findall(r"[A-Z][a-z]*", mode)
-    return " ".join(word.upper() for word in words)
 
 
 def conflicts(plan: Planned, mode: str) -> bool:
@@ -205,7 +194,7 @@ def preflight_plan(
                     str(schema),
                     str(table),
                     bool(visible),
-                    mode_name(str(mode)),
+                    locks.lock_name(str(mode)),
                     bool(ok),
                     session,
                 )

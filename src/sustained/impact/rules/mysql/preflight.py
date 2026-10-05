@@ -45,12 +45,11 @@ from sustained.impact.preflight import (
     seconds,
     text,
 )
-from sustained.impact.rules.mysql.context import server_version
+from sustained.impact.rules.mysql.context import SYSTEM_SCHEMAS, server_version
 from sustained.impact.rules.mysql.locks import ROW_LOCKS
 
 _SERVER_SQL = "SELECT VERSION(), DATABASE()"
 
-_SYSTEM_SCHEMAS = "('mysql', 'information_schema', 'performance_schema', 'sys')"
 
 # Whether the Performance Schema records metadata locks.
 _INSTRUMENT_SQL = (
@@ -71,7 +70,7 @@ LEFT JOIN information_schema.INNODB_TRX x
 WHERE m.OBJECT_TYPE = 'TABLE'
   AND t.PROCESSLIST_ID IS NOT NULL
   AND t.PROCESSLIST_ID <> CONNECTION_ID()
-  AND m.OBJECT_SCHEMA NOT IN {_SYSTEM_SCHEMAS}"""
+  AND m.OBJECT_SCHEMA NOT IN {SYSTEM_SCHEMAS}"""
 
 # The same from MariaDB's metadata_lock_info plugin, granted locks only.
 _LOCK_INFO_SQL = f"""SELECT i.THREAD_ID, i.TABLE_SCHEMA, i.TABLE_NAME, i.LOCK_MODE,
@@ -81,7 +80,7 @@ LEFT JOIN information_schema.PROCESSLIST p ON p.ID = i.THREAD_ID
 LEFT JOIN information_schema.INNODB_TRX x ON x.trx_mysql_thread_id = i.THREAD_ID
 WHERE i.LOCK_TYPE = 'Table metadata lock'
   AND i.THREAD_ID <> CONNECTION_ID()
-  AND i.TABLE_SCHEMA NOT IN {_SYSTEM_SCHEMAS}"""
+  AND i.TABLE_SCHEMA NOT IN {SYSTEM_SCHEMAS}"""
 
 # One row per InnoDB transaction of another connection.
 _TRANSACTIONS_SQL = """SELECT x.trx_mysql_thread_id, p.USER, p.COMMAND,

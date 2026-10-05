@@ -41,6 +41,12 @@ _SETTINGS_SQL = (
     "current_setting('TimeZone'), current_setting('lock_timeout')"
 )
 
+# The filter that leaves out the system schemas, for `n.nspname`.
+SYSTEM_SCHEMAS = (
+    "n.nspname NOT IN ('pg_catalog', 'information_schema') "
+    "AND n.nspname !~ '^pg_(toast|temp_)'"
+)
+
 # One row per table, partitioned table, and materialized view outside
 # the system schemas: its schema, its name, whether an unqualified name
 # finds it on the search path, the estimated rows, the bytes of the
@@ -50,7 +56,7 @@ _SETTINGS_SQL = (
 # partitions. pg_partition_tree() returns no rows for a table outside a
 # partition tree, which then stands for itself. The statement holds no
 # percent sign, which a driver could read as a placeholder.
-_SIZES_SQL = """SELECT n.nspname, c.relname, pg_catalog.pg_table_is_visible(c.oid),
+_SIZES_SQL = f"""SELECT n.nspname, c.relname, pg_catalog.pg_table_is_visible(c.oid),
   s.rows, s.bytes, s.unread
 FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -67,17 +73,12 @@ CROSS JOIN LATERAL (
   JOIN pg_catalog.pg_class l ON l.oid = leaf.oid
 ) s (rows, bytes, unread)
 WHERE c.relkind IN ('r', 'p', 'm')
-  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND n.nspname !~ '^pg_(toast|temp_)'"""
+  AND {SYSTEM_SCHEMAS}"""
 
 
 # How long the size read waits for each lock it takes.
 SIZE_LOCK_TIMEOUT = "1s"
 
-_SYSTEM_SCHEMAS = (
-    "n.nspname NOT IN ('pg_catalog', 'information_schema') "
-    "AND n.nspname !~ '^pg_(toast|temp_)'"
-)
 
 # One row per partitioned table and per partition: its oid, schema, and
 # name, whether an unqualified name finds it, whether it is partitioned,
@@ -90,7 +91,7 @@ FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN pg_catalog.pg_inherits i ON i.inhrelid = c.oid AND c.relispartition
 LEFT JOIN pg_catalog.pg_partitioned_table p ON p.partrelid = c.oid
-WHERE (c.relkind = 'p' OR c.relispartition) AND {_SYSTEM_SCHEMAS}"""
+WHERE (c.relkind = 'p' OR c.relispartition) AND {SYSTEM_SCHEMAS}"""
 
 # One row per column an index uses, as a key column or inside an
 # expression or predicate, with the collation the column is declared
@@ -103,7 +104,7 @@ JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 JOIN pg_catalog.pg_attribute a
   ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
 LEFT JOIN pg_catalog.pg_collation co ON co.oid = a.attcollation
-WHERE c.relkind IN ('r', 'p', 'm') AND {_SYSTEM_SCHEMAS}
+WHERE c.relkind IN ('r', 'p', 'm') AND {SYSTEM_SCHEMAS}
   AND EXISTS (
     SELECT 1 FROM pg_catalog.pg_index x
     WHERE x.indrelid = c.oid AND (
@@ -125,7 +126,7 @@ JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 JOIN pg_catalog.pg_attribute a
   ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
 JOIN pg_catalog.pg_type y ON y.oid = a.atttypid
-WHERE c.relkind IN ('r', 'p', 'm') AND {_SYSTEM_SCHEMAS} AND y.typcategory = 'A'"""
+WHERE c.relkind IN ('r', 'p', 'm') AND {SYSTEM_SCHEMAS} AND y.typcategory = 'A'"""
 
 # One row per type outside the system schemas, other than an array type
 # and the row type of a table: its oid, schema, and name, whether an
@@ -137,7 +138,7 @@ _TYPES_SQL = f"""SELECT t.oid, n.nspname, t.typname, pg_catalog.pg_type_is_visib
     SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.contypid = t.oid))
 FROM pg_catalog.pg_type t
 JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
-WHERE {_SYSTEM_SCHEMAS} AND t.typcategory <> 'A'
+WHERE {SYSTEM_SCHEMAS} AND t.typcategory <> 'A'
   AND (t.typtype <> 'c' OR EXISTS (
     SELECT 1 FROM pg_catalog.pg_class r WHERE r.oid = t.typrelid AND r.relkind = 'c'))"""
 

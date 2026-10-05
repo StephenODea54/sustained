@@ -55,8 +55,9 @@ from sustained.impact.model import (
     Work,
 )
 from sustained.impact.rules import Probe, common
+from sustained.impact.rules.mysql.context import SYSTEM_SCHEMAS
 from sustained.impact.rules.mysql.locks import ALGORITHMS, LEVELS, Online
-from sustained.impact.rules.mysql.online import assertion
+from sustained.impact.rules.mysql.online import ASSERTED_KINDS, assertion
 
 if TYPE_CHECKING:
     from sustained.impact.rules import Profile
@@ -67,14 +68,13 @@ if TYPE_CHECKING:
 # MySQL's ER_INNODB_MAX_ROW_VERSION.
 REFUSALS = frozenset({1845, 1846, 4092})
 
-_PROBED = ("alter_table", "create_index", "drop_index")
 
 # Every table outside the system schemas, and whether it is in the
 # connection's own database.
 _TABLES_SQL = """SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_SCHEMA = DATABASE()
 FROM information_schema.TABLES
 WHERE TABLE_TYPE = 'BASE TABLE'
-  AND TABLE_SCHEMA NOT IN ('mysql', 'sys', 'information_schema', 'performance_schema')"""
+  AND TABLE_SCHEMA NOT IN {SYSTEM_SCHEMAS}"""
 
 
 def _key(name: str) -> str:
@@ -116,7 +116,7 @@ def attempts(impact: StatementImpact, profile: "Profile") -> List[Tuple[str, Onl
     written with one.
     """
     parsed = impact.parsed
-    if parsed is None or parsed.kind not in _PROBED:
+    if parsed is None or parsed.kind not in ASSERTED_KINDS:
         return []
     if parsed.options.get("algorithm") or parsed.options.get("lock"):
         return []
