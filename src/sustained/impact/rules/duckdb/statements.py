@@ -214,9 +214,7 @@ def _write_rows(facts: Facts) -> Outcome:
         return Outcome.of(_effect(WRITE_ROWS, common.table(facts), None, Work.ROWS))
     effects = []
     for table in common.tables(facts):
-        advice = "; on a large table, backfill in batches outside the DDL migration"
-        if kind == "delete":
-            advice = "; on a large table, delete in batches outside the DDL migration"
+        advice = f"; {common.batch_advice(facts)}"
         if kind == "update":
             what = "the UPDATE changes rows"
             other = "updates the same columns of the same rows"

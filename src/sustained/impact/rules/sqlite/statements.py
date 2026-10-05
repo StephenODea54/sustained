@@ -300,19 +300,14 @@ def _copy(facts: Facts, target: str) -> Optional[Outcome]:
 
 def _write_rows(facts: Facts) -> Outcome:
     table = common.table(facts)
-    what = f"the {facts.parsed.kind.upper()}"
-    if facts.intent is not None and facts.intent.kind == "backfill":
-        what = "the backfill"
-    batches = "delete" if facts.parsed.kind == "delete" else "backfill"
     return Outcome.of(
         _effect(
             facts,
             WRITE_ROWS,
             table,
             Work.ROWS,
-            f"{what} writes rows of {table}",
-            advice=f"on a large table, {batches} in batches outside the DDL "
-            "migration",
+            f"{common.row_writer(facts)} writes rows of {table}",
+            advice=common.batch_advice(facts),
         )
     )
 

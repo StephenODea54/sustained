@@ -242,17 +242,24 @@ def row_write_message(facts: Facts, table: str, detail: str = "") -> str:
     DELETE is advised to delete in batches, and an UPDATE to backfill
     in batches.
     """
-    if facts.intent is not None and facts.intent.kind == "backfill":
-        what = "the backfill"
-    else:
-        what = f"the {facts.parsed.kind.upper()}"
     until = "the migration commits" if facts.transactional else "it ends"
-    batches = "delete" if facts.parsed.kind == "delete" else "backfill"
     return (
-        f"writes to the rows {what} changes on {table} wait until {until}"
-        f"{detail}; on a large table, {batches} in batches outside the DDL "
-        "migration"
+        f"writes to the rows {row_writer(facts)} changes on {table} wait until "
+        f"{until}{detail}; {batch_advice(facts)}"
     )
+
+
+def row_writer(facts: Facts) -> str:
+    """How a finding names an UPDATE or DELETE: `the UPDATE`, or `the backfill`."""
+    if facts.intent is not None and facts.intent.kind == "backfill":
+        return "the backfill"
+    return f"the {facts.parsed.kind.upper()}"
+
+
+def batch_advice(facts: Facts) -> str:
+    """The advice to delete, or for any other write to backfill, in batches."""
+    batches = "delete" if facts.parsed.kind == "delete" else "backfill"
+    return f"on a large table, {batches} in batches outside the DDL migration"
 
 
 def rename_text(what: str, name: object, when: str = "commits") -> str:
