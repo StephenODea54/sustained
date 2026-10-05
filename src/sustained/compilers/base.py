@@ -26,7 +26,7 @@ from sustained.expressions import (
     Subquery,
     WindowExpression,
 )
-from sustained.rendering import RenderContext
+from sustained.rendering import Renderable, RenderContext
 from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
@@ -433,7 +433,9 @@ class Compiler:
             )
         return self.quote_fully_qualified_identifier(table)
 
-    def quote_column_reference(self, column: "ColumnReference") -> str:
+    def quote_column_reference(
+        self, column: "ColumnReference", ctx: 'Optional["RenderContext"]' = None
+    ) -> str:
         """
         Quotes a column reference for use inside a clause.
 
@@ -449,12 +451,14 @@ class Compiler:
         for a part that is not a plain name. Expression and Column objects
         are raw SQL. col() names a column by the same rule as a string.
         Literal renders its value as an inline SQL literal, and a Func,
-        aggregate, window, or CASE object renders as its call.
+        aggregate, window, or CASE object renders as its call. A Subquery
+        renders through `ctx`, so its values join the statement's
+        parameters. With no context they inline.
         """
         if isinstance(column, Expression):
             return str(column)
         if not isinstance(column, str):
-            nested = self._compile_nested(column, None)
+            nested = self._compile_nested(column, ctx)
             if nested is not None:
                 return nested
             raise TypeError(
@@ -473,6 +477,18 @@ class Compiler:
                 arg = self._quote_column_path(column, arg)
             return f"{call['name']}({distinct}{arg})"
         return self._quote_column_path(column, column)
+
+    def column_part(self, column: "ColumnReference") -> Renderable:
+        """
+        A column reference as a clause fragment. A string quotes now. Any
+        other object quotes now as well, so a wrong type raises when the
+        clause is built, and then renders again with the statement's
+        context, so a Subquery inside it binds its values.
+        """
+        quoted = self.quote_column_reference(column)
+        if isinstance(column, str):
+            return quoted
+        return lambda ctx: self.quote_column_reference(column, ctx)
 
     def _quote_column_path(self, column: str, path: str) -> str:
         """
@@ -1627,13 +1643,15 @@ class Compiler:
             sql += f" AS {self.quote_alias(agg.alias)}"
         return sql
 
-    def compile_aggregate_call(self, agg: AggregateExpression) -> str:
+    def compile_aggregate_call(
+        self, agg: AggregateExpression, ctx: 'Optional["RenderContext"]' = None
+    ) -> str:
         """
         Renders the aggregate call without the alias. Use this where the
         aggregate sits inside another expression, because an alias is only
         valid at the top of a select list.
         """
-        column = self.quote_column_reference(agg.column)
+        column = self.quote_column_reference(agg.column, ctx)
         return f"{agg.function_name}({column})"
 
     def compile_window(
@@ -1657,11 +1675,13 @@ class Compiler:
         over_clauses = []
         if window.partition_by:
             partition_cols = ", ".join(
-                self.quote_column_reference(c) for c in window.partition_by
+                self.quote_column_reference(c, ctx) for c in window.partition_by
             )
             over_clauses.append(f"PARTITION BY {partition_cols}")
         if window.order_by:
-            order_cols = ", ".join(self._quote_order_entry(c) for c in window.order_by)
+            order_cols = ", ".join(
+                self._quote_order_entry(c, ctx) for c in window.order_by
+            )
             over_clauses.append(f"ORDER BY {order_cols}")
         if window.frame:
             over_clauses.append(window.frame)
@@ -1669,10 +1689,12 @@ class Compiler:
         args_sql = ", ".join(self._format_arg(arg, ctx) for arg in window.args)
         return f"{window.function_name}({args_sql}) OVER ({over_sql})"
 
-    def _quote_order_entry(self, entry: "ColumnReference") -> str:
+    def _quote_order_entry(
+        self, entry: "ColumnReference", ctx: 'Optional["RenderContext"]' = None
+    ) -> str:
         """Quotes an ORDER BY entry that may carry an ASC or DESC suffix."""
         if not isinstance(entry, str):
-            return self.quote_column_reference(entry)
+            return self.quote_column_reference(entry, ctx)
         parts = entry.rsplit(" ", 1)
         if len(parts) == 2 and parts[1].upper() in ("ASC", "DESC"):
             return f"{self.quote_column_reference(parts[0])} {parts[1].upper()}"
@@ -1778,7 +1800,7 @@ class Compiler:
         if isinstance(value, Func):
             return self.compile_function_call(value, ctx)
         if isinstance(value, AggregateExpression):
-            return self.compile_aggregate_call(value)
+            return self.compile_aggregate_call(value, ctx)
         if isinstance(value, WindowExpression):
             return self.compile_window_call(value, ctx)
         if isinstance(value, Subquery):

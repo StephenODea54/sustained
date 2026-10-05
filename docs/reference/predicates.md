@@ -163,7 +163,7 @@ Show.query().select('title', Subquery(ticket_count, 'tickets_sold'))
 
 `render(ctx)` renders the subquery with the outer statement's render context, so its values parameterize with the rest of the statement. `str()` inlines them as literals, for reading and logging.
 
-`render_operand(ctx)` renders it with no alias, for the places where the subquery stands as a value, such as a function argument or one side of a comparison, and the compiler calls it in those places. Passing `None` for the context inlines the values.
+`render_operand(ctx)` renders it with no alias, for the places where the subquery stands as a value or a column, such as a function argument, one side of a comparison, or the column of `where()`, `orderBy()`, `groupBy()`, an aggregate, a window, or a join `ON`. The compiler calls it with the statement's context in those places, so `to_sql()` binds the subquery's values as parameters. Passing `None` for the context inlines the values.
 
 ### Aliases in a nested position
 

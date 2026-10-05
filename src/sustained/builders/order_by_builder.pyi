@@ -2,6 +2,7 @@ from typing import Optional, Type
 
 from ..compilers import Compiler
 from ..model import Model
+from ..rendering import RenderContext
 from ..types import ColumnReference
 
 def reject_literal(column: object, method: str) -> None: ...
@@ -16,3 +17,4 @@ class OrderByClauseBuilder:
         direction: str = "ASC",
         nulls: Optional[str] = None,
     ) -> None: ...
+    def render(self, ctx: Optional[RenderContext] = None) -> str: ...

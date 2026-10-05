@@ -86,13 +86,14 @@ class ConditionalClauseBuilder:
         self._compiler = compiler_or_default(compiler)
         self._clauses: List[Tuple[str, Renderable]] = []
 
-    def _quote_column(self, column: ColumnReference) -> str:
+    def _quote_column(self, column: ColumnReference) -> Renderable:
         """Quotes a column reference through the compiler.
 
         The compiler accepts an identifier path or a call on one column, such
         as an aggregate in a HAVING clause, and raises on any other string.
+        An expression object renders with the statement's context.
         """
-        return self._compiler.quote_column_reference(column)
+        return self._compiler.column_part(column)
 
     def __getattr__(self, name: str) -> Callable[..., "ConditionalClauseBuilder"]:
         """
@@ -296,15 +297,18 @@ class ConditionalClauseBuilder:
             if operator in ("LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE"):
 
                 def render(ctx: RenderContext) -> str:
+                    column_sql = render_part(quoted_col, ctx)
                     return ctx.compiler.compile_like(
-                        quoted_col, ctx.compiler.format_operand(val, ctx), operator
+                        column_sql, ctx.compiler.format_operand(val, ctx), operator
                     )
 
             elif operator in ("IS", "IS NOT") and isinstance(val, bool):
                 truth = val
 
                 def render(ctx: RenderContext) -> str:
-                    return ctx.compiler.compile_is_boolean(quoted_col, operator, truth)
+                    return ctx.compiler.compile_is_boolean(
+                        render_part(quoted_col, ctx), operator, truth
+                    )
 
             else:
                 render = compare(quoted_col, operator, val)

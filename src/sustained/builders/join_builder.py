@@ -117,20 +117,24 @@ class OnClauseBuilder:
         # The operator arrives as free text and lands between two quoted
         # identifiers, so it goes through the same check where() applies.
         op = self._compiler.validate_operator(op)
-        formatted_col1 = self._compiler.quote_column_reference(col1)
-        condition: Renderable
+        left = self._compiler.column_part(col1)
+        right: Renderable
         if isinstance(col2, QueryBuilder):
             sub_query = col2
-
-            def render(ctx: RenderContext) -> str:
-                return f"{formatted_col1} {op} ({render_nested(sub_query, ctx)})"
-
-            condition = render
+            right = lambda ctx: f"({render_nested(sub_query, ctx)})"  # noqa: E731
         elif isinstance(col2, Expression):
-            condition = f"{formatted_col1} {op} {col2}"
+            right = str(col2)
         else:
-            formatted_col2 = self._compiler.quote_column_reference(col2)
-            condition = f"{formatted_col1} {op} {formatted_col2}"
+            right = self._compiler.column_part(col2)
+        condition: Renderable
+        if isinstance(left, str) and isinstance(right, str):
+            condition = f"{left} {op} {right}"
+        else:
+            parts = (left, right)
+            condition = lambda ctx: (  # noqa: E731
+                f"{render_part(parts[0], ctx)} {op} {render_part(parts[1], ctx)}"
+            )
+
         self._conditions.append((conjunction, condition))
 
     def render(self, ctx: RenderContext) -> str:

@@ -432,7 +432,7 @@ class QueryBuilder:
 
         joins_str = self._join_builder.render(ctx)
         where_str = self._where_builder.render(ctx)
-        group_by_str = str(self._group_by_builder)
+        group_by_str = self._group_by_builder.render(ctx)
         having_str = self._having_builder.render(ctx)
 
         select_parts = ["SELECT"]
@@ -624,7 +624,7 @@ class QueryBuilder:
             query_parts.append(base_select)
 
         # Append ORDER BY, LIMIT, and OFFSET clauses, which apply to the entire query.
-        order_by_str = str(self._order_by_builder)
+        order_by_str = self._order_by_builder.render(ctx)
         if order_by_str:
             query_parts.append(order_by_str)
 

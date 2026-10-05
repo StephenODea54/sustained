@@ -64,8 +64,11 @@ def compare(column: Renderable, operator: str, value: SqlValue) -> RenderFn:
     """Builds `column <operator> value`, with the value as an operand."""
 
     def render(ctx: "RenderContext") -> str:
+        # The column renders first, because a subquery in it binds values
+        # that come before the operand's in the statement text.
+        column_sql = render_part(column, ctx)
         operand = ctx.compiler.format_operand(value, ctx)
-        return f"{render_part(column, ctx)} {operator} {operand}"
+        return f"{column_sql} {operator} {operand}"
 
     return render
 
@@ -77,9 +80,10 @@ def between(
     operator = "NOT BETWEEN" if negate else "BETWEEN"
 
     def render(ctx: "RenderContext") -> str:
+        column_sql = render_part(column, ctx)
         low_sql = ctx.compiler.format_operand(low, ctx)
         high_sql = ctx.compiler.format_operand(high, ctx)
-        return f"{render_part(column, ctx)} {operator} {low_sql} AND {high_sql}"
+        return f"{column_sql} {operator} {low_sql} AND {high_sql}"
 
     return render
 
@@ -109,8 +113,9 @@ def in_list(
     operator = "NOT IN" if negate else "IN"
 
     def render(ctx: "RenderContext") -> str:
+        column_sql = render_part(column, ctx)
         rendered = ", ".join(ctx.compiler.format_operand(v, ctx) for v in items)
-        return f"{render_part(column, ctx)} {operator} ({rendered})"
+        return f"{column_sql} {operator} ({rendered})"
 
     return render
 

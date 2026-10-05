@@ -13,6 +13,7 @@ from .order_by_builder import reject_literal
 if TYPE_CHECKING:
     from ..compilers import Compiler
     from ..model import Model
+    from ..rendering import RenderContext
     from ..types import ColumnReference
 
 
@@ -53,20 +54,29 @@ class GroupByClauseBuilder:
                 reject_literal(column, "groupByGroupingSets")
         self._grouping_sets = sets
 
-    def _quote(self, column: ColumnReference) -> str:
-        return self._compiler.quote_column_reference(column)
+    def render(self, ctx: Optional["RenderContext"] = None) -> str:
+        """
+        Builds the GROUP BY clause, or an empty string with no columns. A
+        Subquery in a column renders through `ctx`, so its values join the
+        statement's parameters. With no context they inline.
+        """
 
-    def __str__(self) -> str:
-        """Builds the final GROUP BY clause string."""
+        def quote(column: ColumnReference) -> str:
+            return self._compiler.quote_column_reference(column, ctx)
+
         if self._grouping_sets is not None:
             groups = ", ".join(
-                "(" + ", ".join(self._quote(c) for c in group) + ")"
+                "(" + ", ".join(quote(c) for c in group) + ")"
                 for group in self._grouping_sets
             )
             return self._compiler.compile_grouping_sets(groups)
         if not self._group_by_columns:
             return ""
-        columns_sql = ", ".join(self._quote(c) for c in self._group_by_columns)
+        columns_sql = ", ".join(quote(c) for c in self._group_by_columns)
         if self._mode:
             return self._compiler.compile_group_by_mode(self._mode, columns_sql)
         return "GROUP BY " + columns_sql
+
+    def __str__(self) -> str:
+        """The GROUP BY clause with values inline."""
+        return self.render()

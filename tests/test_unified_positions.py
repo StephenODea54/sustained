@@ -15,6 +15,7 @@ from sustained.expressions import (
     Column,
     Func,
     Literal,
+    Subquery,
     WindowExpression,
     col,
 )
@@ -349,3 +350,89 @@ class TestCaseConditions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSubqueryInColumnPositions(unittest.TestCase):
+    """A Subquery in a column position binds its values through to_sql()."""
+
+    def setUp(self) -> None:
+        Thing.set_dialect(Dialects.POSTGRES)
+
+    def tearDown(self) -> None:
+        Thing.set_dialect(Dialects.DEFAULT)
+
+    def _sub(self) -> Subquery:
+        return Subquery(Thing.query().select("n").where("k", "=", "v"), "s")
+
+    def _every_position(self, wrapper: object) -> QueryBuilder:
+        window = WindowExpression("ROW_NUMBER", partition_by=[wrapper], alias="r")
+        return (
+            Thing.query()
+            .select("a", window)
+            .join("other", wrapper, "=", "other.id")  # type: ignore[arg-type]
+            .where(wrapper, "=", 1)  # type: ignore[arg-type]
+            .groupBy(wrapper)  # type: ignore[arg-type]
+            .having(AggregateExpression("MAX", wrapper), ">", 2)  # type: ignore[arg-type]
+            .orderBy(wrapper)  # type: ignore[arg-type]
+        )
+
+    def test_values_bind_in_text_order(self) -> None:
+        sql, params = self._every_position(self._sub()).to_sql()
+        inner = '(SELECT "n" FROM "things" WHERE "k" = %s)'
+        self.assertEqual(
+            sql,
+            f'SELECT "a", ROW_NUMBER() OVER (PARTITION BY {inner}) AS "r" '
+            f'FROM "things" JOIN "other" ON {inner} = "other"."id" '
+            f"WHERE {inner} = %s GROUP BY {inner} "
+            f"HAVING MAX({inner}) > %s ORDER BY {inner} ASC",
+        )
+        self.assertEqual(params, ("v", "v", "v", 1, "v", "v", 2, "v"))
+
+    def test_str_keeps_inline_values(self) -> None:
+        inner = '(SELECT "n" FROM "things" WHERE "k" = \'v\')'
+        self.assertEqual(
+            str(self._every_position(self._sub())),
+            f'SELECT "a", ROW_NUMBER() OVER (PARTITION BY {inner}) AS "r" '
+            f'FROM "things" JOIN "other" ON {inner} = "other"."id" '
+            f"WHERE {inner} = 1 GROUP BY {inner} "
+            f"HAVING MAX({inner}) > 2 ORDER BY {inner} ASC",
+        )
+
+    def test_other_wrappers_keep_their_output(self) -> None:
+        cases = (
+            (col("b"), '"b"'),
+            (sustained.raw("b + 1"), "b + 1"),
+            (Func("LOWER", "b", Literal("x")), "LOWER(\"b\", 'x')"),
+        )
+        for wrapper, rendered in cases:
+            with self.subTest(rendered=rendered):
+                sql, params = self._every_position(wrapper).to_sql()
+                self.assertEqual(
+                    sql,
+                    f'SELECT "a", ROW_NUMBER() OVER (PARTITION BY {rendered}) '
+                    f'AS "r" FROM "things" JOIN "other" ON {rendered} = '
+                    f'"other"."id" WHERE {rendered} = %s GROUP BY {rendered} '
+                    f"HAVING MAX({rendered}) > %s ORDER BY {rendered} ASC",
+                )
+                self.assertEqual(params, (1, 2))
+
+    def test_column_binds_before_each_operand(self) -> None:
+        sub = self._sub()
+        inner = '(SELECT "n" FROM "things" WHERE "k" = %s)'
+        sql, params = (
+            Thing.query()
+            .whereBetween(sub, 1, 2)  # type: ignore[arg-type]
+            .whereIn(sub, [3])  # type: ignore[arg-type]
+            .where(sub, "LIKE", "p%")  # type: ignore[arg-type]
+            .where(sub, "IS", True)  # type: ignore[arg-type]
+            .join("other", sub, "=", Thing.query().select("m").where("j", "=", 4))
+            .to_sql()
+        )
+        self.assertEqual(
+            sql,
+            f'SELECT * FROM "things" JOIN "other" ON {inner} = '
+            f'(SELECT "m" FROM "things" WHERE "j" = %s) '
+            f"WHERE {inner} BETWEEN %s AND %s AND {inner} IN (%s) "
+            f"AND {inner} LIKE %s AND {inner} IS TRUE",
+        )
+        self.assertEqual(params, ("v", 4, "v", 1, 2, "v", 3, "v", "p%", "v"))

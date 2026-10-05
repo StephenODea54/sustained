@@ -8,6 +8,7 @@ from ..rendering import compiler_or_default
 if TYPE_CHECKING:
     from ..compilers import Compiler
     from ..model import Model
+    from ..rendering import RenderContext
     from ..types import ColumnReference
 
 
@@ -73,12 +74,11 @@ class OrderByClauseBuilder:
         self._clauses.append((column, normalized_direction, normalized_nulls))
         return self
 
-    def __str__(self) -> str:
+    def render(self, ctx: Optional["RenderContext"] = None) -> str:
         """
-        Builds and returns the final ORDER BY clause string.
-
-        Returns:
-            str: The complete ORDER BY clause, or an empty string if no clauses exist.
+        Builds the ORDER BY clause, or an empty string if no clauses exist.
+        A Subquery in a column renders through `ctx`, so its values join
+        the statement's parameters. With no context they inline.
         """
         if not self._clauses:
             return ""
@@ -86,9 +86,13 @@ class OrderByClauseBuilder:
         clauses_str = ", ".join(
             [
                 self._compiler.compile_order_entry(
-                    self._compiler.quote_column_reference(col), direction, nulls
+                    self._compiler.quote_column_reference(col, ctx), direction, nulls
                 )
                 for col, direction, nulls in self._clauses
             ]
         )
         return f"ORDER BY {clauses_str}"
+
+    def __str__(self) -> str:
+        """The ORDER BY clause with values inline."""
+        return self.render()
