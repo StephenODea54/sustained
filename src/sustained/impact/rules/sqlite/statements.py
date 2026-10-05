@@ -421,7 +421,7 @@ def _vacuum(facts: Facts) -> Outcome:
             VACUUM.finding(
                 Severity.DANGER,
                 "VACUUM cannot run inside a transaction, so this migration "
-                "fails; run it in a migration with transactional=False",
+                f"fails; {common.RUN_OUTSIDE}",
             ),
         )
     effect = _effect(

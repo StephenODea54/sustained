@@ -14,6 +14,7 @@ from sustained.impact.model import (
     Work,
 )
 from sustained.impact.rules import Effect, Facts, Outcome, Rule, common
+from sustained.impact.rules.common import TRANSACTION_NOTE
 from sustained.impact.rules.postgres.catalog import (
     ATTACH_INDEX,
     COMMENT,
@@ -55,7 +56,6 @@ from sustained.impact.rules.postgres.partitions import (
     unread,
 )
 from sustained.impact.rules.postgres.remedies import (
-    TRANSACTION_NOTE,
     insert_after,
     trimmed,
 )
@@ -77,8 +77,7 @@ def refused_in_transaction(facts: Facts, rule: Rule, what: str) -> List[Finding]
         refused(
             rule,
             f"{what} cannot run inside a transaction block, and this migration "
-            "runs inside one, so the server refuses it; run it in a migration "
-            "with transactional=False",
+            f"runs inside one, so the server refuses it; {common.RUN_OUTSIDE}",
         )
     ]
 

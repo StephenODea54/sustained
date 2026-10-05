@@ -47,6 +47,11 @@ from sustained.impact.window import aggregate, row_scopes
 
 UNNAMED_TABLE = "(unnamed table)"
 
+# Where to run a statement that a transaction refuses, or holds a lock
+# for too long: in a migration of its own outside a transaction.
+TRANSACTION_NOTE = "in a migration with transactional=False"
+RUN_OUTSIDE = f"run it {TRANSACTION_NOTE}"
+
 Handler = Callable[[Facts], Outcome]
 ActionHandler = Callable[[Facts, Action], Outcome]
 # One ALTER TABLE action's outcome, or None for an action no rule reads.

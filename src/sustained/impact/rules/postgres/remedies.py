@@ -10,7 +10,6 @@ from typing import List, Optional
 from sustained.impact.tokens import PUNCT, Token, tokenize
 
 _SIMPLE_NAME_RE = re.compile(r"[a-z_][a-z0-9_$]*")
-TRANSACTION_NOTE = "in a migration with transactional=False"
 
 # The words `pg_get_keywords()` lists as reserved, or as allowed only as
 # a column name or only as a function or type name, on PostgreSQL 14

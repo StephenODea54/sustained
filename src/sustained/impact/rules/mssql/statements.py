@@ -199,8 +199,7 @@ def _reorganize(facts: Facts, table: str, clustered: bool) -> Outcome:
                 work,
                 confidence,
                 message=f"inside a transaction, the lock REORGANIZE takes on "
-                f"{table} is held until the migration commits; run it in a "
-                "migration with transactional=False",
+                f"{table} is held until the migration commits; {common.RUN_OUTSIDE}",
                 blocks=exclusive_blocks(facts),
             )
         )

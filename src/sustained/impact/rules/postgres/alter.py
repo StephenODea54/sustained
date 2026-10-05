@@ -25,7 +25,7 @@ from sustained.impact.model import (
 )
 from sustained.impact.recognizer.definitions import not_null_column
 from sustained.impact.rules import Effect, Facts, Outcome, Rule, common
-from sustained.impact.rules.common import ActionHandler
+from sustained.impact.rules.common import TRANSACTION_NOTE, ActionHandler
 from sustained.impact.rules.postgres.catalog import (
     ADD_CHECK,
     ADD_CHECK_NOT_VALID,
@@ -68,7 +68,6 @@ from sustained.impact.rules.postgres.partitions import (
     unread,
 )
 from sustained.impact.rules.postgres.remedies import (
-    TRANSACTION_NOTE,
     key_columns,
     last_part,
     quoted,

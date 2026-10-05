@@ -11,7 +11,7 @@ import re
 from typing import Mapping, Optional, Tuple
 
 from sustained.impact.model import Blocks, Confidence, Finding, Severity, Work
-from sustained.impact.rules import Effect, Facts, Rule
+from sustained.impact.rules import Effect, Facts, Rule, common
 from sustained.impact.rules.mssql.catalog import EDITIONS_SOURCE, ONLINE_EDITION
 from sustained.impact.rules.mssql.locks import SCH_M, X, enterprise
 
@@ -105,7 +105,7 @@ def resumable_findings(
     if facts.transactional:
         message = (
             "RESUMABLE = ON cannot run inside a transaction, so this migration "
-            "fails; run it in a migration with transactional=False"
+            f"fails; {common.RUN_OUTSIDE}"
         )
     elif not is_online(options):
         message = "RESUMABLE = ON needs ONLINE = ON, so the statement fails"
@@ -178,8 +178,8 @@ def online_effect(
             work,
             message=(
                 f"{what} runs online, but the {final} lock it takes on {table} "
-                "when it ends is held until the migration commits; run it in a "
-                "migration with transactional=False, or last in its migration"
+                f"when it ends is held until the migration commits; "
+                f"{common.RUN_OUTSIDE}, or last in its migration"
             ),
             waits=waits,
             at_end=True,
