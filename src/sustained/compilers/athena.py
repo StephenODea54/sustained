@@ -77,6 +77,14 @@ def _inline_null_parameters(
 
 
 class AthenaCompiler(PrestoCompiler):
+
+    # Athena routes DDL through a Hive parser that takes backticks or
+    # bare names only. A double-quoted identifier makes Athena try its
+    # Trino parser, which has no LOCATION or TBLPROPERTIES clause, so
+    # every CREATE and ALTER with one fails to parse. Queries and MERGE
+    # run on the Trino engine and keep Presto's double quotes.
+    _DDL_IDENT_QUOTES = ("`", "`")
+
     _TYPE_MAP = {
         "INTEGER": "INT",
         "BIGINT": "BIGINT",
@@ -90,14 +98,6 @@ class AthenaCompiler(PrestoCompiler):
         "BINARY": "BINARY",
         "JSON": "STRING",
     }
-
-    def quote_ddl_identifier(self, identifier: str) -> str:
-        # Athena routes DDL through a Hive parser that takes backticks or
-        # bare names only. A double-quoted identifier makes Athena try its
-        # Trino parser, which has no LOCATION or TBLPROPERTIES clause, so
-        # every CREATE and ALTER with one fails to parse. Queries and MERGE
-        # run on the Trino engine and keep Presto's double quotes.
-        return "`{}`".format(identifier.replace("`", "``"))
 
     def compile_column_type(self, column: "ColumnDef") -> str:
         # Every VARCHAR renders as STRING. Iceberg tables reject VARCHAR
@@ -154,9 +154,6 @@ class AthenaCompiler(PrestoCompiler):
                 "stores tables as files and enforces no constraints."
             )
 
-    def compile_identity(self) -> str:
-        raise DialectError("Athena has no identity columns.")
-
     def compile_set_column_comment(
         self,
         table_sql: str,
@@ -202,33 +199,14 @@ class AthenaCompiler(PrestoCompiler):
     ) -> str:
         # Athena supports MERGE INTO on Iceberg tables. Trino's MERGE
         # grammar wants unqualified column names on the left of SET.
-        columns_sql = ", ".join(self.quote_identifier(c) for c in column_names)
-        on_sql = " AND ".join(
-            f"target.{self.quote_identifier(c)} = source.{self.quote_identifier(c)}"
-            for c in conflict_columns
+        return self.compile_merge_upsert(
+            table_sql,
+            column_names,
+            row_values_sql,
+            conflict_columns,
+            action,
+            update_columns,
         )
-        sql = (
-            f"MERGE INTO {table_sql} AS target "
-            f"USING (VALUES {', '.join(row_values_sql)}) AS source ({columns_sql}) "
-            f"ON {on_sql}"
-        )
-        if action == "merge":
-            assignments = ", ".join(
-                f"{self.quote_identifier(c)} = source.{self.quote_identifier(c)}"
-                for c in update_columns
-            )
-            sql += f" WHEN MATCHED THEN UPDATE SET {assignments}"
-        insert_values = ", ".join(
-            f"source.{self.quote_identifier(c)}" for c in column_names
-        )
-        sql += (
-            f" WHEN NOT MATCHED THEN INSERT ({columns_sql}) "
-            f"VALUES ({insert_values})"
-        )
-        return sql
-
-    def compile_returning(self, columns_sql: str) -> str:
-        raise DialectError("Athena does not support RETURNING clauses.")
 
     def compile_ctas(self, table_sql: str, select_sql: str, temporary: bool) -> str:
         if temporary:
@@ -274,9 +252,6 @@ class AthenaCompiler(PrestoCompiler):
         # An Iceberg table takes CHANGE COLUMN, so Athena alters in place
         # rather than taking Presto's refusal.
         return "alter"
-
-    def supports_constraints(self) -> bool:
-        return False
 
     def supports_transactions(self) -> bool:
         return False

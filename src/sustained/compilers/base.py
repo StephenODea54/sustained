@@ -207,7 +207,34 @@ def _naming_context(method: Callable[..., str], leading: int) -> Callable[..., s
     return call
 
 
+def _quoted(identifier: str, quotes: Tuple[str, str]) -> str:
+    opening, closing = quotes
+    return opening + identifier.replace(closing, closing * 2) + closing
+
+
 class Compiler:
+    # The opening and closing quote for identifiers. None writes names
+    # bare and refuses one that is not a plain name. A closing quote
+    # inside the name doubles, so a name can never end the quoted span
+    # early.
+    _IDENT_QUOTES: Optional[Tuple[str, str]] = None
+    # The quotes for DDL identifiers. None follows _IDENT_QUOTES.
+    _DDL_IDENT_QUOTES: Optional[Tuple[str, str]] = None
+    # Dialect syntax that the base methods render when the flag is set.
+    _native_ilike = False
+    _native_nulls_order = True
+    _distinct_on = False
+    _for_update = False
+    _bare_offset = False
+    _comment_on_column = False
+    # Date and timestamp literals take their type name in front, mapped
+    # through _TEMPORAL_KEYWORDS, when this is set.
+    _typed_temporal_literals = False
+    _TEMPORAL_KEYWORDS: Mapping[str, str] = {}
+    # The ALTER COLUMN keyword in front of a new type, such as TYPE or
+    # SET DATA TYPE. None means the dialect has no ANSI ALTER COLUMN.
+    _ALTER_TYPE_KEYWORD: Optional[str] = None
+
     def __init__(self, dialect: "Dialects") -> None:
         self._dialect = dialect
 
@@ -249,8 +276,11 @@ class Compiler:
         """
         Quotes one identifier. This dialect writes identifiers bare, so a
         name that is not letters, digits, underscores and dollar signs
-        would run as SQL, and it raises ValueError instead.
+        would run as SQL, and it raises ValueError instead. A dialect that
+        sets _IDENT_QUOTES quotes every name.
         """
+        if self._IDENT_QUOTES is not None:
+            return _quoted(identifier, self._IDENT_QUOTES)
         if not _IDENTIFIER_RE.match(identifier):
             raise ValueError(
                 f"Identifier {identifier!r} is not a plain name. The "
@@ -271,6 +301,8 @@ class Compiler:
         parser that takes backticks or bare names only, while its queries
         run on a Trino engine that takes double quotes.
         """
+        if self._DDL_IDENT_QUOTES is not None:
+            return _quoted(identifier, self._DDL_IDENT_QUOTES)
         return self.quote_identifier(identifier)
 
     def quote_fully_qualified_ddl_identifier(self, identifier: str) -> str:
@@ -405,6 +437,8 @@ class Compiler:
         Renders DISTINCT ON. A Postgres extension also supported by DuckDB;
         other dialects raise.
         """
+        if self._distinct_on:
+            return f"DISTINCT ON ({', '.join(columns_sql)})"
         from sustained.exceptions import DialectError
 
         raise DialectError(
@@ -416,6 +450,13 @@ class Compiler:
         """
         Renders a FOR UPDATE locking clause. Dialects without it raise.
         """
+        if self._for_update:
+            clause = "FOR UPDATE"
+            if skip_locked:
+                clause += " SKIP LOCKED"
+            elif nowait:
+                clause += " NOWAIT"
+            return clause
         from sustained.exceptions import DialectError
 
         raise DialectError(
@@ -429,9 +470,11 @@ class Compiler:
     def compile_like(self, column_sql: str, pattern_sql: str, operator: str) -> str:
         """
         Renders a LIKE or ILIKE predicate. ILIKE is a Postgres extension, so
-        the base compiler emulates it by lowercasing both sides. Dialects
-        with native ILIKE override this.
+        the base compiler emulates it by lowercasing both sides, unless
+        the dialect sets _native_ilike.
         """
+        if self._native_ilike:
+            return f"{column_sql} {operator} {pattern_sql}"
         if operator == "ILIKE":
             return f"LOWER({column_sql}) LIKE LOWER({pattern_sql})"
         if operator == "NOT ILIKE":
@@ -500,8 +543,12 @@ class Compiler:
 
         SQLite, which the default dialect targets, stores dates as ISO
         text, the way the sqlite3 module binds them, so the literal is the
-        quoted text alone. A typed dialect writes the type name in front.
+        quoted text alone. A typed dialect writes the type name in front,
+        mapped through _TEMPORAL_KEYWORDS.
         """
+        if self._typed_temporal_literals:
+            keyword = self._TEMPORAL_KEYWORDS.get(type_name, type_name)
+            return f"{keyword} '{text}'"
         return f"'{text}'"
 
     def compile_binary_literal(self, hex_text: str) -> str:
@@ -547,6 +594,43 @@ class Compiler:
             for c in update_columns
         )
         return f"{sql} ON CONFLICT ({conflict_sql}) DO UPDATE SET {assignments}"
+
+    def compile_merge_upsert(
+        self,
+        table_sql: str,
+        column_names: "list[str]",
+        row_values_sql: "list[str]",
+        conflict_columns: "list[str]",
+        action: str,
+        update_columns: "list[str]",
+        set_prefix: str = "",
+        terminator: str = "",
+    ) -> str:
+        """
+        Renders an upsert as MERGE INTO ... USING (VALUES ...), for
+        dialects with no ON CONFLICT. `set_prefix` goes in front of each
+        column on the left of SET, and `terminator` ends the statement.
+        """
+        quote = self.quote_identifier
+        columns_sql = ", ".join(quote(c) for c in column_names)
+        on_sql = " AND ".join(
+            f"target.{quote(c)} = source.{quote(c)}" for c in conflict_columns
+        )
+        sql = (
+            f"MERGE INTO {table_sql} AS target "
+            f"USING (VALUES {', '.join(row_values_sql)}) AS source ({columns_sql}) "
+            f"ON {on_sql}"
+        )
+        if action == "merge":
+            assignments = ", ".join(
+                f"{set_prefix}{quote(c)} = source.{quote(c)}" for c in update_columns
+            )
+            sql += f" WHEN MATCHED THEN UPDATE SET {assignments}"
+        insert_values = ", ".join(f"source.{quote(c)}" for c in column_names)
+        return (
+            f"{sql} WHEN NOT MATCHED THEN INSERT ({columns_sql}) "
+            f"VALUES ({insert_values}){terminator}"
+        )
 
     # Logical column types mapped to this dialect's SQL types. Dialects
     # override entries as needed.
@@ -622,6 +706,9 @@ class Compiler:
         """
         Renders CREATE TYPE for a named enum, on dialects that have one.
         """
+        if self.enum_strategy() == "native":
+            values_sql = ", ".join(self.format_value(v) for v in values)
+            return f"CREATE TYPE {self.quote_identifier(name)} AS ENUM ({values_sql})"
         from sustained.exceptions import DialectError
 
         raise DialectError(
@@ -633,6 +720,9 @@ class Compiler:
         """
         Renders DROP TYPE for a named enum, on dialects that have one.
         """
+        if self.enum_strategy() == "native":
+            exists_sql = "IF EXISTS " if if_exists else ""
+            return f"DROP TYPE {exists_sql}{self.quote_identifier(name)}"
         from sustained.exceptions import DialectError
 
         raise DialectError(
@@ -681,8 +771,13 @@ class Compiler:
         definition and needs it passed, either as the declared `column`
         or as the `state` the column is in when the statement runs. A
         `state` wins over `column`; its own comment is replaced by
-        `comment`. Dialects that store no column comments raise.
+        `comment`. A dialect that sets _comment_on_column renders COMMENT
+        ON COLUMN. Dialects that store no column comments raise.
         """
+        if self._comment_on_column:
+            column_sql = self.quote_identifier(column_name)
+            value = "NULL" if comment is None else self.format_value(comment)
+            return [f"COMMENT ON COLUMN {table_sql}.{column_sql} IS {value}"]
         from sustained.exceptions import DialectError
 
         raise DialectError(
@@ -1204,7 +1299,17 @@ class Compiler:
         Renders statements that change a column's type. `column` carries
         the whole state the column holds afterwards, because MySQL and
         SQL Server restate the definition and drop what it leaves off.
+        A dialect that sets _ALTER_TYPE_KEYWORD renders the ANSI form.
         """
+        if self._ALTER_TYPE_KEYWORD is not None:
+            column_sql = self.quote_identifier(column_name)
+            statement = (
+                f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} "
+                f"{self._ALTER_TYPE_KEYWORD} {column.type_sql}"
+            )
+            if using:
+                statement += f" USING {using}"
+            return [statement]
         from sustained.exceptions import DialectError
 
         raise DialectError(
@@ -1221,8 +1326,13 @@ class Compiler:
         """
         Renders statements that change a column's nullability. `column`
         carries the whole state the column holds afterwards, including
-        the nullability the statement sets.
+        the nullability the statement sets. A dialect that sets
+        _ALTER_TYPE_KEYWORD renders the ANSI form.
         """
+        if self._ALTER_TYPE_KEYWORD is not None:
+            column_sql = self.quote_identifier(column_name)
+            action = "DROP NOT NULL" if column.nullable else "SET NOT NULL"
+            return [f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} {action}"]
         from sustained.exceptions import DialectError
 
         raise DialectError(
@@ -1274,8 +1384,11 @@ class Compiler:
     ) -> str:
         """
         Renders one ORDER BY key. Nulls is FIRST, LAST, or None for the
-        engine's own placement of NULL values.
+        engine's own placement of NULL values. A dialect without NULLS
+        FIRST and NULLS LAST clears _native_nulls_order.
         """
+        if not self._native_nulls_order:
+            return self.compile_emulated_nulls_order(column_sql, direction, nulls)
         if nulls is None:
             return f"{column_sql} {direction}"
         return f"{column_sql} {direction} NULLS {nulls}"
@@ -1325,8 +1438,10 @@ class Compiler:
 
         SQLite, which the default dialect targets, needs a row cap before
         OFFSET, and LIMIT -1 is its spelling of "all rows". Dialects that
-        take a bare OFFSET override this.
+        take a bare OFFSET, and reject a negative LIMIT, set _bare_offset.
         """
+        if self._bare_offset:
+            return f"OFFSET {offset}"
         return f"LIMIT -1 OFFSET {offset}"
 
     def compile_function(

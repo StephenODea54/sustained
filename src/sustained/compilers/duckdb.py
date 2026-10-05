@@ -14,20 +14,17 @@ class DuckDbCompiler(Compiler):
     base compiler already emits.
     """
 
-    def quote_identifier(self, identifier: str) -> str:
-        # A double quote inside the name doubles, so a name can never end
-        # the quoted span early.
-        return '"{}"'.format(identifier.replace('"', '""'))
-
-    def compile_like(self, column_sql: str, pattern_sql: str, operator: str) -> str:
-        # DuckDB supports ILIKE natively.
-        return f"{column_sql} {operator} {pattern_sql}"
+    _IDENT_QUOTES = ('"', '"')
+    _native_ilike = True
+    _distinct_on = True
+    # DuckDB takes a bare OFFSET and rejects a negative LIMIT.
+    _bare_offset = True
+    _comment_on_column = True
+    _typed_temporal_literals = True
+    _ALTER_TYPE_KEYWORD = "SET DATA TYPE"
 
     def supports_qualify(self) -> bool:
         return True
-
-    def compile_temporal_literal(self, type_name: str, text: str) -> str:
-        return f"{type_name} '{text}'"
 
     def compile_binary_literal(self, hex_text: str) -> str:
         # DuckDB reads X'...' as a string, not as bytes.
@@ -35,13 +32,6 @@ class DuckDbCompiler(Compiler):
 
     def parenthesized_set_members(self) -> bool:
         return True
-
-    def compile_offset_without_limit(self, offset: int) -> str:
-        # DuckDB takes a bare OFFSET and rejects a negative LIMIT.
-        return f"OFFSET {offset}"
-
-    def compile_distinct_on(self, columns_sql: "list[str]") -> str:
-        return f"DISTINCT ON ({', '.join(columns_sql)})"
 
     def normalize_diff_type(self, type_name: str) -> str:
         # DuckDB stores TEXT as VARCHAR and reports it back as VARCHAR, so
@@ -63,44 +53,6 @@ class DuckDbCompiler(Compiler):
 
     def stores_column_comments(self) -> bool:
         return True
-
-    def compile_set_column_comment(
-        self,
-        table_sql: str,
-        column_name: str,
-        comment: Optional[str],
-        column: Optional["ColumnDef"] = None,
-        state: Optional["ColumnState"] = None,
-    ) -> "list[str]":
-        column_sql = self.quote_identifier(column_name)
-        value = "NULL" if comment is None else self.format_value(comment)
-        return [f"COMMENT ON COLUMN {table_sql}.{column_sql} IS {value}"]
-
-    def compile_alter_column_type(
-        self,
-        table_sql: str,
-        column_name: str,
-        column: "ColumnState",
-        using: "str | None" = None,
-    ) -> "list[str]":
-        column_sql = self.quote_identifier(column_name)
-        statement = (
-            f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} "
-            f"SET DATA TYPE {column.type_sql}"
-        )
-        if using:
-            statement += f" USING {using}"
-        return [statement]
-
-    def compile_alter_column_nullability(
-        self,
-        table_sql: str,
-        column_name: str,
-        column: "ColumnState",
-    ) -> "list[str]":
-        column_sql = self.quote_identifier(column_name)
-        action = "DROP NOT NULL" if column.nullable else "SET NOT NULL"
-        return [f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} {action}"]
 
     def alter_column_index_scope(self) -> str:
         # "Cannot alter entry because there are entries that depend on
@@ -136,14 +88,6 @@ class DuckDbCompiler(Compiler):
 
     def enum_strategy(self) -> str:
         return "native"
-
-    def compile_create_enum_type(self, name: str, values: "list[str]") -> str:
-        values_sql = ", ".join(self.format_value(v) for v in values)
-        return f"CREATE TYPE {self.quote_identifier(name)} AS ENUM ({values_sql})"
-
-    def compile_drop_enum_type(self, name: str, if_exists: bool = False) -> str:
-        exists_sql = "IF EXISTS " if if_exists else ""
-        return f"DROP TYPE {exists_sql}{self.quote_identifier(name)}"
 
     def driver_transaction_control(self) -> bool:
         # The duckdb driver autocommits every statement and gives every

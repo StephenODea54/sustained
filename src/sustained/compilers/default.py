@@ -2,8 +2,6 @@ from .base import Compiler
 
 
 class DefaultCompiler(Compiler):
-    # SQLite, which the default dialect renders for, accepts a partial index.
-    supports_partial_index = True
     """
     Compiler for the default dialect, which runs against SQLite. Queries
     write identifiers bare, as the base compiler does. DDL quotes every
@@ -12,7 +10,6 @@ class DefaultCompiler(Compiler):
     creates, rebuilds, and drops.
     """
 
-    def quote_ddl_identifier(self, identifier: str) -> str:
-        # A double quote inside the name doubles, so a name can never end
-        # the quoted span early.
-        return '"{}"'.format(identifier.replace('"', '""'))
+    # SQLite, which the default dialect renders for, accepts a partial index.
+    supports_partial_index = True
+    _DDL_IDENT_QUOTES = ('"', '"')

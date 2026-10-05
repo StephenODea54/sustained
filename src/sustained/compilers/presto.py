@@ -12,22 +12,18 @@ class PrestoCompiler(Compiler):
 
     _TYPE_MAP = {**Compiler._TYPE_MAP, "BINARY": "VARBINARY"}
 
+    _IDENT_QUOTES = ('"', '"')
+    _comment_on_column = True
+    # Trino has no TIMESTAMPTZ keyword. A TIMESTAMP literal with an
+    # offset reads as a timestamp with time zone.
+    _typed_temporal_literals = True
+    _TEMPORAL_KEYWORDS = {"TIMESTAMPTZ": "TIMESTAMP"}
+
     def display_name(self) -> str:
         return self._DISPLAY_NAMES.get(self.dialect_name(), self.dialect_name())
 
-    def quote_identifier(self, identifier: str) -> str:
-        # A double quote inside the name doubles, so a name can never end
-        # the quoted span early.
-        return '"{}"'.format(identifier.replace('"', '""'))
-
     def parenthesized_set_members(self) -> bool:
         return True
-
-    def compile_temporal_literal(self, type_name: str, text: str) -> str:
-        # Trino has no TIMESTAMPTZ keyword. A TIMESTAMP literal with an
-        # offset reads as a timestamp with time zone.
-        keyword = "TIMESTAMP" if type_name == "TIMESTAMPTZ" else type_name
-        return f"{keyword} '{text}'"
 
     def compile_is_boolean(self, column_sql: str, operator: str, value: bool) -> str:
         # Trino has no IS TRUE. IS NOT DISTINCT FROM gives the same answer,
@@ -64,18 +60,6 @@ class PrestoCompiler(Compiler):
     def inline_column_comments(self) -> bool:
         # CREATE TABLE takes the comment inside the column definition.
         return True
-
-    def compile_set_column_comment(
-        self,
-        table_sql: str,
-        column_name: str,
-        comment: Optional[str],
-        column: Optional["ColumnDef"] = None,
-        state: Optional["ColumnState"] = None,
-    ) -> "list[str]":
-        column_sql = self.quote_identifier(column_name)
-        value = "NULL" if comment is None else self.format_value(comment)
-        return [f"COMMENT ON COLUMN {table_sql}.{column_sql} IS {value}"]
 
     def compile_add_check(
         self, table_sql: str, constraint: str, expression: str
@@ -115,17 +99,17 @@ class PrestoCompiler(Compiler):
     ) -> str:
         from sustained.exceptions import DialectError
 
-        raise DialectError("Presto does not support upserts.")
+        raise DialectError(f"{self.display_name()} does not support upserts.")
 
     def compile_identity(self) -> str:
         from sustained.exceptions import DialectError
 
-        raise DialectError("Presto has no identity columns.")
+        raise DialectError(f"{self.display_name()} has no identity columns.")
 
     def compile_returning(self, columns_sql: str) -> str:
         from sustained.exceptions import DialectError
 
-        raise DialectError("Presto does not support RETURNING clauses.")
+        raise DialectError(f"{self.display_name()} does not support RETURNING clauses.")
 
     def compile_limit_offset(
         self,

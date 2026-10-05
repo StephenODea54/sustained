@@ -47,10 +47,14 @@ class MysqlCompiler(Compiler):
 
     supports_index_prefix = True
 
-    def quote_identifier(self, identifier: str) -> str:
-        # A backtick inside the name doubles, so a name can never end the
-        # quoted span early.
-        return "`{}`".format(identifier.replace("`", "``"))
+    _IDENT_QUOTES = ("`", "`")
+    # MySQL has no NULLS FIRST or NULLS LAST.
+    _native_nulls_order = False
+    _for_update = True
+    # MySQL has no TIMESTAMPTZ. From 8.0.19 a TIMESTAMP literal takes an
+    # offset and converts it to the session time zone.
+    _typed_temporal_literals = True
+    _TEMPORAL_KEYWORDS = {"TIMESTAMPTZ": "TIMESTAMP"}
 
     def compile_group_by_mode(self, mode: str, columns_sql: str) -> str:
         # MySQL and MariaDB spell ROLLUP as a WITH ROLLUP suffix and have
@@ -76,12 +80,6 @@ class MysqlCompiler(Compiler):
     def escapes_percent(self) -> bool:
         # PyMySQL and mysqlclient read %% as one literal % sign.
         return True
-
-    def compile_temporal_literal(self, type_name: str, text: str) -> str:
-        # MySQL has no TIMESTAMPTZ. From 8.0.19 a TIMESTAMP literal takes
-        # an offset and converts it to the session time zone.
-        keyword = "TIMESTAMP" if type_name == "TIMESTAMPTZ" else type_name
-        return f"{keyword} '{text}'"
 
     def format_value(self, value: SqlValue) -> str:
         if isinstance(value, str):
@@ -230,12 +228,6 @@ class MysqlCompiler(Compiler):
             "second query, or use LAST_INSERT_ID() through raw SQL."
         )
 
-    def compile_order_entry(
-        self, column_sql: str, direction: str, nulls: Optional[str] = None
-    ) -> str:
-        # MySQL has no NULLS FIRST or NULLS LAST.
-        return self.compile_emulated_nulls_order(column_sql, direction, nulls)
-
     def compile_limit_offset(
         self,
         limit: Optional[int],
@@ -250,14 +242,6 @@ class MysqlCompiler(Compiler):
         if offset is not None:
             parts.append(f"OFFSET {offset}")
         return " ".join(parts)
-
-    def compile_locking(self, skip_locked: bool, nowait: bool) -> str:
-        clause = "FOR UPDATE"
-        if skip_locked:
-            clause += " SKIP LOCKED"
-        elif nowait:
-            clause += " NOWAIT"
-        return clause
 
     def compile_rename_table(self, old_sql: str, new_sql: str) -> str:
         # MySQL moves a table to the database the new name gives, and a

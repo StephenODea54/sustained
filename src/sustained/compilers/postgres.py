@@ -7,27 +7,19 @@ if TYPE_CHECKING:
 
 
 class PostgresCompiler(Compiler):
+    _IDENT_QUOTES = ('"', '"')
+    _native_ilike = True
+    _distinct_on = True
+    _for_update = True
+    # Postgres takes a bare OFFSET and rejects a negative LIMIT.
+    _bare_offset = True
+    _comment_on_column = True
+    _typed_temporal_literals = True
+    _ALTER_TYPE_KEYWORD = "TYPE"
     supports_partial_index = True
-
-    def quote_identifier(self, identifier: str) -> str:
-        # A double quote inside the name doubles, so a name can never end
-        # the quoted span early.
-        return '"{}"'.format(identifier.replace('"', '""'))
 
     def stores_column_comments(self) -> bool:
         return True
-
-    def compile_set_column_comment(
-        self,
-        table_sql: str,
-        column_name: str,
-        comment: Optional[str],
-        column: Optional["ColumnDef"] = None,
-        state: Optional["ColumnState"] = None,
-    ) -> "list[str]":
-        column_sql = self.quote_identifier(column_name)
-        value = "NULL" if comment is None else self.format_value(comment)
-        return [f"COMMENT ON COLUMN {table_sql}.{column_sql} IS {value}"]
 
     def placeholder(self) -> str:
         # The %s style used by psycopg and psycopg2.
@@ -37,23 +29,12 @@ class PostgresCompiler(Compiler):
         # psycopg and psycopg2 read %% as one literal % sign.
         return True
 
-    def compile_temporal_literal(self, type_name: str, text: str) -> str:
-        return f"{type_name} '{text}'"
-
     def compile_binary_literal(self, hex_text: str) -> str:
         # decode() reads the same whatever standard_conforming_strings says.
         return f"decode('{hex_text}', 'hex')"
 
-    def compile_like(self, column_sql: str, pattern_sql: str, operator: str) -> str:
-        # Postgres supports ILIKE natively.
-        return f"{column_sql} {operator} {pattern_sql}"
-
     def parenthesized_set_members(self) -> bool:
         return True
-
-    def compile_offset_without_limit(self, offset: int) -> str:
-        # Postgres takes a bare OFFSET and rejects a negative LIMIT.
-        return f"OFFSET {offset}"
 
     _TYPE_MAP = {**Compiler._TYPE_MAP, "JSON": "JSONB", "BINARY": "BYTEA"}
 
@@ -63,14 +44,6 @@ class PostgresCompiler(Compiler):
     def enum_strategy(self) -> str:
         return "native"
 
-    def compile_create_enum_type(self, name: str, values: "list[str]") -> str:
-        values_sql = ", ".join(self.format_value(v) for v in values)
-        return f"CREATE TYPE {self.quote_identifier(name)} AS ENUM ({values_sql})"
-
-    def compile_drop_enum_type(self, name: str, if_exists: bool = False) -> str:
-        exists_sql = "IF EXISTS " if if_exists else ""
-        return f"DROP TYPE {exists_sql}{self.quote_identifier(name)}"
-
     def compile_add_enum_value(self, name: str, value: str) -> str:
         # Runs inside a transaction from Postgres 12 on, so a rehearsal
         # can roll it back. There is no DROP VALUE to reverse it with.
@@ -78,9 +51,6 @@ class PostgresCompiler(Compiler):
             f"ALTER TYPE {self.quote_identifier(name)} "
             f"ADD VALUE {self.format_value(value)}"
         )
-
-    def compile_distinct_on(self, columns_sql: "list[str]") -> str:
-        return f"DISTINCT ON ({', '.join(columns_sql)})"
 
     def supports_alter_column(self) -> bool:
         return True
@@ -98,43 +68,6 @@ class PostgresCompiler(Compiler):
         # '7'::text, so the model's default goes back on when the model
         # declares one.
         return live_default_sql if model_default_sql is None else model_default_sql
-
-    def compile_alter_column_type(
-        self,
-        table_sql: str,
-        column_name: str,
-        column: "ColumnState",
-        using: "str | None" = None,
-    ) -> "list[str]":
-        column_sql = self.quote_identifier(column_name)
-        statement = (
-            f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} "
-            f"TYPE {column.type_sql}"
-        )
-        if using:
-            statement += f" USING {using}"
-        return [statement]
-
-    def compile_alter_column_nullability(
-        self,
-        table_sql: str,
-        column_name: str,
-        column: "ColumnState",
-    ) -> "list[str]":
-        column_sql = self.quote_identifier(column_name)
-        action = "DROP NOT NULL" if column.nullable else "SET NOT NULL"
-        return [f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} {action}"]
-
-    def compile_locking(self, skip_locked: bool, nowait: bool) -> str:
-        clause = "FOR UPDATE"
-        if skip_locked:
-            clause += " SKIP LOCKED"
-        elif nowait:
-            clause += " NOWAIT"
-        return clause
-
-    def quote_fully_qualified_identifier(self, identifier: str) -> str:
-        return ".".join([self.quote_identifier(part) for part in identifier.split(".")])
 
     def migration_lock_sql(self, name: str) -> "list[str]":
         # Session-scoped and reentrant, so a sync() that calls up() locks

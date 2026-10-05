@@ -16,25 +16,21 @@ if TYPE_CHECKING:
     from sustained.schema import ColumnState
 
 
-# A column path such as [t].[age], or a number, which needs no parentheses
-# as an operand of %.
 # The column types that carry a collation. A COLLATE clause on another
 # type is an error.
 _TEXT_TYPE_RE = re.compile(r"^\s*n?(?:var)?char\b|^\s*n?text\b", re.IGNORECASE)
 
+# A column path such as [t].[age], or a number, which needs no parentheses
+# as an operand of %.
 _SIMPLE_OPERAND_RE = re.compile(r"^(?:[\w.]|\[(?:[^\]]|\]\])*\])+$|^-?\d+(?:\.\d+)?$")
 
 
 class MssqlCompiler(Compiler):
     supports_partial_index = True
 
-    def quote_identifier(self, identifier: str) -> str:
-        # A closing bracket inside the name doubles, so a name can never
-        # end the quoted span early.
-        return "[{}]".format(identifier.replace("]", "]]"))
-
-    def quote_fully_qualified_identifier(self, identifier: str) -> str:
-        return ".".join(self.quote_identifier(part) for part in identifier.split("."))
+    _IDENT_QUOTES = ("[", "]")
+    # SQL Server has no NULLS FIRST or NULLS LAST.
+    _native_nulls_order = False
 
     def compile_top(self, value: int) -> str:
         return f"TOP {value}"
@@ -59,30 +55,16 @@ class MssqlCompiler(Compiler):
     ) -> str:
         # T-SQL has no ON CONFLICT; MERGE covers both upsert actions. The
         # trailing semicolon is required by the MERGE grammar.
-        columns_sql = ", ".join(self.quote_identifier(c) for c in column_names)
-        on_sql = " AND ".join(
-            f"target.{self.quote_identifier(c)} = source.{self.quote_identifier(c)}"
-            for c in conflict_columns
+        return self.compile_merge_upsert(
+            table_sql,
+            column_names,
+            row_values_sql,
+            conflict_columns,
+            action,
+            update_columns,
+            set_prefix="target.",
+            terminator=";",
         )
-        sql = (
-            f"MERGE INTO {table_sql} AS target "
-            f"USING (VALUES {', '.join(row_values_sql)}) AS source ({columns_sql}) "
-            f"ON {on_sql}"
-        )
-        if action == "merge":
-            assignments = ", ".join(
-                f"target.{self.quote_identifier(c)} = source.{self.quote_identifier(c)}"
-                for c in update_columns
-            )
-            sql += f" WHEN MATCHED THEN UPDATE SET {assignments}"
-        insert_values = ", ".join(
-            f"source.{self.quote_identifier(c)}" for c in column_names
-        )
-        sql += (
-            f" WHEN NOT MATCHED THEN INSERT ({columns_sql}) "
-            f"VALUES ({insert_values});"
-        )
-        return sql
 
     def compile_returning(self, columns_sql: str) -> str:
         raise DialectError(
@@ -302,12 +284,6 @@ class MssqlCompiler(Compiler):
         if operator == "IS":
             return f"({column_sql} IS NOT NULL AND {column_sql} = {bit})"
         return f"({column_sql} IS NULL OR {column_sql} <> {bit})"
-
-    def compile_order_entry(
-        self, column_sql: str, direction: str, nulls: Optional[str] = None
-    ) -> str:
-        # SQL Server has no NULLS FIRST or NULLS LAST.
-        return self.compile_emulated_nulls_order(column_sql, direction, nulls)
 
     def limit_needs_order_by(self) -> bool:
         return True
