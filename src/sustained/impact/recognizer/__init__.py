@@ -29,6 +29,8 @@ The statement kinds, and the options each one sets:
   wait, with
 - `alter_index` (SQL Server): name (None for ALL), operation, such as
   `rebuild` or `reorganize`, partition, with
+- `attach_index` (PostgreSQL): name, partition (the index ALTER INDEX
+  ... ATTACH PARTITION attaches)
 - `update_statistics` (SQL Server): fullscan
 - `alter_table`: actions, plus if_exists, only, algorithm, lock, wait,
   online and ignore (MariaDB ALTER ONLINE and ALTER IGNORE), and
@@ -55,7 +57,9 @@ The statement kinds, and the options each one sets:
 - `refresh_materialized_view`: concurrently, with_data
 - `create_trigger`, `drop_trigger`: name
 - `comment_on`: object, column
-- `create_type`: enum; `alter_type_add_value`, `alter_type_rename_value`
+- `create_type`: enum
+- `alter_type_add_value`: value
+- `alter_type_rename_value`
 - `create_view`: materialized
 - `create_object`, `drop_object`: object, such as `schema`, `sequence`,
   `function`, `procedure`, `extension`, or `domain`. For a domain,
@@ -130,6 +134,7 @@ STATEMENT_KINDS = frozenset(
         "alter_type_add_value",
         "alter_type_rename_value",
         "alter_index",
+        "attach_index",
         "update_statistics",
         "create_view",
         "drop_view",

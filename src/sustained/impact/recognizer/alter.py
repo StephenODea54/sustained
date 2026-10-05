@@ -410,7 +410,8 @@ class AlterTable(Definitions):
     def toggle(self, verb: str) -> Action:
         self.accept_any("ALWAYS", "REPLICA")
         if self.accept("TRIGGER"):
-            return Action(f"{verb}_trigger", None, frozen({"name": self.name()}))
+            kind = "enable_trigger" if verb == "enable" else "disable_trigger"
+            return Action(kind, None, frozen({"name": self.name()}))
         if self.accept("ROW", "LEVEL", "SECURITY"):
             return Action("row_security", None, frozen({"enabled": verb == "enable"}))
         raise Unrecognized(f"no rule reads {verb.upper()} {self.where()}")
