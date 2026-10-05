@@ -24,18 +24,17 @@ from sustained.impact.context import FLOORS, assumed
 from sustained.impact.model import Intent
 from sustained.impact.report import render, summary
 from sustained.impact.rules import profile_for
-from sustained.impact.rules.mssql import (
+from sustained.impact.rules.mssql import PROFILE
+from sustained.impact.rules.mssql.alter import column_type
+from sustained.impact.rules.mssql.context import context_plan, server_version
+from sustained.impact.rules.mssql.locks import (
     LOCKS,
-    PROFILE,
     blocks,
-    context_plan,
+    bounded,
     lock_rank,
     release,
-    server_version,
     timeout_statement,
 )
-from sustained.impact.rules.mssql.alter import column_type
-from sustained.impact.rules.mssql.locks import bounded
 from sustained.impact.rules.mssql.trace import (
     Partition,
     Sighting,

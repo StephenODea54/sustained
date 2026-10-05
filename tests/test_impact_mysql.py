@@ -16,6 +16,7 @@ from sustained.impact.context import FLOORS, assumed
 from sustained.impact.recognizer import recognize
 from sustained.impact.rules import mysql, profile_for, profiles_for
 from sustained.impact.rules.mysql import context as mysql_context
+from sustained.impact.rules.mysql import locks as mysql_locks
 from sustained.introspect.model import (
     IntrospectedColumn,
     IntrospectedForeignKey,
@@ -145,48 +146,56 @@ def rules(statement):
 class LabelTestCase(unittest.TestCase):
     def test_what_each_label_blocks(self):
         self.assertEqual(mysql.blocks(None), Blocks.NOTHING)
-        self.assertEqual(mysql.blocks(mysql.ROW_LOCKS), Blocks.DDL)
-        self.assertEqual(mysql.blocks(mysql.INSTANT), Blocks.READS_AND_WRITES)
-        self.assertEqual(mysql.blocks(mysql.MDL_EXCLUSIVE), Blocks.READS_AND_WRITES)
-        self.assertEqual(mysql.blocks(mysql.INPLACE_NONE), Blocks.DDL)
-        self.assertEqual(mysql.blocks(mysql.NOCOPY_NONE), Blocks.DDL)
-        self.assertEqual(mysql.blocks(mysql.COPY_SHARED), Blocks.WRITES)
-        self.assertEqual(mysql.blocks(mysql.COPY_EXCLUSIVE), Blocks.READS_AND_WRITES)
+        self.assertEqual(mysql.blocks(mysql_locks.ROW_LOCKS), Blocks.DDL)
+        self.assertEqual(mysql.blocks(mysql_locks.INSTANT), Blocks.READS_AND_WRITES)
+        self.assertEqual(
+            mysql.blocks(mysql_locks.MDL_EXCLUSIVE), Blocks.READS_AND_WRITES
+        )
+        self.assertEqual(mysql.blocks(mysql_locks.INPLACE_NONE), Blocks.DDL)
+        self.assertEqual(mysql.blocks(mysql_locks.NOCOPY_NONE), Blocks.DDL)
+        self.assertEqual(mysql.blocks(mysql_locks.COPY_SHARED), Blocks.WRITES)
+        self.assertEqual(
+            mysql.blocks(mysql_locks.COPY_EXCLUSIVE), Blocks.READS_AND_WRITES
+        )
         self.assertEqual(mysql.blocks("SOMETHING ELSE"), Blocks.READS_AND_WRITES)
 
     def test_lock_order(self):
         self.assertEqual(mysql.lock_rank(None), -1)
-        ranks = [mysql.lock_rank(lock) for lock in mysql.LOCKS]
+        ranks = [mysql.lock_rank(lock) for lock in mysql_locks.LOCKS]
         self.assertEqual(ranks, sorted(ranks))
         self.assertGreater(
-            mysql.lock_rank("SOMETHING ELSE"), mysql.lock_rank(mysql.MDL_EXCLUSIVE)
+            mysql.lock_rank("SOMETHING ELSE"),
+            mysql.lock_rank(mysql_locks.MDL_EXCLUSIVE),
         )
 
     def test_a_label_outside_the_list_ranks_by_its_level(self):
         shared = mysql.lock_rank("NOCOPY, LOCK=SHARED")
-        self.assertLess(mysql.lock_rank(mysql.COPY_NONE), shared)
-        self.assertLess(shared, mysql.lock_rank(mysql.INPLACE_SHARED))
-        self.assertLess(shared, mysql.lock_rank(mysql.MDL_EXCLUSIVE))
+        self.assertLess(mysql.lock_rank(mysql_locks.COPY_NONE), shared)
+        self.assertLess(shared, mysql.lock_rank(mysql_locks.INPLACE_SHARED))
+        self.assertLess(shared, mysql.lock_rank(mysql_locks.MDL_EXCLUSIVE))
 
     def test_every_lock_but_row_locks_queues(self):
         self.assertFalse(mysql.queues(None))
-        self.assertFalse(mysql.queues(mysql.ROW_LOCKS))
-        self.assertTrue(mysql.queues(mysql.INPLACE_NONE))
-        self.assertTrue(mysql.queues(mysql.INSTANT))
+        self.assertFalse(mysql.queues(mysql_locks.ROW_LOCKS))
+        self.assertTrue(mysql.queues(mysql_locks.INPLACE_NONE))
+        self.assertTrue(mysql.queues(mysql_locks.INSTANT))
 
     def test_labels_read_back(self):
-        self.assertEqual(mysql.parse_label("INSTANT"), mysql.Online("INSTANT"))
         self.assertEqual(
-            mysql.parse_label("COPY, LOCK=SHARED"), mysql.Online("COPY", "SHARED")
+            mysql_locks.parse_label("INSTANT"), mysql_locks.Online("INSTANT")
         )
-        self.assertIsNone(mysql.parse_label("MDL EXCLUSIVE"))
-        self.assertIsNone(mysql.parse_label("INPLACE"))
-        self.assertIsNone(mysql.parse_label("INPLACE, LOCK=SOME"))
+        self.assertEqual(
+            mysql_locks.parse_label("COPY, LOCK=SHARED"),
+            mysql_locks.Online("COPY", "SHARED"),
+        )
+        self.assertIsNone(mysql_locks.parse_label("MDL EXCLUSIVE"))
+        self.assertIsNone(mysql_locks.parse_label("INPLACE"))
+        self.assertIsNone(mysql_locks.parse_label("INPLACE, LOCK=SOME"))
 
     def test_combined(self):
-        instant = mysql.Online("INSTANT")
-        inplace = mysql.Online("INPLACE", "NONE")
-        copy = mysql.Online("COPY", "SHARED")
+        instant = mysql_locks.Online("INSTANT")
+        inplace = mysql_locks.Online("INPLACE", "NONE")
+        copy = mysql_locks.Online("COPY", "SHARED")
         self.assertEqual(instant.combined(instant), instant)
         self.assertEqual(instant.combined(inplace), inplace)
         self.assertEqual(inplace.combined(copy), copy)
@@ -374,12 +383,17 @@ class ContextPlanTestCase(unittest.TestCase):
         self.assertIsNone(mysql_context.file_name("x\U0001f600"))
 
     def test_server_version(self):
-        self.assertEqual(mysql.server_version("8.0.19"), ("mysql", (8, 0, 19)))
-        self.assertEqual(mysql.server_version("8.0.36-log"), ("mysql", (8, 0, 36)))
+        self.assertEqual(mysql_context.server_version("8.0.19"), ("mysql", (8, 0, 19)))
         self.assertEqual(
-            mysql.server_version("10.6.18-MariaDB-log"), ("mariadb", (10, 6, 18))
+            mysql_context.server_version("8.0.36-log"), ("mysql", (8, 0, 36))
         )
-        self.assertEqual(mysql.server_version("unknown"), ("mysql", FLOORS["mysql"]))
+        self.assertEqual(
+            mysql_context.server_version("10.6.18-MariaDB-log"),
+            ("mariadb", (10, 6, 18)),
+        )
+        self.assertEqual(
+            mysql_context.server_version("unknown"), ("mysql", FLOORS["mysql"])
+        )
 
 
 if __name__ == "__main__":

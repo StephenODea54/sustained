@@ -10,6 +10,7 @@ from sustained.impact import (
     Work,
 )
 from sustained.impact.rules import postgres as pg
+from sustained.impact.rules.postgres.column_types import type_change
 from tests.test_impact_postgres import (
     FIXTURE_CONTEXT,
     impact,
@@ -138,7 +139,7 @@ class DefaultVolatilityTestCase(unittest.TestCase):
 
 class TypeChangeTestCase(unittest.TestCase):
     def work(self, from_type, to_type, settings=None):
-        return pg.type_change(from_type, to_type, settings or {})[:2]
+        return type_change(from_type, to_type, settings or {})[:2]
 
     def test_binary_coercible_changes(self):
         for old, new in [

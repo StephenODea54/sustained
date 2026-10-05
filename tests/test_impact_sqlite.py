@@ -30,7 +30,8 @@ from sustained.impact.context import FLOORS, assumed
 from sustained.impact.recognizer import recognize
 from sustained.impact.report import render
 from sustained.impact.rules import profile_for, sqlite
-from sustained.impact.rules.sqlite import context_plan, sqlite_version
+from sustained.impact.rules.sqlite import statements as sqlite_statements
+from sustained.impact.rules.sqlite.context import context_plan, sqlite_version
 from sustained.impact.window import DATABASE
 from sustained.migrations import Migration, Migrator
 from sustained.model import Model
@@ -109,7 +110,7 @@ class StatementTestCase(unittest.TestCase):
             with self.subTest(sql=sql):
                 found = table(sql)
                 self.assertEqual(found.table, "t")
-                self.assertEqual(found.lock, sqlite.WRITE_LOCK)
+                self.assertEqual(found.lock, sqlite_statements.WRITE_LOCK)
                 self.assertEqual(found.work, work)
                 self.assertEqual(found.rule, rule)
 
@@ -554,9 +555,11 @@ class RuleCatalogTestCase(unittest.TestCase):
 
     def test_lock_rank_and_blocks(self):
         self.assertEqual(sqlite.lock_rank(None), -1)
-        self.assertEqual(sqlite.lock_rank(sqlite.WRITE_LOCK), 0)
+        self.assertEqual(sqlite.lock_rank(sqlite_statements.WRITE_LOCK), 0)
         self.assertIs(sqlite.blocks(None), Blocks.NOTHING)
-        self.assertIs(sqlite.blocks(sqlite.WRITE_LOCK), Blocks.READS_AND_WRITES)
+        self.assertIs(
+            sqlite.blocks(sqlite_statements.WRITE_LOCK), Blocks.READS_AND_WRITES
+        )
         self.assertEqual(sqlite.timeout_statement(True), "PRAGMA busy_timeout = 5000")
 
 

@@ -56,10 +56,9 @@ from __future__ import annotations
 
 from sustained.impact.rules import Facts, Outcome, Profile, common
 from sustained.impact.rules.sqlite.catalog import DOCS, FIXTURE_SCHEMA, RULES
-from sustained.impact.rules.sqlite.context import context_plan, sqlite_version
+from sustained.impact.rules.sqlite.context import context_plan
 from sustained.impact.rules.sqlite.statements import (
     STATEMENTS,
-    WRITE_LOCK,
     blocks,
     lock_rank,
     timeout_statement,
@@ -94,13 +93,5 @@ PROFILE = Profile(
 )
 
 __all__ = [
-    "FIXTURE_SCHEMA",
     "PROFILE",
-    "WRITE_LOCK",
-    "blocks",
-    "context_plan",
-    "effects",
-    "lock_rank",
-    "sqlite_version",
-    "timeout_statement",
 ]

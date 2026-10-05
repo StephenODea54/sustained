@@ -23,7 +23,7 @@ from sustained.impact import (
 )
 from sustained.impact.context import FLOORS, named_tables
 from sustained.impact.report import report_data, summary
-from sustained.impact.rules.postgres import context_plan, server_version
+from sustained.impact.rules.postgres.context import context_plan, server_version
 from sustained.migrations import Migration, Migrator
 
 PG = Dialects.POSTGRES

@@ -41,7 +41,7 @@ from typing import (
     List,
 )
 
-from sustained.impact.model import Action, Confidence, Finding, Work
+from sustained.impact.model import Action, Confidence, Work
 from sustained.impact.rules import Effect, Facts, Outcome, Profile, Trace, common
 from sustained.impact.rules.common import ActionHandler
 from sustained.impact.rules.postgres.alter import (
@@ -70,12 +70,10 @@ from sustained.impact.rules.postgres.catalog import (
 )
 from sustained.impact.rules.postgres.column_types import (
     _alter_column_type,
-    type_change,
 )
-from sustained.impact.rules.postgres.context import context_plan, server_version
+from sustained.impact.rules.postgres.context import context_plan
 from sustained.impact.rules.postgres.locks import (
     ACCESS_EXCLUSIVE,
-    LOCKS,
     ROW_EXCLUSIVE,
     SHARE,
     SHARE_ROW_EXCLUSIVE,
@@ -298,14 +296,5 @@ PROFILE = Profile(
 )
 
 __all__ = [
-    "FIXTURE_SCHEMA",
-    "LOCKS",
     "PROFILE",
-    "blocks",
-    "context_plan",
-    "effects",
-    "lock_rank",
-    "server_version",
-    "timeout_statement",
-    "type_change",
 ]

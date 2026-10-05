@@ -25,7 +25,7 @@ from sustained.impact.context import Relation
 from sustained.impact.recognizer import recognize
 from sustained.impact.report import statement_data
 from sustained.impact.rules.common import name_filter
-from sustained.impact.rules.postgres import type_change
+from sustained.impact.rules.postgres.column_types import type_change
 from sustained.impact.rules.postgres.context import _types, context_plan, literal
 from sustained.introspect.model import (
     IntrospectedColumn,

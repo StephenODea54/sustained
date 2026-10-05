@@ -59,12 +59,8 @@ from __future__ import annotations
 
 from sustained.impact.rules import Facts, Outcome, Profile, common
 from sustained.impact.rules.duckdb.catalog import CONCURRENCY, FIXTURE_SCHEMA, RULES
-from sustained.impact.rules.duckdb.context import context_plan, duckdb_version
+from sustained.impact.rules.duckdb.context import context_plan
 from sustained.impact.rules.duckdb.statements import (
-    ALTERED_TABLE,
-    CATALOG_ENTRY,
-    CHANGED_ROWS,
-    DROPPED_TABLE,
     STATEMENTS,
     blocks,
     lock_rank,
@@ -101,16 +97,5 @@ PROFILE = Profile(
 )
 
 __all__ = [
-    "ALTERED_TABLE",
-    "CATALOG_ENTRY",
-    "CHANGED_ROWS",
-    "DROPPED_TABLE",
-    "FIXTURE_SCHEMA",
     "PROFILE",
-    "blocks",
-    "context_plan",
-    "duckdb_version",
-    "effects",
-    "lock_rank",
-    "timeout_statement",
 ]

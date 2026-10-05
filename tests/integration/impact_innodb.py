@@ -24,7 +24,9 @@ import unittest
 from sustained.dialects import Dialects
 from sustained.exceptions import PreflightBlocked
 from sustained.impact import Evidence, Work, analyze, preflight, read_context
-from sustained.impact.rules import Probe, mysql, profile_for
+from sustained.impact.rules import Probe, profile_for
+from sustained.impact.rules.mysql import context as mysql_context
+from sustained.impact.rules.mysql import locks as mysql_locks
 from sustained.impact.rules.mysql.facts import row_version_limit
 from sustained.impact.rules.mysql.trace import attempts, observe, refused, tables_plan
 from sustained.introspect.runner import run_plan
@@ -127,7 +129,9 @@ class InnodbImpactCase(unittest.TestCase):
     def test_reads_the_server_version_and_settings(self):
         ((text,),) = self.fetch("SELECT VERSION()")
         context = self.context()
-        self.assertEqual((context.profile, context.version), mysql.server_version(text))
+        self.assertEqual(
+            (context.profile, context.version), mysql_context.server_version(text)
+        )
         self.assertEqual(context.profile, self.PROFILE)
         self.assertLessEqual(
             {"version", "settings", "sizes", "fulltext", "schema"}, context.read
@@ -253,7 +257,8 @@ class InnodbImpactCase(unittest.TestCase):
                     [statement], self.DIALECT, self.context()
                 ).statements
                 locks_parent = any(
-                    t.table == "it_impact_parent" and t.lock == mysql.MDL_EXCLUSIVE
+                    t.table == "it_impact_parent"
+                    and t.lock == mysql_locks.MDL_EXCLUSIVE
                     for t in predicted.tables
                 )
                 self.assertEqual(

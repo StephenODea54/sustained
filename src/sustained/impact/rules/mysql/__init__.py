@@ -68,30 +68,15 @@ from sustained.impact.rules.mysql.catalog import (
     MYSQL_DOCS,
     RULE_SETS,
 )
-from sustained.impact.rules.mysql.context import context_plan, server_version
+from sustained.impact.rules.mysql.context import context_plan
 from sustained.impact.rules.mysql.locks import (
-    ALGORITHMS,
-    COPY_EXCLUSIVE,
-    COPY_NONE,
-    COPY_SHARED,
-    INPLACE_EXCLUSIVE,
-    INPLACE_NONE,
-    INPLACE_SHARED,
-    INSTANT,
-    LEVELS,
-    LOCKS,
-    MDL_EXCLUSIVE,
-    NOCOPY_NONE,
-    ROW_LOCKS,
-    Online,
     blocks,
     bounded,
     lock_rank,
-    parse_label,
     queues,
     timeout_statement,
 )
-from sustained.impact.rules.mysql.online import asserted_statements, assertion
+from sustained.impact.rules.mysql.online import asserted_statements
 from sustained.impact.rules.mysql.preflight import preflight_plan
 from sustained.impact.rules.mysql.statements import (
     STATEMENTS,
@@ -142,32 +127,7 @@ MARIADB = _profile("mariadb")
 
 
 __all__ = [
-    "ALGORITHMS",
-    "COPY_EXCLUSIVE",
-    "COPY_NONE",
-    "COPY_SHARED",
-    "FIXTURE_SCHEMA",
-    "INPLACE_EXCLUSIVE",
-    "INPLACE_NONE",
-    "INPLACE_SHARED",
-    "INSTANT",
-    "LEVELS",
-    "LOCKS",
     "MARIADB",
-    "MDL_EXCLUSIVE",
     "MYSQL",
-    "NOCOPY_NONE",
-    "Online",
-    "ROW_LOCKS",
     "asserted_statements",
-    "assertion",
-    "blocks",
-    "bounded",
-    "context_plan",
-    "effects",
-    "lock_rank",
-    "parse_label",
-    "queues",
-    "server_version",
-    "timeout_statement",
 ]

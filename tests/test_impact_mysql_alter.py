@@ -11,7 +11,8 @@ from sustained.impact import (
     Work,
     analyze,
 )
-from sustained.impact.rules import mysql
+from sustained.impact.rules.mysql import locks as mysql_locks
+from sustained.impact.rules.mysql import online as mysql_online
 from sustained.impact.rules.mysql.column_types import (
     length_bytes,
     mariadb_widens_instantly,
@@ -405,16 +406,20 @@ class AlgorithmTestCase(unittest.TestCase):
         self.assertEqual(rules(asserted), ["mysql.lock_timeout"])
 
     def test_the_assertion_form(self):
-        online = mysql.Online("INPLACE", "NONE")
+        online = mysql_locks.Online("INPLACE", "NONE")
         self.assertEqual(
-            mysql.assertion("ALTER TABLE t FORCE;", "alter_table", online),
+            mysql_online.assertion("ALTER TABLE t FORCE;", "alter_table", online),
             "ALTER TABLE t FORCE, ALGORITHM=INPLACE, LOCK=NONE",
         )
         self.assertEqual(
-            mysql.assertion("DROP INDEX `ix` ON `app`.`t`", "drop_index", online, True),
+            mysql_online.assertion(
+                "DROP INDEX `ix` ON `app`.`t`", "drop_index", online, True
+            ),
             "ALTER TABLE `app`.`t` DROP INDEX `ix`, ALGORITHM=INPLACE, LOCK=NONE",
         )
-        self.assertIsNone(mysql.assertion("DROP INDEX ix", "drop_index", online, True))
+        self.assertIsNone(
+            mysql_online.assertion("DROP INDEX ix", "drop_index", online, True)
+        )
 
     def test_a_refused_algorithm(self):
         cases = [

@@ -16,6 +16,7 @@ from sustained.impact.context import FLOORS, assumed
 from sustained.impact.rules import all_rules
 from sustained.impact.rules import postgres as pg
 from sustained.impact.rules import profile_for
+from sustained.impact.rules.postgres import locks as pg_locks
 from sustained.introspect.model import (
     IntrospectedColumn,
     IntrospectedForeignKey,
@@ -528,7 +529,7 @@ class RuleCatalogTestCase(unittest.TestCase):
     def test_lock_order_and_blocks(self):
         self.assertEqual(pg.lock_rank(None), -1)
         self.assertEqual(pg.blocks(None), Blocks.NOTHING)
-        ranks = [pg.lock_rank(lock) for lock in pg.LOCKS]
+        ranks = [pg.lock_rank(lock) for lock in pg_locks.LOCKS]
         self.assertEqual(ranks, sorted(ranks))
         self.assertEqual(pg.blocks("ACCESS SHARE"), Blocks.DDL)
         self.assertEqual(pg.blocks("EXCLUSIVE"), Blocks.WRITES)

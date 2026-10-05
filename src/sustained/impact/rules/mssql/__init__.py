@@ -99,12 +99,10 @@ from __future__ import annotations
 
 from sustained.impact.rules import Facts, Outcome, Profile, Trace, common
 from sustained.impact.rules.mssql.catalog import DOCS, FIXTURE_SCHEMA, RULES
-from sustained.impact.rules.mssql.context import context_plan, server_version
+from sustained.impact.rules.mssql.context import context_plan
 from sustained.impact.rules.mssql.locks import (
-    LOCKS,
     blocks,
     bounded,
-    enterprise,
     lock_rank,
     release,
     timeout_statement,
@@ -145,15 +143,5 @@ PROFILE = Profile(
 )
 
 __all__ = [
-    "FIXTURE_SCHEMA",
-    "LOCKS",
     "PROFILE",
-    "blocks",
-    "context_plan",
-    "effects",
-    "enterprise",
-    "lock_rank",
-    "release",
-    "server_version",
-    "timeout_statement",
 ]

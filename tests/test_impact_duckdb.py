@@ -22,7 +22,8 @@ from sustained.impact import (
 from sustained.impact.context import FLOORS, assumed
 from sustained.impact.model import Intent
 from sustained.impact.rules import duckdb, profile_for
-from sustained.impact.rules.duckdb import context_plan, duckdb_version
+from sustained.impact.rules.duckdb import statements as duckdb_locks
+from sustained.impact.rules.duckdb.context import context_plan, duckdb_version
 from sustained.impact.window import DATABASE
 from sustained.migrations import Migration, Migrator
 from tests.test_impact_context import drive
@@ -66,9 +67,9 @@ def rules(statement):
 class StatementTestCase(unittest.TestCase):
     def test_each_statement_names_its_conflict_and_work(self):
         altered, entry, changed = (
-            duckdb.ALTERED_TABLE,
-            duckdb.CATALOG_ENTRY,
-            duckdb.CHANGED_ROWS,
+            duckdb_locks.ALTERED_TABLE,
+            duckdb_locks.CATALOG_ENTRY,
+            duckdb_locks.CHANGED_ROWS,
         )
         cases = [
             ("ALTER TABLE t ADD COLUMN d integer", altered, Work.ROWS, "add_column"),
@@ -125,7 +126,7 @@ class StatementTestCase(unittest.TestCase):
             ("ALTER TABLE t RENAME TO u", entry, Work.CATALOG, "rename"),
             ("CREATE INDEX ix ON t (c)", None, Work.INDEX_BUILD, "create_index"),
             ("COMMENT ON COLUMN t.c IS 'x'", entry, Work.CATALOG, "comment"),
-            ("DROP TABLE t", duckdb.DROPPED_TABLE, Work.CATALOG, "drop_table"),
+            ("DROP TABLE t", duckdb_locks.DROPPED_TABLE, Work.CATALOG, "drop_table"),
             ("UPDATE t SET c = 1", changed, Work.ROWS, "write_rows"),
             ("DELETE FROM t", changed, Work.ROWS, "write_rows"),
             ("TRUNCATE t", changed, Work.ROWS, "write_rows"),
@@ -247,7 +248,7 @@ class StatementTestCase(unittest.TestCase):
         ]
         dropped = analyze(run, DUCKDB).statements[-1]
         self.assertEqual(dropped.tables[0].table, "t")
-        self.assertEqual(dropped.tables[0].lock, duckdb.CATALOG_ENTRY)
+        self.assertEqual(dropped.tables[0].lock, duckdb_locks.CATALOG_ENTRY)
         generated = MigrationStatement('DROP INDEX "ix"', "001")
         generated.intent = Intent("drop_index", "w")
         (found,) = analyze([generated], DUCKDB).statements
@@ -395,18 +396,18 @@ class RuleCatalogTestCase(unittest.TestCase):
     def test_lock_rank_and_blocks(self):
         self.assertEqual(duckdb.lock_rank(None), -1)
         self.assertLess(
-            duckdb.lock_rank(duckdb.CATALOG_ENTRY),
-            duckdb.lock_rank(duckdb.CHANGED_ROWS),
+            duckdb.lock_rank(duckdb_locks.CATALOG_ENTRY),
+            duckdb.lock_rank(duckdb_locks.CHANGED_ROWS),
         )
         self.assertLess(
-            duckdb.lock_rank(duckdb.CHANGED_ROWS),
-            duckdb.lock_rank(duckdb.ALTERED_TABLE),
+            duckdb.lock_rank(duckdb_locks.CHANGED_ROWS),
+            duckdb.lock_rank(duckdb_locks.ALTERED_TABLE),
         )
         self.assertIs(duckdb.blocks(None), Blocks.NOTHING)
-        self.assertIs(duckdb.blocks(duckdb.CATALOG_ENTRY), Blocks.DDL)
-        self.assertIs(duckdb.blocks(duckdb.ALTERED_TABLE), Blocks.WRITES)
+        self.assertIs(duckdb.blocks(duckdb_locks.CATALOG_ENTRY), Blocks.DDL)
+        self.assertIs(duckdb.blocks(duckdb_locks.ALTERED_TABLE), Blocks.WRITES)
         self.assertEqual(duckdb.timeout_statement(True), "")
-        self.assertFalse(duckdb.PROFILE.waits_in_queue(duckdb.ALTERED_TABLE))
+        self.assertFalse(duckdb.PROFILE.waits_in_queue(duckdb_locks.ALTERED_TABLE))
         self.assertIsNone(duckdb.PROFILE.trace)
 
 
