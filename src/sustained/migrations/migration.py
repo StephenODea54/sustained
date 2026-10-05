@@ -379,19 +379,6 @@ def migration_sql(
     return _render_elements(elements, compiler)
 
 
-def _run_step(
-    connection: Connection, step: MigrationStep, compiler: Optional["Compiler"] = None
-) -> None:
-    elements = _step_elements(step)
-    if elements is None:
-        assert callable(step)
-        step(connection)
-        return
-    with cursor_scope(connection) as cursor:
-        for statement in _render_elements(elements, compiler):
-            cursor.execute(statement)
-
-
 def _tag_migration(error: BaseException, migration_id: str) -> None:
     """
     Records which migration raised on the exception itself, so a caller

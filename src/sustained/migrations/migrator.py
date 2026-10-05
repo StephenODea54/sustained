@@ -51,7 +51,6 @@ from sustained.migrations.core.requests import (
     RefuseRehearsal,
     Request,
     Rollback,
-    RunStep,
     Session,
     T,
     TakeLock,
@@ -62,7 +61,6 @@ from sustained.migrations.migration import (
     Callbacks,
     Migration,
     PreflightCheck,
-    _run_step,
 )
 from sustained.migrations.planning import DiffOptions
 from sustained.migrations.rehearsal import REHEARSAL_PASSED, Rehearsal
@@ -186,9 +184,6 @@ class Migrator(MigratorBase):
             with closing(connection.cursor()) as cursor:
                 cursor.execute(request.statement)
                 return _lock_row(cursor)
-        if isinstance(request, RunStep):
-            _run_step(connection, request.step, self._compiler)
-            return None
         if isinstance(request, Commit):
             _commit_if_supported(connection)
             return None

@@ -50,7 +50,6 @@ from sustained.migrations.core.requests import (
     ReadCatalog,
     ReadContext,
     RefuseOpenTransaction,
-    RunStep,
     T,
     Transaction,
     run_in,
@@ -60,6 +59,8 @@ from sustained.migrations.migration import (
     MigrationStep,
     PreflightCheck,
     _checked_steps,
+    _render_elements,
+    _step_elements,
     _stored_steps,
     _tag_applied,
     _tag_migration,
@@ -469,6 +470,21 @@ def apply(
         raise
 
 
+def run_step(m: MigratorBase, step: MigrationStep) -> Core[None]:
+    """
+    One migration step: each of its rendered statements on the open
+    transaction's cursor, or the callable, which the blocking driver
+    hands the connection and the async driver the adapter.
+    """
+    elements = _step_elements(step)
+    if elements is None:
+        assert callable(step)
+        yield Fire(step)
+        return
+    for sql in _render_elements(elements, m._compiler):
+        yield Execute(sql, pinned=True)
+
+
 def _apply_body(
     m: MigratorBase, migration: Migration, seq: int, update: bool, generated: bool
 ) -> Core[None]:
@@ -477,7 +493,7 @@ def _apply_body(
     if m._tracer is not None:
         yield from m._tracer.run_step(migration)
     else:
-        yield RunStep(migration.up)
+        yield from run_step(m, migration.up)
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     timestamp = datetime.now(timezone.utc).isoformat()
     checksum = migration_checksum(migration)
@@ -516,7 +532,7 @@ def revert_body(
     One migration's down step and the removal of its tracking row, inside
     the migration's scope. `pinned` is Execute's flag for the removal.
     """
-    yield RunStep(step)
+    yield from run_step(m, step)
     yield Execute(
         f"DELETE FROM {m._table_sql()} WHERE "
         f"{m._compiler.quote_identifier('id')} = {m._compiler.placeholder()}",

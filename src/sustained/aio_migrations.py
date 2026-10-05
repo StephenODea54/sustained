@@ -69,7 +69,6 @@ from sustained.migrations.core.requests import (
     RefuseRehearsal,
     Request,
     Rollback,
-    RunStep,
     Session,
     T,
     TakeLock,
@@ -173,9 +172,6 @@ class AsyncMigrator(MigratorBase):
         if isinstance(request, TakeLock):
             _, rows = await adapter.fetch(request.statement, ())
             return rows[0] if rows else None
-        if isinstance(request, RunStep):
-            await self._run_step(request.step)
-            return None
         if isinstance(request, Commit):
             await adapter.commit()
             return None
@@ -236,17 +232,6 @@ class AsyncMigrator(MigratorBase):
         return await async_read_context(
             self._adapter, self._dialect, request.exact_counts, request.statements
         )
-
-    async def _run_step(self, step: MigrationStep) -> None:
-        elements = _step_elements(step)
-        if elements is None:
-            assert callable(step)
-            result = step(self._adapter)
-            if inspect.isawaitable(result):
-                await result
-            return
-        for statement in _render_elements(elements, self._compiler):
-            await self._adapter.execute(statement, ())
 
     async def _execute(self, sql: str, params: Tuple[SqlValue, ...]) -> None:
         """Runs one parameterized statement, adapted for the dialect."""

@@ -18,6 +18,7 @@ try:
 except ImportError:
     HAS_DUCKDB = False
 
+import sustained.migrations.core.runs as runs_module
 import sustained.migrations.migrator as migrator_module
 import sustained.migrations.rehearsal as rehearsal_module
 from sustained import Model
@@ -547,12 +548,13 @@ class TestGeneratedRows(MigrationTestCase):
     def test_a_failed_generated_migration_is_not_kept(self):
         migrator = Migrator(self.conn, [])
         models = self.models()
-        real_run_step = migrator_module._run_step
+        real_run_step = runs_module.run_step
 
-        def refuse(connection, step, compiler):
+        def refuse(m, step):
             raise RuntimeError("no")
+            yield
 
-        with mock.patch.object(migrator_module, "_run_step", refuse):
+        with mock.patch.object(runs_module, "run_step", refuse):
             with self.assertRaises(RuntimeError):
                 migrator.up(models=models)
         # The failed migration is gone from the list, so the next run
@@ -561,7 +563,7 @@ class TestGeneratedRows(MigrationTestCase):
         applied = migrator.up(models=models)
         self.assertEqual(len(applied), 1)
         self.assertIn("gen_users", table_names(self.conn))
-        self.assertIs(migrator_module._run_step, real_run_step)
+        self.assertIs(runs_module.run_step, real_run_step)
 
 
 class TestRehearsalKey(unittest.TestCase):

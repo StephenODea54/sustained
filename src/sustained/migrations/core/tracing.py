@@ -26,9 +26,9 @@ from sustained.migrations.core.base import MigratorBase
 from sustained.migrations.core.requests import (
     Core,
     Execute,
+    Fire,
     ReadCatalog,
     ReadContext,
-    RunStep,
 )
 from sustained.migrations.migration import (
     Migration,
@@ -110,7 +110,8 @@ class Tracer:
 
         elements = _step_elements(migration.up)
         if elements is None:
-            yield RunStep(migration.up)
+            assert callable(migration.up)
+            yield Fire(migration.up)
             return
         for index, sql in enumerate(_render_elements(elements, self.m._compiler)):
             statement = MigrationStatement(sql, migration.id, migration.transactional)

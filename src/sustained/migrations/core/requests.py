@@ -12,16 +12,16 @@ and the exception that reaches the caller is still the driver's.
 
 The requests fall into four groups.
 
-Statements: Execute, ExecuteMany, Fetch, TakeLock, RunStep, Commit and
+Statements: Execute, ExecuteMany, Fetch, TakeLock, Commit and
 Rollback. ReadSchema and DiffSource read the live schema, the one for a
 rehearsal's before-and-after comparison and the other for a diff against
 the models. ReadContext reads the server facts the impact analysis uses,
 and ReadCatalog runs any other read plan, such as the lock reads of a
 traced rehearsal.
 
-Callbacks: Fire calls one of the migrator's callbacks with the connection
-or adapter in front of its arguments, and awaits what it returns on the
-async driver.
+Callbacks: Fire calls one of the migrator's callbacks, or a callable
+migration step, with the connection or adapter in front of its
+arguments, and awaits what it returns on the async driver.
 
 Guards: RefuseOpenTransaction and RefuseRehearsal raise when the caller
 holds state only the driver can see, such as an open transaction() block.
@@ -102,16 +102,6 @@ class TakeLock(NamedTuple):
     """
 
     statement: str
-
-
-class RunStep(NamedTuple):
-    """
-    One migration step: its statements, or the callable, which the
-    blocking driver hands the connection and the async driver the adapter,
-    awaiting what it returns.
-    """
-
-    step: MigrationStep
 
 
 class Commit(NamedTuple):
@@ -257,7 +247,6 @@ Request = Union[
     ExecuteMany,
     Fetch,
     TakeLock,
-    RunStep,
     Commit,
     Rollback,
     Fire,
