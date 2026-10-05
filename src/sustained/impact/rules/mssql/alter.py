@@ -221,9 +221,7 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
             else "the default was not read, so it counts as giving each row its "
             "own value"
         )
-        confidence = (
-            Confidence.KNOWN if options.get("default_certain") else Confidence.LIKELY
-        )
+        _, confidence = common.volatile_default(options)
         return Outcome.of(
             _effect(
                 ADD_COLUMN_REWRITE,
