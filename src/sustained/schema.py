@@ -614,9 +614,10 @@ def enum_check_constraint_sql(
     Renders the named CHECK constraint that holds an enum column to its
     values, on dialects without an enum type.
     """
-    constraint = compiler.quote_ddl_identifier(enum_check_name(table_name, column_name))
-    expression = enum_check_expression(compiler, column_name, col)
-    return f"CONSTRAINT {constraint} CHECK ({expression})"
+    return compiler.check_clause(
+        enum_check_name(table_name, column_name),
+        enum_check_expression(compiler, column_name, col),
+    )
 
 
 def enum_check_name(table: str, column: str) -> str:
@@ -636,27 +637,31 @@ def enum_check_expression(compiler: "Compiler", column: str, col: ColumnDef) -> 
     return f"{column_sql} IN ({values_sql})"
 
 
+def stated_fk_action(action: Optional[str]) -> Optional[str]:
+    """
+    A referential action a catalog reported, in upper case, or None for
+    NO ACTION, the default that a clause leaves unstated.
+    """
+    if action is None or action.upper() == "NO ACTION":
+        return None
+    return action.upper()
+
+
 def check_constraint_sql(compiler: "Compiler", check: Check) -> str:
     """Renders a named CHECK constraint for a table body or ADD."""
-    constraint = compiler.quote_ddl_identifier(check.name)
-    return f"CONSTRAINT {constraint} CHECK ({check.expression})"
+    return compiler.check_clause(check.name, check.expression)
 
 
 def foreign_key_constraint_sql(compiler: "Compiler", fk: ForeignKey) -> str:
     """Renders a named FOREIGN KEY constraint for a table body or ADD."""
-    constraint = compiler.quote_ddl_identifier(fk.name)
-    columns_sql = ", ".join(compiler.quote_ddl_identifier(c) for c in fk.columns)
-    target_table = compiler.quote_fully_qualified_ddl_identifier(fk.target_table)
-    target_sql = ", ".join(compiler.quote_ddl_identifier(c) for c in fk.target_columns)
-    sql = (
-        f"CONSTRAINT {constraint} FOREIGN KEY ({columns_sql}) "
-        f"REFERENCES {target_table} ({target_sql})"
+    return compiler.foreign_key_clause(
+        fk.name,
+        fk.columns,
+        compiler.quote_fully_qualified_ddl_identifier(fk.target_table),
+        fk.target_columns,
+        fk.on_delete,
+        fk.on_update,
     )
-    if fk.on_delete is not None:
-        sql += f" ON DELETE {fk.on_delete}"
-    if fk.on_update is not None:
-        sql += f" ON UPDATE {fk.on_update}"
-    return sql
 
 
 def table_constraint_sql(compiler: "Compiler", constraint: TableConstraint) -> str:

@@ -21,6 +21,7 @@ from sustained.schema import (
     build_create_table_sql,
     create_index_sql,
     enum_check_name,
+    stated_fk_action,
 )
 from sustained.types import Expression, SqlValue
 
@@ -314,9 +315,7 @@ def _carried_constraint_sql(
     for name, expression in actual_table.checks.items():
         if name in declared_names or name in implied_checks:
             continue
-        fragments.append(
-            f"CONSTRAINT {compiler.quote_ddl_identifier(name)} CHECK ({expression})"
-        )
+        fragments.append(compiler.check_clause(name, expression))
     for name, fk in actual_table.foreign_keys.items():
         if (
             name in declared_names
@@ -324,22 +323,16 @@ def _carried_constraint_sql(
             or fk.target_table == "?"
         ):
             continue
-        columns_sql = ", ".join(compiler.quote_ddl_identifier(c) for c in fk.columns)
-        target_sql = compiler.quote_fully_qualified_ddl_identifier(fk.target_table)
-        sql = (
-            f"CONSTRAINT {compiler.quote_ddl_identifier(name)} "
-            f"FOREIGN KEY ({columns_sql}) REFERENCES {target_sql}"
-        )
-        if fk.target_columns:
-            targets_sql = ", ".join(
-                compiler.quote_ddl_identifier(c) for c in fk.target_columns
+        fragments.append(
+            compiler.foreign_key_clause(
+                name,
+                fk.columns,
+                compiler.quote_fully_qualified_ddl_identifier(fk.target_table),
+                fk.target_columns,
+                stated_fk_action(fk.on_delete),
+                stated_fk_action(fk.on_update),
             )
-            sql += f" ({targets_sql})"
-        if fk.on_delete is not None and fk.on_delete.upper() != "NO ACTION":
-            sql += f" ON DELETE {fk.on_delete.upper()}"
-        if fk.on_update is not None and fk.on_update.upper() != "NO ACTION":
-            sql += f" ON UPDATE {fk.on_update.upper()}"
-        fragments.append(sql)
+        )
     return fragments
 
 

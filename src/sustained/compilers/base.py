@@ -837,9 +837,8 @@ class Compiler:
         """
         return self._inline_references
 
-    def compile_add_foreign_key(
+    def foreign_key_clause(
         self,
-        table_sql: str,
         constraint: str,
         column: "Union[str, Sequence[str]]",
         ref_table_sql: str,
@@ -848,17 +847,16 @@ class Compiler:
         on_update: Optional[str] = None,
     ) -> str:
         """
-        Renders a named foreign key added to an existing table. `column`
-        and `ref_column` take one name or a matching sequence of names
-        for a composite key. Actions render as given; validate them
+        Renders a named FOREIGN KEY clause for a table body or an ADD.
+        `column` and `ref_column` take one name or a matching sequence of
+        names for a composite key. Actions render as given; validate them
         before calling.
         """
         columns = (column,) if isinstance(column, str) else tuple(column)
         targets = (ref_column,) if isinstance(ref_column, str) else tuple(ref_column)
         columns_sql = ", ".join(self.quote_ddl_identifier(c) for c in columns)
         sql = (
-            f"ALTER TABLE {table_sql} ADD CONSTRAINT "
-            f"{self.quote_ddl_identifier(constraint)} FOREIGN KEY "
+            f"CONSTRAINT {self.quote_ddl_identifier(constraint)} FOREIGN KEY "
             f"({columns_sql}) REFERENCES {ref_table_sql}"
         )
         if targets:
@@ -872,6 +870,41 @@ class Compiler:
             sql += f" ON UPDATE {on_update}"
         return sql
 
+    def check_clause(self, constraint: str, expression: str) -> str:
+        """
+        Renders a named CHECK clause for a table body or an ADD. The
+        expression is SQL and renders as written.
+        """
+        return (
+            f"CONSTRAINT {self.quote_ddl_identifier(constraint)} CHECK ({expression})"
+        )
+
+    def unique_clause(self, constraint: str, columns: Sequence[str]) -> str:
+        """Renders a named UNIQUE clause for a table body or an ADD."""
+        columns_sql = ", ".join(self.quote_ddl_identifier(c) for c in columns)
+        return (
+            f"CONSTRAINT {self.quote_ddl_identifier(constraint)} UNIQUE ({columns_sql})"
+        )
+
+    def compile_add_foreign_key(
+        self,
+        table_sql: str,
+        constraint: str,
+        column: "Union[str, Sequence[str]]",
+        ref_table_sql: str,
+        ref_column: "Union[str, Sequence[str]]",
+        on_delete: Optional[str] = None,
+        on_update: Optional[str] = None,
+    ) -> str:
+        """
+        Renders a named foreign key added to an existing table, with the
+        arguments of foreign_key_clause().
+        """
+        clause = self.foreign_key_clause(
+            constraint, column, ref_table_sql, ref_column, on_delete, on_update
+        )
+        return f"ALTER TABLE {table_sql} ADD {clause}"
+
     def compile_add_check(
         self, table_sql: str, constraint: str, expression: str
     ) -> str:
@@ -880,19 +913,14 @@ class Compiler:
         expression is SQL and renders as written.
         """
         return (
-            f"ALTER TABLE {table_sql} ADD CONSTRAINT "
-            f"{self.quote_ddl_identifier(constraint)} CHECK ({expression})"
+            f"ALTER TABLE {table_sql} ADD {self.check_clause(constraint, expression)}"
         )
 
     def compile_add_unique(
         self, table_sql: str, constraint: str, columns: "list[str]"
     ) -> str:
         """Renders a named UNIQUE constraint added to an existing table."""
-        columns_sql = ", ".join(self.quote_ddl_identifier(c) for c in columns)
-        return (
-            f"ALTER TABLE {table_sql} ADD CONSTRAINT "
-            f"{self.quote_ddl_identifier(constraint)} UNIQUE ({columns_sql})"
-        )
+        return f"ALTER TABLE {table_sql} ADD {self.unique_clause(constraint, columns)}"
 
     def equivalent_fk_action(self, action: str) -> str:
         """

@@ -38,6 +38,7 @@ from sustained.schema import (
     dotted_name,
     enum_check_expression,
     enum_check_name,
+    stated_fk_action,
 )
 from sustained.type_changes import removed_enum_values
 from sustained.types import Connection
@@ -527,8 +528,6 @@ def _introspected_fk_sql(
     """
     if fk.target_table == "?":
         return None
-    on_delete = None if fk.on_delete is None else fk.on_delete.upper()
-    on_update = None if fk.on_update is None else fk.on_update.upper()
     source = snapshot.get(table.lower())
     target = snapshot.get(fk.target_table)
     columns = list(fk.columns)
@@ -548,8 +547,8 @@ def _introspected_fk_sql(
         columns,
         ".".join(compiler.quote_ddl_identifier(part) for part in target_parts),
         target_columns,
-        None if on_delete == "NO ACTION" else on_delete,
-        None if on_update == "NO ACTION" else on_update,
+        stated_fk_action(fk.on_delete),
+        stated_fk_action(fk.on_update),
     )
 
 
