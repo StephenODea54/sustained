@@ -15,7 +15,7 @@ from sustained.impact.model import (
     Severity,
     Work,
 )
-from sustained.impact.rules import Effect, Facts, Outcome, Rule, common
+from sustained.impact.rules import Effect, Facts, LockOrder, Outcome, Rule, common
 from sustained.impact.rules.duckdb.catalog import (
     ADD_COLUMN,
     ADD_COLUMN_VOLATILE,
@@ -43,41 +43,28 @@ CATALOG_ENTRY = "catalog entry"
 CHANGED_ROWS = "changed rows"
 DROPPED_TABLE = "dropped table"
 
-_BLOCKS: Dict[str, Blocks] = {
-    CATALOG_ENTRY: Blocks.DDL,
-    CHANGED_ROWS: Blocks.WRITES,
-    ALTERED_TABLE: Blocks.WRITES,
-    DROPPED_TABLE: Blocks.WRITES,
-}
-_RANKS: Dict[str, int] = {
-    CATALOG_ENTRY: 0,
-    CHANGED_ROWS: 1,
-    ALTERED_TABLE: 2,
-    DROPPED_TABLE: 3,
-}
+# Weakest first. Other transactions abort with a conflict error instead
+# of waiting: every write and schema change after an ALTER TABLE that
+# changes the table's storage (`altered table`), an UPDATE or DELETE of
+# the same rows after a row change (`changed rows`), and a schema change
+# after any other change to the table's catalog entry (`catalog entry`).
+# After a DROP TABLE (`dropped table`) a schema change on the table
+# aborts, and a transaction that wrote to the table before the DROP
+# fails to commit.
+ORDER = LockOrder(
+    (
+        (CATALOG_ENTRY, Blocks.DDL),
+        (CHANGED_ROWS, Blocks.WRITES),
+        (ALTERED_TABLE, Blocks.WRITES),
+        (DROPPED_TABLE, Blocks.WRITES),
+    )
+)
+blocks = ORDER.blocks
+lock_rank = ORDER.rank
 
 # The column constraints DuckDB refuses on ADD COLUMN, as the recognizer
 # names them.
 _REFUSED_ON_ADD = ("not_null", "check", "references", "unique", "primary_key")
-
-
-def blocks(lock: Optional[str]) -> Blocks:
-    """
-    What a conflict stops other transactions doing on the table. They
-    abort with a conflict error instead of waiting: every write and
-    schema change after an ALTER TABLE that changes the table's storage
-    (`altered table`), an UPDATE or DELETE of the same rows after a row
-    change (`changed rows`), and a schema change after any other change
-    to the table's catalog entry (`catalog entry`). After a DROP TABLE
-    (`dropped table`) a schema change on the table aborts, and a
-    transaction that wrote to the table before the DROP fails to commit.
-    """
-    return Blocks.NOTHING if lock is None else _BLOCKS[lock]
-
-
-def lock_rank(lock: Optional[str]) -> int:
-    """A conflict's strength, and -1 for none."""
-    return -1 if lock is None else _RANKS[lock]
 
 
 def timeout_statement(transactional: bool) -> str:

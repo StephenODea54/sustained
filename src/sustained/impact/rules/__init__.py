@@ -199,6 +199,44 @@ class Trace(NamedTuple):
     refused: Callable[[BaseException], Optional[str]] = _no_refusal
 
 
+class LockOrder(NamedTuple):
+    """
+    An engine's lock names, weakest first, each with what it blocks.
+    `blocks()` and `rank()` read it, and give `Blocks.NOTHING` and -1 for
+    no lock. A name the order does not list raises KeyError, or, when
+    `unknown` is set, blocks that much and ranks -1.
+    """
+
+    entries: Tuple[Tuple[str, Blocks], ...]
+    unknown: Optional[Blocks] = None
+
+    @property
+    def names(self) -> Tuple[str, ...]:
+        """The lock names, weakest first."""
+        return tuple(name for name, _ in self.entries)
+
+    def blocks(self, lock: Optional[str]) -> Blocks:
+        """What the lock blocks."""
+        if lock is None:
+            return Blocks.NOTHING
+        for name, blocked in self.entries:
+            if name == lock:
+                return blocked
+        if self.unknown is None:
+            raise KeyError(lock)
+        return self.unknown
+
+    def rank(self, lock: Optional[str]) -> int:
+        """The lock's place in the order, weakest first."""
+        if lock is None:
+            return -1
+        if lock in self.names:
+            return self.names.index(lock)
+        if self.unknown is None:
+            raise KeyError(lock)
+        return -1
+
+
 class Profile(NamedTuple):
     """
     One engine's rules. `blocks()` maps the engine's lock name to what

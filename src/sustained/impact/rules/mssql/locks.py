@@ -10,6 +10,7 @@ from typing import Optional, Tuple
 
 from sustained.impact.context import EngineContext, version_text
 from sustained.impact.model import Blocks
+from sustained.impact.rules import LockOrder
 
 SCH_S = "Sch-S"
 IS = "IS"
@@ -19,8 +20,27 @@ SIX = "SIX"
 X = "X"
 SCH_M = "Sch-M"
 
-# Weakest first, by the conflicts in the lock compatibility matrix.
-LOCKS = (SCH_S, IS, IX, S, SIX, X, SCH_M)
+# Weakest first, by the conflicts in the lock compatibility matrix, with
+# what each blocks under locking READ COMMITTED, the worst case: Sch-S
+# and the intent locks only block other DDL, S and SIX block writes, and
+# X and Sch-M block reads too. A handler lowers X to writes when the
+# database reads under row versioning. A mode the rules do not name,
+# such as one a trace reads, blocks reads and writes and ranks -1.
+ORDER = LockOrder(
+    (
+        (SCH_S, Blocks.DDL),
+        (IS, Blocks.DDL),
+        (IX, Blocks.DDL),
+        (S, Blocks.WRITES),
+        (SIX, Blocks.WRITES),
+        (X, Blocks.READS_AND_WRITES),
+        (SCH_M, Blocks.READS_AND_WRITES),
+    ),
+    unknown=Blocks.READS_AND_WRITES,
+)
+LOCKS = ORDER.names
+blocks = ORDER.blocks
+lock_rank = ORDER.rank
 
 # SERVERPROPERTY('EngineEdition') values whose engine has online index
 # operations and adds a NOT NULL column with a runtime constant default
@@ -38,29 +58,6 @@ _RELEASES = {
     16: "2022",
     17: "2025",
 }
-
-
-def blocks(lock: Optional[str]) -> Blocks:
-    """
-    What a table lock blocks under locking READ COMMITTED, the worst
-    case: Sch-S and the intent locks only block other DDL, S and SIX
-    block writes, and X and Sch-M block reads too. A handler lowers X
-    to writes when the database reads under row versioning.
-    """
-    if lock is None:
-        return Blocks.NOTHING
-    if lock in (SCH_S, IS, IX):
-        return Blocks.DDL
-    if lock in (S, SIX):
-        return Blocks.WRITES
-    return Blocks.READS_AND_WRITES
-
-
-def lock_rank(lock: Optional[str]) -> int:
-    """A lock's strength, weakest first, and -1 for no lock."""
-    if lock is None or lock not in LOCKS:
-        return -1
-    return LOCKS.index(lock)
 
 
 def timeout_statement(transactional: bool) -> str:
