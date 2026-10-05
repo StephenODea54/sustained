@@ -1,5 +1,7 @@
 from typing import TYPE_CHECKING, Optional
 
+from sustained.exceptions import DialectError
+
 from .base import Compiler
 
 if TYPE_CHECKING:
@@ -71,8 +73,6 @@ class DuckDbCompiler(Compiler):
         ]
 
     def compile_identity(self) -> str:
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             "DuckDB has no identity columns. Use a sequence with a DEFAULT "
             "expression instead."
@@ -90,8 +90,6 @@ class DuckDbCompiler(Compiler):
         return None
 
     def compile_add_enum_value(self, name: str, value: str) -> str:
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             "DuckDB cannot add a value to an enum type in place. Create a "
             "new type, cast the column with ALTER COLUMN ... SET DATA TYPE, "

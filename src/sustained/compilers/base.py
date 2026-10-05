@@ -14,6 +14,7 @@ from typing import (
     cast,
 )
 
+from sustained.exceptions import DialectError
 from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
@@ -445,8 +446,6 @@ class Compiler:
         """
         if self._distinct_on:
             return f"DISTINCT ON ({', '.join(columns_sql)})"
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"DISTINCT ON is not supported by the '{self._dialect.name}' dialect. "
             "Use a window function with a row filter instead."
@@ -463,8 +462,6 @@ class Compiler:
             elif nowait:
                 clause += " NOWAIT"
             return clause
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"FOR UPDATE is not supported by the '{self._dialect.name}' dialect."
         )
@@ -721,8 +718,6 @@ class Compiler:
         if self.enum_strategy() == "native":
             values_sql = ", ".join(self.format_value(v) for v in values)
             return f"CREATE TYPE {self.quote_identifier(name)} AS ENUM ({values_sql})"
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"The '{self._dialect.name}' dialect has no named enum types. "
             "Enum columns render per the dialect's enum strategy instead."
@@ -735,8 +730,6 @@ class Compiler:
         if self.enum_strategy() == "native":
             exists_sql = "IF EXISTS " if if_exists else ""
             return f"DROP TYPE {exists_sql}{self.quote_identifier(name)}"
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"The '{self._dialect.name}' dialect has no named enum types " "to drop."
         )
@@ -746,8 +739,6 @@ class Compiler:
         Renders the statement that appends one value to a named enum
         type, on dialects that can.
         """
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"The '{self._dialect.name}' dialect cannot add a value to an "
             "enum type in place."
@@ -794,8 +785,6 @@ class Compiler:
             column_sql = self.quote_identifier(column_name)
             value = "NULL" if comment is None else self.format_value(comment)
             return [f"COMMENT ON COLUMN {table_sql}.{column_sql} IS {value}"]
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"The '{self._dialect.name}' dialect stores no column comments. "
             "Keep the description on the model or in the migration file."
@@ -945,7 +934,6 @@ class Compiler:
 
     def compile_index_column(self, column: "Union[str, IndexColumn]") -> str:
         """Renders one key part of a CREATE INDEX column list."""
-        from sustained.exceptions import DialectError
         from sustained.schema import IndexColumn
 
         part = column if isinstance(column, IndexColumn) else IndexColumn(column)
@@ -979,8 +967,6 @@ class Compiler:
         IndexColumn parts, and `where` is the predicate of a partial
         index as SQL text.
         """
-        from sustained.exceptions import DialectError
-
         unique_sql = "UNIQUE " if unique else ""
         name_sql = self.quote_ddl_identifier(index_name)
         columns_sql = ", ".join(self.compile_index_column(c) for c in columns)
@@ -1315,8 +1301,6 @@ class Compiler:
         """
         if options is None:
             return ""
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"The '{self._dialect.name}' dialect does not support table "
             "options (partitioning, location, or table properties)."
@@ -1344,8 +1328,6 @@ class Compiler:
             if using:
                 statement += f" USING {using}"
             return [statement]
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"The '{self._dialect.name}' dialect cannot alter a column type "
             "in place."
@@ -1367,8 +1349,6 @@ class Compiler:
             column_sql = self.quote_identifier(column_name)
             action = "DROP NOT NULL" if column.nullable else "SET NOT NULL"
             return [f"ALTER TABLE {table_sql} ALTER COLUMN {column_sql} {action}"]
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"The '{self._dialect.name}' dialect cannot alter column "
             "nullability in place."
@@ -1407,8 +1387,6 @@ class Compiler:
         return f"{keyword} {table_sql} AS {select_sql}"
 
     def compile_top(self, value: int) -> str:
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"TOP is not supported by the '{self._dialect.name}' dialect. Use limit() instead."
         )

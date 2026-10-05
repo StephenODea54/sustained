@@ -1,5 +1,7 @@
 from typing import TYPE_CHECKING, Optional, Sequence, Union
 
+from sustained.exceptions import DialectError
+
 from .base import Compiler
 
 if TYPE_CHECKING:
@@ -40,8 +42,6 @@ class PrestoCompiler(Compiler):
 
     def validate_column_def(self, column: "ColumnDef") -> None:
         if column.type_name == "ENUM":
-            from sustained.exceptions import DialectError
-
             raise DialectError(
                 "Presto has no enum types and cannot enforce a value "
                 "list. Use String() and validate values in the "
@@ -57,8 +57,6 @@ class PrestoCompiler(Compiler):
     def compile_add_check(
         self, table_sql: str, constraint: str, expression: str
     ) -> str:
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"{self.display_name()} tables have no CHECK "
             "constraints. Validate rows in the application."
@@ -74,8 +72,6 @@ class PrestoCompiler(Compiler):
         on_delete: Optional[str] = None,
         on_update: Optional[str] = None,
     ) -> str:
-        from sustained.exceptions import DialectError
-
         raise DialectError(
             f"{self.display_name()} tables have no foreign "
             "keys. Enforce the relationship in the application."
@@ -90,18 +86,12 @@ class PrestoCompiler(Compiler):
         action: str,
         update_columns: "list[str]",
     ) -> str:
-        from sustained.exceptions import DialectError
-
         raise DialectError(f"{self.display_name()} does not support upserts.")
 
     def compile_identity(self) -> str:
-        from sustained.exceptions import DialectError
-
         raise DialectError(f"{self.display_name()} has no identity columns.")
 
     def compile_returning(self, columns_sql: str) -> str:
-        from sustained.exceptions import DialectError
-
         raise DialectError(f"{self.display_name()} does not support RETURNING clauses.")
 
     def compile_limit_offset(
