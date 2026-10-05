@@ -28,7 +28,17 @@ Each blocker and transaction is one line; the first is wrapped here.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Mapping, Optional, Sequence, Union
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Union,
+    cast,
+)
 
 from sustained.impact.context import version_text
 from sustained.impact.model import (
@@ -40,6 +50,7 @@ from sustained.impact.model import (
     Severity,
     StatementImpact,
     TableImpact,
+    _Ranked,
 )
 from sustained.impact.rules import release, title
 from sustained.impact.window import DATABASE
@@ -61,38 +72,42 @@ def statement_data(impact: StatementImpact) -> Dict[str, JsonValue]:
         "severity": str(severity) if severity is not None else None,
         "confidence": str(impact.confidence),
         "evidence": str(impact.evidence),
-        "tables": [_table_data(t) for t in impact.tables],
+        "tables": [_record(t) for t in impact.tables],
         "findings": [finding_data(f) for f in impact.findings],
         "partitions_unread": impact.partitions_unread,
-        "unnamed_locks": [
-            {"lock": u.lock, "blocks": str(u.blocks), "work": str(u.work)}
-            for u in impact.unnamed_locks
-        ],
+        "unnamed_locks": [_record(u) for u in impact.unnamed_locks],
     }
 
 
-def _table_data(table: TableImpact) -> Dict[str, JsonValue]:
-    return {
-        "table": table.table,
-        "lock": table.lock,
-        "blocks": str(table.blocks),
-        "work": str(table.work),
-        "hold": str(table.hold),
-        "rows": table.rows,
-        "bytes": table.bytes,
-        "rule": table.rule,
-    }
+class _Record(Protocol):
+    """A NamedTuple: what `_record()` reads."""
+
+    def _asdict(self) -> Dict[str, object]: ...
+
+
+def _record(record: _Record) -> Dict[str, JsonValue]:
+    """
+    A record as plain data: one key per field, in field order. A rank
+    such as `Blocks` becomes its name, a tuple becomes a list, and a
+    record inside becomes a dict of its own.
+    """
+    return {key: _plain(value) for key, value in record._asdict().items()}
+
+
+def _plain(value: object) -> JsonValue:
+    if isinstance(value, _Ranked):
+        return str(value)
+    if isinstance(value, tuple) and hasattr(value, "_asdict"):
+        return _record(cast(_Record, value))
+    if isinstance(value, tuple):
+        return [_plain(item) for item in value]
+    assert value is None or isinstance(value, (str, int, float))
+    return value
 
 
 def finding_data(finding: Finding) -> Dict[str, JsonValue]:
     """One finding as plain data."""
-    return {
-        "rule": finding.rule,
-        "severity": str(finding.severity),
-        "message": finding.message,
-        "remedy": list(finding.remedy),
-        "source": finding.source,
-    }
+    return _record(finding)
 
 
 def report_data(report: ImpactReport) -> Dict[str, JsonValue]:
@@ -118,30 +133,8 @@ def preflight_data(preflight: "Preflight") -> Dict[str, JsonValue]:
         "read": sorted(preflight.read),
         "needs": sorted(preflight.needs),
         "unread": list(preflight.unread),
-        "blockers": [
-            {
-                "statement": blocker.statement,
-                "table": blocker.table,
-                "lock": blocker.lock,
-                "held": blocker.held,
-                "granted": blocker.granted,
-                "session": _session_data(blocker.session),
-            }
-            for blocker in preflight.blockers
-        ],
-        "transactions": [_session_data(s) for s in preflight.transactions],
-    }
-
-
-def _session_data(session: "LiveSession") -> Dict[str, JsonValue]:
-    return {
-        "id": session.id,
-        "label": session.label,
-        "user": session.user,
-        "application": session.application,
-        "state": session.state,
-        "transaction_seconds": session.transaction_seconds,
-        "query": session.query,
+        "blockers": [_record(blocker) for blocker in preflight.blockers],
+        "transactions": [_record(s) for s in preflight.transactions],
     }
 
 
@@ -153,25 +146,8 @@ def _migration_data(migration: MigrationImpact) -> Dict[str, JsonValue]:
         "statements": [
             {"sql": s.statement, **statement_data(s)} for s in migration.statements
         ],
-        "locks": [
-            {
-                "table": lock.table,
-                "lock": lock.lock,
-                "blocks": str(lock.blocks),
-                "statement": lock.statement,
-            }
-            for lock in migration.locks
-        ],
-        "windows": [
-            {
-                "table": window.table,
-                "blocks": str(window.blocks),
-                "taken_by": window.taken_by,
-                "heaviest": str(window.heaviest),
-                "during": window.during,
-            }
-            for window in migration.windows
-        ],
+        "locks": [_record(lock) for lock in migration.locks],
+        "windows": [_record(window) for window in migration.windows],
         "findings": [finding_data(f) for f in migration.findings],
     }
 
