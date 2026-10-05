@@ -39,15 +39,7 @@ class _FunctionRegistry:
 
     def _register_default_functions(self) -> None:
         """Pre-populates the registry with common SQL functions."""
-        all_dialects = [
-            Dialects.DEFAULT,
-            Dialects.PRESTO,
-            Dialects.ATHENA,
-            Dialects.MSSQL,
-            Dialects.POSTGRES,
-            Dialects.MYSQL,
-            Dialects.DUCKDB,
-        ]
+        all_dialects = list(Dialects)
 
         # Common aggregates supported by all dialects
         common_aggregates = ["COUNT", "SUM", "AVG", "MIN", "MAX"]

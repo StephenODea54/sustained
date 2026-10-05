@@ -126,7 +126,7 @@ A failed build, a failed check, or a declined prompt removes the local commit an
         FunctionMetadata(supported_dialects=[Dialects.POSTGRES, Dialects.MSSQL])
     )
     ```
-3.  `QueryBuilder.select_func()` then validates the new function against the active dialect. If the function requires special rendering syntax for a specific dialect, you can add a custom renderer.
+3.  `QueryBuilder.select_func()` then validates the new function against the active dialect. When a dialect spells the function another way, pass `dialect_names`, as `LENGTH` does with `{Dialects.MSSQL: "LEN"}`. When a dialect needs a different syntax, override `compile_function_call()` in that dialect's compiler. `MssqlCompiler` does this to render `MOD(a, b)` as `(a % b)`.
 
 ### Adding an Impact Rule
 
