@@ -22,7 +22,7 @@ from sustained.schema import (
     create_index_sql,
     enum_check_name,
 )
-from sustained.types import Expression
+from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
@@ -84,6 +84,21 @@ def add_column_needs_rebuild(compiler: "Compiler", coldef: "ColumnDef") -> bool:
     return isinstance(coldef.default, Expression) and not _CONSTANT_DEFAULT_RE.match(
         str(coldef.default)
     )
+
+
+def tightening_filler(table: str, name: str, coldef: "ColumnDef") -> SqlValue:
+    """
+    The value that replaces existing NULLs when a column turns NOT NULL:
+    the backfill, or else the default. Raises when the column has
+    neither.
+    """
+    filler = coldef.backfill if coldef.backfill is not None else coldef.default
+    if filler is None:
+        raise ValueError(
+            f"Tightening '{table}.{name}' to NOT NULL needs a "
+            "backfill or default value for existing NULLs."
+        )
+    return filler
 
 
 def create_indexes_sql(compiler: "Compiler", model: Type["Model"]) -> List[str]:
@@ -182,11 +197,7 @@ def rebuild_steps(
         elif _tightens(coldef, actual_col):
             # The copy would put each NULL into a NOT NULL column. The
             # ALTER path fills them the same way before it tightens.
-            if filler is None:
-                raise ValueError(
-                    f"Tightening '{table}.{name}' to NOT NULL needs a "
-                    "backfill or default value for existing NULLs."
-                )
+            filler = tightening_filler(table, name, coldef)
             select_parts.append(
                 f"COALESCE({name_sql}, {compiler.format_value(filler)})"
             )

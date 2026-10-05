@@ -94,29 +94,13 @@ class SchemaDiff:
         self.constraint_notes: List[str] = []
 
     def is_empty(self) -> bool:
-        return not (
-            self.missing_tables
-            or self.new_columns
-            or self.extra_tables
-            or self.extra_columns
-            or self.changed_columns
-            or self.changed_comments
-            or self.new_indexes
-            or self.extra_indexes
-            or self.changed_indexes
-            or self.new_enum_types
-            or self.changed_enum_types
-            or self.new_foreign_keys
-            or self.changed_foreign_keys
-            or self.extra_foreign_keys
-            or self.new_checks
-            or self.changed_checks
-            or self.changed_enum_checks
-            or self.extra_checks
-            or self.invalid_keys
-            or self.unvalidated
-            or self.route_checks
-            or self.constraint_notes
+        """
+        Whether every list of differences is empty. The extra enum types
+        do not count, because they drop with the extra tables and columns
+        that use them and need no change of their own.
+        """
+        return not any(
+            value for name, value in vars(self).items() if name != "extra_enum_types"
         )
 
     def outstanding(self, ignore_changed_columns: bool = False) -> List[str]:

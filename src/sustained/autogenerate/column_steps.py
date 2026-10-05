@@ -33,7 +33,7 @@ from sustained.autogenerate.statements import (
 )
 from sustained.autogenerate.steps import _Generation, _LateForeignKey
 from sustained.exceptions import DialectError
-from sustained.rebuild import add_column_needs_rebuild
+from sustained.rebuild import add_column_needs_rebuild, tightening_filler
 from sustained.schema import (
     ColumnState,
     add_column_statements,
@@ -242,16 +242,7 @@ def _changed_column_steps(state: _Generation) -> None:
             if actual_col.nullable != coldef.nullable and not coldef.primary_key:
                 backfill: List[str] = []
                 if not coldef.nullable:
-                    filler = (
-                        coldef.backfill
-                        if coldef.backfill is not None
-                        else coldef.default
-                    )
-                    if filler is None:
-                        raise ValueError(
-                            f"Tightening '{table}.{name}' to NOT NULL needs "
-                            "a backfill or default value for existing NULLs."
-                        )
+                    filler = tightening_filler(table, name, coldef)
                     backfill = compiler.compile_backfill(
                         table_sql, name, expected_type, compiler.format_value(filler)
                     )
