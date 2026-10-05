@@ -11,6 +11,7 @@ from typing import (
     Dict,
     List,
     Mapping,
+    NamedTuple,
     Optional,
     Sequence,
     Set,
@@ -80,6 +81,73 @@ def _intent_table(model: Type["Model"]) -> str:
     """The dotted, unquoted table name an Intent gives a model's table."""
     parts = [model.database, model.tableSchema, model.tableName]
     return ".".join(p for p in parts if p)
+
+
+KeyTarget = Tuple[str, Tuple[str, ...]]
+
+
+def _key(table: str, columns: Sequence[str]) -> KeyTarget:
+    """A key's bare table name and columns, compared case-insensitively."""
+    return (bare_table_name(table).lower(), tuple(c.lower() for c in columns))
+
+
+def _reference_target(coldef: "ColumnDef") -> Optional[KeyTarget]:
+    """The key a column's `references` shorthand points at, if it has one."""
+    if coldef.references is None:
+        return None
+    ref_table, ref_column = coldef.references.rsplit(".", 1)
+    return _key(ref_table, (ref_column,))
+
+
+def _column_fk_name(model: Type["Model"], name: str) -> str:
+    """The name autogenerate gives a column's foreign key it adds on its own."""
+    return f"fk_{model.tableName}_{name}"
+
+
+class _ColumnForeignKey(NamedTuple):
+    """
+    The ADD and DROP statements of the foreign key a column's
+    `references` shorthand declares, and the key it points at.
+    """
+
+    add: str
+    drop: str
+    target: KeyTarget
+
+
+def _column_foreign_key(
+    compiler: "Compiler",
+    model: Type["Model"],
+    table_sql: str,
+    name: str,
+    coldef: "ColumnDef",
+    constraint: str,
+) -> _ColumnForeignKey:
+    """
+    The foreign key of column `name` as its own statement, named
+    `constraint`. The caller picks the name, because the server names an
+    inline REFERENCES clause one way and autogenerate names a separate
+    key another way.
+    """
+    assert coldef.references is not None
+    ref_table, ref_column = coldef.references.rsplit(".", 1)
+    return _ColumnForeignKey(
+        with_intent(
+            compiler.compile_add_foreign_key(
+                table_sql,
+                constraint,
+                name,
+                compiler.quote_fully_qualified_ddl_identifier(ref_table),
+                ref_column,
+            ),
+            "add_foreign_key",
+            _intent_table(model),
+            name=constraint,
+            references=ref_table,
+        ),
+        compiler.compile_drop_foreign_key(table_sql, constraint),
+        _key(ref_table, (ref_column,)),
+    )
 
 
 def _reported_intent_table(
@@ -199,7 +267,7 @@ def _create_table_steps(
 
 def _deferred_foreign_key_steps(
     compiler: "Compiler", model: Type["Model"]
-) -> List[Tuple[str, str, Tuple[str, Tuple[str, ...]]]]:
+) -> List[Tuple[str, str, KeyTarget]]:
     """
     The (add, drop, target) triples for every foreign key a new table
     needs, once CREATE TABLE has left them out. The target is the bare
@@ -207,31 +275,19 @@ def _deferred_foreign_key_steps(
     """
     table_sql = model._qualified_table_sql(compiler)
     table = _intent_table(model)
-    pairs: List[Tuple[str, str, Tuple[str, Tuple[str, ...]]]] = []
+    pairs: List[Tuple[str, str, KeyTarget]] = []
     for name, coldef in (model.tableColumns or {}).items():
-        if coldef.references is None:
-            continue
-        ref_table, ref_column = coldef.references.rsplit(".", 1)
-        constraint = f"fk_{model.tableName}_{name}"
-        pairs.append(
-            (
-                with_intent(
-                    compiler.compile_add_foreign_key(
-                        table_sql,
-                        constraint,
-                        name,
-                        compiler.quote_fully_qualified_ddl_identifier(ref_table),
-                        ref_column,
-                    ),
-                    "add_foreign_key",
-                    table,
-                    name=constraint,
-                    references=ref_table,
-                ),
-                compiler.compile_drop_foreign_key(table_sql, constraint),
-                (bare_table_name(ref_table).lower(), (ref_column.lower(),)),
+        if coldef.references is not None:
+            pairs.append(
+                _column_foreign_key(
+                    compiler,
+                    model,
+                    table_sql,
+                    name,
+                    coldef,
+                    _column_fk_name(model, name),
+                )
             )
-        )
     for constraint_def in model.tableConstraints or []:
         if not isinstance(constraint_def, ForeignKey):
             continue
@@ -243,10 +299,7 @@ def _deferred_foreign_key_steps(
                     constraint_def,
                 ),
                 compiler.compile_drop_foreign_key(table_sql, constraint_def.name),
-                (
-                    bare_table_name(constraint_def.target_table).lower(),
-                    tuple(c.lower() for c in constraint_def.target_columns),
-                ),
+                _key(constraint_def.target_table, constraint_def.target_columns),
             )
         )
     return pairs
@@ -514,24 +567,11 @@ def _add_foreign_key(
     """
     if coldef.references is None or compiler.inline_references():
         return
-    ref_table, ref_column = coldef.references.rsplit(".", 1)
-    constraint = f"fk_{model.tableName}_{name}"
-    up_steps.append(
-        with_intent(
-            compiler.compile_add_foreign_key(
-                table_sql,
-                constraint,
-                name,
-                compiler.quote_fully_qualified_ddl_identifier(ref_table),
-                ref_column,
-            ),
-            "add_foreign_key",
-            _intent_table(model),
-            name=constraint,
-            references=ref_table,
-        )
+    fk = _column_foreign_key(
+        compiler, model, table_sql, name, coldef, _column_fk_name(model, name)
     )
-    down_steps.insert(0, compiler.compile_drop_foreign_key(table_sql, constraint))
+    up_steps.append(fk.add)
+    down_steps.insert(0, fk.drop)
 
 
 def _add_enum_check(

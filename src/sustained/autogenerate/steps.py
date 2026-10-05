@@ -7,7 +7,7 @@ sustained.autogenerate.column_steps.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, NamedTuple, Sequence, Set, Tuple, Type
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Set, Tuple, Type
 
 from sustained.analysis import with_intent
 from sustained.autogenerate.diff import SchemaDiff, _enum_value_additions
@@ -23,6 +23,7 @@ from sustained.autogenerate.online import (
     validate,
 )
 from sustained.autogenerate.statements import (
+    KeyTarget,
     _add_enum_check,
     _create_table_steps,
     _declared_fk_intent,
@@ -33,6 +34,7 @@ from sustained.autogenerate.statements import (
     _foreign_keys_setting,
     _intent_table,
     _introspected_fk_sql,
+    _key,
     _rebuild_needed,
     _reported_intent_table,
     _spelled_columns,
@@ -75,7 +77,7 @@ class _LateForeignKey(NamedTuple):
     table_sql: str
     table: str
     name: str
-    target: Tuple[str, Tuple[str, ...]]
+    target: KeyTarget
     validated: bool = False
     partitioned: bool = False
 
@@ -123,17 +125,17 @@ class _Generation:
         self.online_reversible = True
         # The (table, columns) of each unique key the online migration
         # builds, which a foreign key added in the run may point at.
-        self.online_keys: Set[Tuple[str, Tuple[str, ...]]] = set()
+        self.online_keys: Set[KeyTarget] = set()
         # The (table, columns) of each unique key _index_steps() builds,
         # and of each new column declared UNIQUE, which a foreign key in
         # the same diff may point at.
-        self.index_keys: Set[Tuple[str, Tuple[str, ...]]] = {
+        self.index_keys: Set[KeyTarget] = {
             _key(model.tableName or "", index.columns)
             for model, index in diff.new_indexes
             + [(model, index) for model, index, _ in diff.changed_indexes]
             if index.unique
         }
-        self.column_keys: Set[Tuple[str, Tuple[str, ...]]] = {
+        self.column_keys: Set[KeyTarget] = {
             _key(model.tableName or "", (name,))
             for model, name, coldef in diff.new_columns
             if coldef.unique and not coldef.primary_key
@@ -677,11 +679,6 @@ def _dropped_online(state: _Generation, model: Type["Model"], drop: str) -> str:
 def _as_is(statement: str) -> str:
     """The statement unchanged, where the online form is not in use."""
     return statement
-
-
-def _key(table: str, columns: Sequence[str]) -> Tuple[str, Tuple[str, ...]]:
-    """A unique key's table and columns, compared case-insensitively."""
-    return (bare_table_name(table).lower(), tuple(c.lower() for c in columns))
 
 
 def _constraint_steps(state: _Generation) -> None:

@@ -20,12 +20,16 @@ from sustained.autogenerate.online import (
 from sustained.autogenerate.statements import (
     _add_enum_check,
     _add_foreign_key,
+    _column_fk_name,
+    _column_foreign_key,
     _intent_table,
     _introspected_state,
+    _key,
     _lift_statements,
     _lifted_indexes,
     _preserving_state,
     _rebuild_needed,
+    _reference_target,
     _refuse_enum_value_removal,
     _relaxed_copy,
     _table_has_rows,
@@ -457,23 +461,14 @@ def _referenced_first(
     The new columns with each column another new column references
     moved in front of the columns, in the order of the diff otherwise.
     """
-    referenced = {
-        _key(*coldef.references.rsplit(".", 1))
-        for _, _, coldef in new_columns
-        if coldef.references is not None
-    }
+    referenced = {_reference_target(coldef) for _, _, coldef in new_columns}
     first = [
-        _key(model.tableName or "", name) in referenced
+        _key(model.tableName or "", (name,)) in referenced
         for model, name, _ in new_columns
     ]
     return [e for e, f in zip(new_columns, first) if f] + [
         e for e, f in zip(new_columns, first) if not f
     ]
-
-
-def _key(table: str, column: str) -> Tuple[str, str]:
-    """A column, by its bare table name, compared case-insensitively."""
-    return (bare_table_name(table).lower(), column.lower())
 
 
 def _late_reference(state: _Generation, coldef: "ColumnDef") -> bool:
@@ -482,15 +477,10 @@ def _late_reference(state: _Generation, coldef: "ColumnDef") -> bool:
     unique index that _index_steps() builds, which is not there when
     ADD COLUMN runs, so the key goes in after the index.
     """
-    if state.online or coldef.references is None:
+    if state.online or not state.compiler.supports_add_constraint():
         return False
-    if not state.compiler.supports_add_constraint():
-        return False
-    ref_table, ref_column = coldef.references.rsplit(".", 1)
-    return (
-        bare_table_name(ref_table).lower(),
-        (ref_column.lower(),),
-    ) in state.index_keys
+    target = _reference_target(coldef)
+    return target is not None and target in state.index_keys
 
 
 def _new_column_foreign_key(
@@ -514,33 +504,15 @@ def _new_column_foreign_key(
             compiler, state.up_steps, state.down_steps, table_sql, model, name, coldef
         )
         return
-    assert coldef.references is not None
-    ref_table, ref_column = coldef.references.rsplit(".", 1)
     fkey = (
         constraint_name(bare_table_name(model.tableName or ""), name, "fkey")
         if compiler.inline_references()
-        else f"fk_{model.tableName}_{name}"
+        else _column_fk_name(model, name)
     )
+    fk = _column_foreign_key(compiler, model, table_sql, name, coldef, fkey)
     state.late_foreign_keys.append(
         _LateForeignKey(
-            with_intent(
-                compiler.compile_add_foreign_key(
-                    table_sql,
-                    fkey,
-                    name,
-                    compiler.quote_fully_qualified_ddl_identifier(ref_table),
-                    ref_column,
-                ),
-                "add_foreign_key",
-                _intent_table(model),
-                name=fkey,
-                references=ref_table,
-            ),
-            compiler.compile_drop_foreign_key(table_sql, fkey),
-            table_sql,
-            _intent_table(model),
-            fkey,
-            (bare_table_name(ref_table).lower(), (ref_column.lower(),)),
+            fk.add, fk.drop, table_sql, _intent_table(model), fkey, fk.target
         )
     )
 
@@ -755,31 +727,19 @@ def _column_keys_online(
             state.online_down["index"].insert(
                 0, compiler.compile_drop_constraint(table_sql, key)
             )
-        state.online_keys.add((bare.lower(), (name.lower(),)))
+        state.online_keys.add(_key(bare, (name,)))
     if coldef.references is None:
         return
-    ref_table, ref_column = coldef.references.rsplit(".", 1)
     fkey = constraint_name(bare, name, "fkey")
+    fk = _column_foreign_key(compiler, model, table_sql, name, coldef, fkey)
     state.late_foreign_keys.append(
         _LateForeignKey(
-            with_intent(
-                compiler.compile_add_foreign_key(
-                    table_sql,
-                    fkey,
-                    name,
-                    compiler.quote_fully_qualified_ddl_identifier(ref_table),
-                    ref_column,
-                ),
-                "add_foreign_key",
-                table,
-                name=fkey,
-                references=ref_table,
-            ),
-            compiler.compile_drop_foreign_key(table_sql, fkey),
+            fk.add,
+            fk.drop,
             table_sql,
             table,
             fkey,
-            (bare_table_name(ref_table).lower(), (ref_column.lower(),)),
+            fk.target,
             validated=True,
             partitioned=partitioned,
         )
