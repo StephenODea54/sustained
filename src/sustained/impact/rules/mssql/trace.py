@@ -39,11 +39,9 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
-    Callable,
     Dict,
     FrozenSet,
     Generator,
-    List,
     Mapping,
     NamedTuple,
     Optional,
@@ -54,9 +52,6 @@ from typing import (
 
 from sustained.impact.context import Rows, attempt
 from sustained.impact.model import (
-    Evidence,
-    Finding,
-    Hold,
     ImpactReport,
     StatementImpact,
     TableImpact,
@@ -64,6 +59,7 @@ from sustained.impact.model import (
 )
 from sustained.impact.rules import common
 from sustained.impact.rules.mssql.locks import S
+from sustained.impact.rules.sighted import add_name, ids_plan, observe_sightings
 
 if TYPE_CHECKING:
     from sustained.impact.rules import Profile
@@ -145,10 +141,7 @@ def _literal(value: str) -> str:
 
 def tables_plan() -> Generator[str, Rows, Optional[FrozenSet[int]]]:
     """The object ids of every table that exists, or None when the read failed."""
-    rows = yield from attempt(_TABLES_SQL)
-    if rows is None:
-        return None
-    return frozenset(int(str(row[0])) for row in rows)
+    return ids_plan(_TABLES_SQL)
 
 
 def sighting_plan(tables: Sequence[str]) -> Generator[str, Rows, Sighting]:
@@ -163,7 +156,9 @@ def sighting_plan(tables: Sequence[str]) -> Generator[str, Rows, Sighting]:
         read.add("locks")
         for object_id, schema, name, visible, mode in rows:
             if name is not None:
-                _name(names, int(str(object_id)), str(schema), str(name), bool(visible))
+                add_name(
+                    names, int(str(object_id)), str(schema), str(name), bool(visible)
+                )
             locks.setdefault(int(str(object_id)), set()).add(str(mode))
     wanted = sorted({_key(t).rsplit(".", 1)[-1] for t in tables})
     if wanted:
@@ -174,7 +169,7 @@ def sighting_plan(tables: Sequence[str]) -> Generator[str, Rows, Sighting]:
             read.add("storage")
             for object_id, schema, name, visible, index, number, pid, pages in rows:
                 table = int(str(object_id))
-                _name(names, table, str(schema), str(name), bool(visible))
+                add_name(names, table, str(schema), str(name), bool(visible))
                 storage.setdefault(table, {})[(int(str(index)), int(str(number)))] = (
                     Partition(int(str(index)) <= 1, int(str(pid)), int(str(pages or 0)))
                 )
@@ -189,12 +184,6 @@ def sighting_plan(tables: Sequence[str]) -> Generator[str, Rows, Sighting]:
         log,
         frozenset(read),
     )
-
-
-def _name(
-    names: Dict[str, int], object_id: int, schema: str, name: str, visible: bool
-) -> None:
-    names.update(dict.fromkeys(common.keys(schema, name, visible), object_id))
 
 
 def _observed_work(
@@ -228,11 +217,6 @@ def _observed_work(
     return Work.CATALOG
 
 
-class _Seen(NamedTuple):
-    lock: Optional[str]
-    work: Optional[Work]
-
-
 def observe(
     impact: StatementImpact,
     before: Sighting,
@@ -248,22 +232,14 @@ def observe(
     and is left as predicted. The impact is returned unchanged when the
     locks were not read both times.
     """
-    if "locks" not in before.read or "locks" not in after.read:
-        return impact
-    rank = profile.lock_rank
     logged: Optional[int] = None
     if "log" in before.read and "log" in after.read:
         logged = after.log - before.log
-    tables: List[TableImpact] = []
-    findings: List[Finding] = []
-    seen: Set[int] = set()
-    for position, table in enumerate(impact.tables):
-        key = _key(table.table)
-        object_id = before.names.get(key, after.names.get(key))
-        if object_id is None or (existing is not None and object_id not in existing):
-            tables.append(table)
-            continue
-        seen.add(object_id)
+
+    def work_of(position: int, table: TableImpact, object_id: int) -> Optional[Work]:
+        old, new = before.storage.get(object_id), after.storage.get(object_id)
+        if old is None or new is None:
+            return None
         # The log is the statement's, so it speaks for the table the
         # statement names, and a write of rows logs each row it writes.
         log = logged if position == 0 and table.work is not Work.ROWS else None
@@ -273,103 +249,19 @@ def observe(
             if other != object_id
             for p in partitions.values()
         )
-        observed = _seen(table, object_id, before, after, log, elsewhere, rank)
-        updated, found = _compare(table, observed, profile)
-        tables.append(updated)
-        findings.extend(found)
-    for object_id, modes in after.locks.items():
-        taken = modes - before.locks.get(object_id, frozenset())
-        if object_id in seen or not taken:
-            continue
-        if existing is not None and object_id not in existing:
-            continue
-        lock = max(taken, key=rank)
-        if rank(lock) < rank(S):
-            continue
-        name = _display(before.names, after.names, object_id)
-        tables.append(
-            TableImpact(name, lock, profile.blocks(lock), Work.CATALOG, Hold.BRIEF)
-        )
-        findings.append(
-            _mismatch(f"the server took {lock} on {name}, which no rule predicted")
-        )
-    return impact._replace(
-        tables=tuple(tables),
-        findings=impact.findings + tuple(findings),
-        evidence=Evidence.OBSERVED,
+        return _observed_work(old, new, log, elsewhere)
+
+    return observe_sightings(
+        impact,
+        before,
+        after,
+        existing,
+        profile,
+        key=_key,
+        work_of=work_of,
+        reported=S,
+        nothing="copied nothing",
     )
-
-
-def _seen(
-    table: TableImpact,
-    object_id: int,
-    before: Sighting,
-    after: Sighting,
-    logged: Optional[int],
-    elsewhere: FrozenSet[int],
-    rank: Callable[[Optional[str]], int],
-) -> _Seen:
-    held = after.locks.get(object_id, frozenset())
-    taken = held - before.locks.get(object_id, frozenset())
-    candidates = set(taken)
-    if table.lock is not None and table.lock in held:
-        candidates.add(table.lock)
-    lock = max(candidates, key=rank) if candidates else None
-    work: Optional[Work] = None
-    if "storage" in before.read and "storage" in after.read:
-        old = before.storage.get(object_id)
-        new = after.storage.get(object_id)
-        if old is not None and new is not None:
-            work = _observed_work(old, new, logged, elsewhere)
-    return _Seen(lock, work)
-
-
-def _compare(
-    table: TableImpact, observed: _Seen, profile: "Profile"
-) -> Tuple[TableImpact, List[Finding]]:
-    from sustained.impact.rules.common import settled_work, work_mismatch
-
-    findings: List[Finding] = []
-    updated = table
-    if observed.lock is not None and observed.lock != table.lock:
-        findings.append(
-            _mismatch(
-                f"the rules predicted {table.lock or 'no lock'} on {table.table}, "
-                f"and the server took {observed.lock}"
-            )
-        )
-        blocks = profile.blocks(observed.lock)
-        if table.blocks != profile.blocks(table.lock):
-            blocks = max(blocks, table.blocks)
-        updated = updated._replace(lock=observed.lock, blocks=blocks)
-    work = settled_work(table.work, observed.work)
-    if work is not None and work != table.work:
-        findings.append(
-            _mismatch(work_mismatch(table, observed.work, "copied nothing"))
-        )
-        updated = updated._replace(work=work)
-    return updated, findings
-
-
-def _display(
-    before: Mapping[str, int], after: Mapping[str, int], object_id: int
-) -> str:
-    matches = sorted(
-        {
-            name
-            for names in (after, before)
-            for name, found in names.items()
-            if found == object_id
-        }
-    )
-    bare = [name for name in matches if "." not in name]
-    return (bare or matches or [str(object_id)])[0]
-
-
-def _mismatch(message: str) -> Finding:
-    from sustained.impact.rules.common import mismatch
-
-    return mismatch(message)
 
 
 def with_observations(
