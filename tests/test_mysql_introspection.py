@@ -399,6 +399,23 @@ class TestMysqlChecks(unittest.TestCase):
         self.assertTrue(schema.checks_read)
         self.assertEqual(schema["shows"].checks, {"ck_seats": "(`seats` > 0)"})
 
+    def test_a_mysql_check_clause_loses_its_extra_escapes(self):
+        # MySQL 8 puts a backslash before each quote and backslash of
+        # the clause, so the text as read is not valid SQL.
+        clause = r"((`seats` <> _utf8mb4\'it\\\'s\') and (`seats` > 0))"
+        cursor = self.cursor(table_checks=[("shows", "ck_seats", clause)])
+        schema = introspect_schema(FakeConnection(cursor), Dialects.MYSQL)
+        self.assertEqual(
+            schema["shows"].checks,
+            {"ck_seats": r"((`seats` <> _utf8mb4'it\'s') and (`seats` > 0))"},
+        )
+
+    def test_a_mariadb_check_clause_reads_as_written(self):
+        clause = r"`seats` <> 'it\'s' and `seats` <> 'a\\b'"
+        cursor = self.cursor(table_checks=[("shows", "ck_seats", clause)])
+        schema = introspect_schema(FakeConnection(cursor), Dialects.MYSQL)
+        self.assertEqual(schema["shows"].checks, {"ck_seats": clause})
+
     def test_the_check_read_matches_the_table_name_first(self):
         # MariaDB names a column check after its column, so two tables
         # can each hold a check of one name.

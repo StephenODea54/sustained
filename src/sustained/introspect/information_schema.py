@@ -338,6 +338,25 @@ def _information_schema_plan(
     return schema
 
 
+# A quote with no backslash before it, and one escaped character.
+_BARE_QUOTE_RE = re.compile(r"(?<!\\)'")
+_ESCAPED_RE = re.compile(r"\\(.)", re.DOTALL)
+
+
+def _mysql_check_clause(clause: str) -> str:
+    """
+    The SQL of a MySQL or MariaDB check clause. MySQL 8 puts a backslash
+    before each quote and each backslash of the clause, so it reports
+    `b <> 'x'` as `(`b` <> _utf8mb4\\'x\\')`, which no server accepts back.
+    MariaDB reports the SQL, where a string literal opens with a quote
+    that has no backslash before it. A clause with no such quote and an
+    escaped one is the MySQL form, and loses one level of escapes.
+    """
+    if "\\'" not in clause or _BARE_QUOTE_RE.search(clause):
+        return clause
+    return _ESCAPED_RE.sub(r"\1", clause)
+
+
 def _check_plan(catalog: Catalog, constraint_filter: str) -> Generator[
     str,
     List[Sequence[RowValue]],
@@ -372,7 +391,10 @@ def _check_plan(catalog: Catalog, constraint_filter: str) -> Generator[
             # the view; the last case degrades to no checks.
             continue
         for table, cname, clause in check_rows:
-            _add_check(checks, check_names, table, cname, str(clause))
+            text = str(clause)
+            if catalog is MYSQL_CATALOG:
+                text = _mysql_check_clause(text)
+            _add_check(checks, check_names, table, cname, text)
         checks_read = True
         break
     return checks, check_names, checks_read
