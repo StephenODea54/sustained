@@ -335,8 +335,8 @@ def _check_usage(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--exact-counts on script needs --annotate")
 
 
-# The exit code for each error a command raises, checked in order. The
-# three subclasses of MigrationError come before it.
+# The exit code for each error a command raises. The first entry whose
+# type matches the error gives the code.
 _EXIT_CODES: Tuple[Tuple[Type[Exception], int], ...] = (
     # A guard blocked the run, which plan reports the same way.
     (GuardBlocked, 3),
