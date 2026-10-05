@@ -44,6 +44,8 @@ _NOT_ALIASES = frozenset(
     + ("FULL", "OUTER", "ON", "USING", "WITH", "PARTITION", "USE", "FORCE")
     + ("IGNORE", "FROM", "SET", "TABLESAMPLE")
 )
+# The words of MySQL's ANALYZE before its TABLE keyword.
+_MYSQL_ANALYZE: Tuple[Tuple[str, ...], ...] = ((), ("NO_WRITE_TO_BINLOG",), ("LOCAL",))
 
 
 class Statements(Cursor):
@@ -358,7 +360,8 @@ class Statements(Cursor):
     def table_list(self) -> Tuple[str, ...]:
         """VACUUM and ANALYZE's optional tables, each with optional columns."""
         tables: List[str] = []
-        while self.is_name():
+        # A bare TABLE is the keyword, never a table.
+        while self.is_name() and not self.is_word("TABLE"):
             tables.append(self.name())
             if self.is_punct("("):
                 self.group()
@@ -367,6 +370,13 @@ class Statements(Cursor):
         return tuple(tables)
 
     def analyze(self) -> ParsedStatement:
+        if any(self.is_words(*w, "TABLE") for w in _MYSQL_ANALYZE):
+            # MySQL's ANALYZE TABLE, which no rule reads. The unknown
+            # statement names its first table.
+            self.accept_any("NO_WRITE_TO_BINLOG", "LOCAL")
+            self.expect("TABLE")
+            self.target()
+            raise Unrecognized("no rule reads ANALYZE TABLE")
         self.accept("VERBOSE")
         if self.is_punct("("):
             self.group()
@@ -377,6 +387,8 @@ class Statements(Cursor):
         self.accept("VERBOSE")
         if self.at_end():
             return self.parsed("cluster", options={"index": None})
+        if self.is_word("TABLE"):
+            raise Unrecognized(f"no rule reads CLUSTER {self.where()}")
         first = self.name()
         if self.accept("ON"):
             # The older form: CLUSTER index ON table.

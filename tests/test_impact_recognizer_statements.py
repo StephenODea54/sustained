@@ -190,6 +190,30 @@ class MaintenanceTestCase(RecognizerTestCase):
         self.assertEqual(recognize("ANALYZE VERBOSE t").table, "t")
         self.assertIsNone(recognize("ANALYZE").table)
 
+    def test_mysql_analyze_table_names_its_table(self):
+        # No rule reads MySQL's ANALYZE TABLE; the unknown statement
+        # names the table, never the keyword.
+        for text in (
+            "ANALYZE TABLE it_impact_orders, b",
+            "ANALYZE NO_WRITE_TO_BINLOG TABLE it_impact_orders",
+            "ANALYZE LOCAL TABLE it_impact_orders",
+        ):
+            for dialect in (MYSQL, PG):
+                parsed = recognize(text, dialect)
+                self.assertEqual(
+                    (parsed.kind, parsed.table), ("unknown", "it_impact_orders")
+                )
+                self.assertEqual(
+                    parsed.options["reason"], "no rule reads ANALYZE TABLE"
+                )
+        self.assertEqual(recognize("ANALYZE local").table, "local")
+
+    def test_a_bare_table_keyword_is_never_the_table(self):
+        for text in ("VACUUM TABLE t", "VACUUM FULL TABLE t", "CLUSTER TABLE t"):
+            parsed = recognize(text)
+            self.assertEqual((parsed.kind, parsed.table), ("unknown", None))
+        self.assertEqual(recognize('VACUUM "table"').table, "table")
+
     def test_cluster_and_optimize(self):
         self.assertEqual(recognize("CLUSTER t USING ix").options["index"], "ix")
         self.assertEqual(recognize("CLUSTER ix ON t").table, "t")
