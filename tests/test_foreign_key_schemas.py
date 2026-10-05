@@ -165,7 +165,7 @@ class TestPostgresReadsTheTargetSchema(unittest.TestCase):
 
 class TestSharedReadTakesTheTargetSchema(unittest.TestCase):
     def test_the_eighth_field_is_the_target_schema(self):
-        from sustained.introspect import _replace_foreign_keys
+        from sustained.introspect.information_schema import _replace_foreign_keys
 
         schema = snapshot(key=False)
         row = ("children", "fk_parent", "parent_id", "parents", "id")
@@ -180,7 +180,7 @@ class TestSharedReadTakesTheTargetSchema(unittest.TestCase):
         self.assertIsNone(schema["children"].foreign_keys["fk_parent"].target_schema)
 
     def test_mysql_and_mssql_ask_for_it(self):
-        from sustained.introspect import _schema_plan
+        from sustained.introspect.runner import _schema_plan
 
         for dialect, expression in (
             (Dialects.MYSQL, "NULLIF(kcu.referenced_table_schema, DATABASE())"),

@@ -9,12 +9,12 @@ from unittest import mock
 from sustained import create_model
 from sustained.autogenerate import autogenerate, diff_schema
 from sustained.dialects import Dialects
-from sustained.introspect import (
-    MSSQL_CATALOG,
+from sustained.introspect import MSSQL_CATALOG
+from sustained.introspect.information_schema import (
     _information_schema_plan,
-    _mssql_plan,
     _sized_type,
 )
+from sustained.introspect.mssql import _mssql_plan
 from sustained.schema import Integer, Numeric, String, Text
 
 

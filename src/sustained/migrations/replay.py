@@ -13,7 +13,7 @@ from sustained.types import Connection, Cursor, RowValue
 
 def _is_read_savepoint(operation: str) -> bool:
     """Whether a statement is one of the savepoints a guarded read takes."""
-    from sustained.introspect import _READ_SAVEPOINT
+    from sustained.introspect.runner import _READ_SAVEPOINT
 
     return operation.strip().rstrip(";").upper().endswith(
         _READ_SAVEPOINT.upper()

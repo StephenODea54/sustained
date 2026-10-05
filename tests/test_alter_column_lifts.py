@@ -226,7 +226,8 @@ class TestMssqlRestatesTheCollation(unittest.TestCase):
         )
 
     def test_the_read_takes_the_collation_after_the_schema(self):
-        from sustained.introspect import MSSQL_CATALOG, _information_schema_plan
+        from sustained.introspect import MSSQL_CATALOG
+        from sustained.introspect.information_schema import _information_schema_plan
 
         plan = _information_schema_plan(MSSQL_CATALOG)
         self.assertIn("c.table_schema, c.collation_name, ", next(plan))

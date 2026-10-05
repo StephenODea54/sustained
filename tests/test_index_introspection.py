@@ -16,9 +16,9 @@ from sustained.introspect import (
     IntrospectedForeignKey,
     IntrospectedIndex,
     IntrospectedTable,
-    _duckdb_index_columns,
     introspect_schema,
 )
+from sustained.introspect.duckdb import _duckdb_index_columns
 from sustained.model import Model
 from sustained.schema import Index, Integer, String
 

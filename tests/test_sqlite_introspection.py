@@ -7,11 +7,11 @@ the PRAGMA tables with the CREATE TABLE statements in sqlite_master.
 import sqlite3
 import unittest
 
-from sustained.introspect import (
+from sustained.introspect import introspect_schema
+from sustained.introspect.sqlite import (
     _sqlite_collations,
     _sqlite_table_parts,
     _sqlite_unnamed_checks,
-    introspect_schema,
 )
 
 
@@ -113,7 +113,10 @@ class TestSqliteChecks(unittest.TestCase):
         self.assertEqual(schema["posts"].checks, {"ck_posts_tag": "tag <> ')'"})
 
     def test_a_close_paren_inside_a_quoted_identifier_stays_inside(self):
-        from sustained.introspect import _sqlite_table_checks, _sqlite_unnamed_checks
+        from sustained.introspect.sqlite import (
+            _sqlite_table_checks,
+            _sqlite_unnamed_checks,
+        )
 
         for column in ('"a)b"', "`a)b`", "[a)b]"):
             with self.subTest(column=column):
@@ -144,7 +147,7 @@ class TestSqliteChecks(unittest.TestCase):
         self.assertEqual(dict(schema["shows"].checks), {})
 
     def test_unbalanced_parentheses_read_as_no_check(self):
-        from sustained.introspect import _sqlite_table_checks
+        from sustained.introspect.sqlite import _sqlite_table_checks
 
         truncated = "CREATE TABLE x (a INTEGER, CONSTRAINT ck_x CHECK (a > (b"
         self.assertEqual(_sqlite_table_checks(truncated), {})
