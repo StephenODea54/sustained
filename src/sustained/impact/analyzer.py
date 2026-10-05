@@ -37,7 +37,7 @@ from typing import (
     Tuple,
 )
 
-from sustained.impact.context import EngineContext, assumed
+from sustained.impact.context import EngineContext, assumed, covering_profile
 from sustained.impact.intent import (
     from_intent_finding,
     intent_agrees,
@@ -61,7 +61,7 @@ from sustained.impact.model import (
     Work,
 )
 from sustained.impact.recognizer import recognize
-from sustained.impact.rules import Effect, Facts, Profile, profile_for, profiles_for
+from sustained.impact.rules import Effect, Facts, Profile, profiles_for
 from sustained.impact.state import RunState
 from sustained.impact.window import aggregate, held_in_scopes, row_scopes
 
@@ -100,11 +100,7 @@ def analyze(
     migration gets an `impact.assumed_profile` finding that says so.
     Raises ValueError for a dialect that has no impact rules yet.
     """
-    profile = profile_for(dialect, context.profile if context else None)
-    if profile is None:
-        from sustained.impact.rules import engine
-
-        raise ValueError(f"Impact analysis does not cover {engine(dialect)} yet.")
+    profile = covering_profile(dialect, context.profile if context else None)
     guessed = context is None and len(profiles_for(dialect)) > 1
     if context is None:
         context = assumed(profile.name)

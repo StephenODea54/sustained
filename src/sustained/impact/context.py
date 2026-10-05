@@ -282,7 +282,7 @@ def read_context(
     """
     from sustained.introspect.runner import introspect_schema, run_plan
 
-    _profile(dialect)
+    covering_profile(dialect)
     try:
         schema: Optional["Snapshot"] = introspect_schema(connection, dialect)
     except Exception:
@@ -301,7 +301,7 @@ async def async_read_context(
     """What read_context() reads, through an async adapter."""
     from sustained.introspect.runner import async_introspect_schema, async_run_plan
 
-    _profile(dialect)
+    covering_profile(dialect)
     try:
         schema: Optional["Snapshot"] = await async_introspect_schema(adapter, dialect)
     except Exception:
@@ -329,7 +329,7 @@ def named_tables(
     """
     from sustained.impact.analyzer import analyze
 
-    profile = _profile(dialect)
+    profile = covering_profile(dialect)
     context = EngineContext(profile.name, FLOORS[profile.name], schema=schema)
     report = analyze(statements, dialect, context)
     return frozenset(
@@ -349,10 +349,14 @@ def _named(
     return named_tables(statements, dialect, schema)
 
 
-def _profile(dialect: "Dialects") -> "Profile":
+def covering_profile(dialect: "Dialects", name: Optional[str] = None) -> "Profile":
+    """
+    The rule profile for the dialect, or the one `name` names. Raises
+    ValueError for a dialect that has no impact rules yet.
+    """
     from sustained.impact.rules import engine, profile_for
 
-    profile = profile_for(dialect)
+    profile = profile_for(dialect, name)
     if profile is None:
         raise ValueError(f"Impact analysis does not cover {engine(dialect)} yet.")
     return profile
@@ -361,7 +365,7 @@ def _profile(dialect: "Dialects") -> "Profile":
 def _plan(
     dialect: "Dialects", exact_counts: bool, tables: Optional[Collection[str]]
 ) -> ContextPlan:
-    return _profile(dialect).context_plan(exact_counts, tables)
+    return covering_profile(dialect).context_plan(exact_counts, tables)
 
 
 def _with_schema(context: EngineContext, schema: "Snapshot") -> EngineContext:
