@@ -77,8 +77,8 @@ def _enum_checks_off(state: _Generation) -> None:
                     name=constraint,
                 )
             )
-            state.down_steps.insert(
-                0, state.compiler.compile_add_check(table_sql, constraint, expression)
+            state.undo(
+                state.compiler.compile_add_check(table_sql, constraint, expression)
             )
         state.enum_check_adds.append((model, name))
 
@@ -102,7 +102,7 @@ def _lift_index_steps(state: _Generation) -> None:
         state.lift_drops.append(drop_sql)
         state.lift_creates.append(create_sql)
     state.up_steps.extend(state.lift_drops)
-    state.down_steps[0:0] = state.lift_creates
+    state.undo(*state.lift_creates)
     if state.lift_drops and state.compiler.index_drop_waits_for_commit():
         state.transactional = False
 
@@ -203,14 +203,13 @@ def _changed_column_steps(state: _Generation) -> None:
                             name,
                         )
                     )
-                    state.down_steps.insert(
-                        0,
+                    state.undo(
                         state.compiler.compile_add_column_default(
                             table_sql, name, default_sql
-                        ),
+                        )
                     )
-                for statement in reversed(
-                    state.compiler.compile_alter_column_type(
+                state.undo(
+                    *state.compiler.compile_alter_column_type(
                         table_sql,
                         name,
                         _preserving_state(
@@ -221,11 +220,10 @@ def _changed_column_steps(state: _Generation) -> None:
                             actual_col.nullable,
                         ),
                     )
-                ):
-                    state.down_steps.insert(0, statement)
+                )
                 if lift_default:
-                    state.down_steps.insert(
-                        0, state.compiler.compile_drop_column_default(table_sql, name)
+                    state.undo(
+                        state.compiler.compile_drop_column_default(table_sql, name)
                     )
             if actual_col.nullable != coldef.nullable and not coldef.primary_key:
                 backfill: List[str] = []
@@ -271,8 +269,7 @@ def _changed_column_steps(state: _Generation) -> None:
                         name,
                     )
                 )
-                for statement in reversed(restore):
-                    state.down_steps.insert(0, statement)
+                state.undo(*restore)
 
 
 def _enum_checks_on(state: _Generation) -> None:
@@ -382,8 +379,10 @@ def _new_column_steps(state: _Generation) -> None:
                 name,
                 ColumnState.from_column(state.compiler, coldef, nullable=False),
             )
-            state.down_steps[0:0] = state.compiler.compile_drop_column_statements(
-                table_sql, name, coldef.default is not None
+            state.undo(
+                *state.compiler.compile_drop_column_statements(
+                    table_sql, name, coldef.default is not None
+                )
             )
             if state.online:
                 loosen = state.compiler.compile_alter_column_nullability(
@@ -427,8 +426,10 @@ def _new_column_steps(state: _Generation) -> None:
                 has_default=coldef.default is not None,
             )
         )
-        state.down_steps[0:0] = state.compiler.compile_drop_column_statements(
-            table_sql, name, coldef.default is not None
+        state.undo(
+            *state.compiler.compile_drop_column_statements(
+                table_sql, name, coldef.default is not None
+            )
         )
         if state.online:
             _column_keys_online(state, model, table_sql, name, coldef)
@@ -516,7 +517,7 @@ def _new_column_foreign_key(
 def _restore_lifted_index_steps(state: _Generation) -> None:
     """Creates again the indexes _lift_index_steps() dropped."""
     state.up_steps.extend(state.lift_creates)
-    state.down_steps[0:0] = state.lift_drops
+    state.undo(*state.lift_drops)
 
 
 def _comment_steps(state: _Generation) -> None:
@@ -556,8 +557,7 @@ def _comment_steps(state: _Generation) -> None:
         state.up_steps.extend(
             _tagged(set_new, "set_column_comment", _intent_table(model), name)
         )
-        for statement in reversed(set_old):
-            state.down_steps.insert(0, statement)
+        state.undo(*set_old)
 
 
 def _backfill_list(state: _Generation) -> List[str]:
@@ -609,8 +609,10 @@ def _new_not_null_online(
                 name,
             )
         )
-    state.down_steps[0:0] = state.compiler.compile_drop_column_statements(
-        table_sql, name, coldef.default is not None
+    state.undo(
+        *state.compiler.compile_drop_column_statements(
+            table_sql, name, coldef.default is not None
+        )
     )
     _column_keys_online(state, model, table_sql, name, coldef)
 
@@ -642,8 +644,7 @@ def _set_not_null_online(
     )
     state.online_up["not_null"].extend(route)
     state.online_up["cleanup"].extend(cleanup)
-    for statement in reversed(loosen):
-        state.online_down["not_null"].insert(0, statement)
+    state.undo(*loosen, group="not_null")
 
 
 def _column_keys_online(
@@ -682,8 +683,9 @@ def _column_keys_online(
                     actual_table.partitions,
                 )
             )
-            state.online_down["index"].insert(
-                0, if_exists(state.compiler.compile_drop_index(key, table_sql))
+            state.undo(
+                if_exists(state.compiler.compile_drop_index(key, table_sql)),
+                group="index",
             )
         else:
             state.online_up["index"].extend(
@@ -709,8 +711,8 @@ def _column_keys_online(
             state.online_up["index"].append(
                 unique_using_index(state.compiler, table_sql, table, key)
             )
-            state.online_down["index"].insert(
-                0, state.compiler.compile_drop_constraint(table_sql, key)
+            state.undo(
+                state.compiler.compile_drop_constraint(table_sql, key), group="index"
             )
         state.online_keys.add(_key(bare, (name,)))
     if coldef.references is None:

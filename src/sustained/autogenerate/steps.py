@@ -7,7 +7,7 @@ sustained.autogenerate.column_steps.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, NamedTuple, Set, Tuple, Type
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Set, Tuple, Type
 
 from sustained.analysis import with_intent
 from sustained.autogenerate.diff import SchemaDiff, _enum_value_additions
@@ -159,6 +159,14 @@ class _Generation:
         # the whole column after them.
         self.restated_states: Dict[Tuple[str, str], ColumnState] = {}
 
+    def undo(self, *statements: str, group: Optional[str] = None) -> None:
+        """
+        Puts statements in front of the down steps as one block, in the
+        order given, or in front of the online group's down steps.
+        """
+        target = self.down_steps if group is None else self.online_down[group]
+        target[0:0] = statements
+
     def rebuild(self, model: Type["Model"]) -> None:
         """Sends the model's table to the rebuild path."""
         self.rebuild_tables[_table_key(model)] = model
@@ -214,9 +222,7 @@ def _table_rename_steps(state: _Generation, table_renames: Dict[str, str]) -> No
                 new=new,
             )
         )
-        state.down_steps.insert(
-            0, state.compiler.compile_rename_table(new_sql, old_sql)
-        )
+        state.undo(state.compiler.compile_rename_table(new_sql, old_sql))
 
 
 def _column_rename_steps(state: _Generation, renames: Dict[str, str]) -> None:
@@ -260,8 +266,8 @@ def _column_rename_steps(state: _Generation, renames: Dict[str, str]) -> None:
                     name=old_check,
                 )
             )
-            state.down_steps.insert(
-                0, state.compiler.compile_add_check(table_sql, old_check, expression)
+            state.undo(
+                state.compiler.compile_add_check(table_sql, old_check, expression)
             )
         state.up_steps.append(
             with_intent(
@@ -272,9 +278,7 @@ def _column_rename_steps(state: _Generation, renames: Dict[str, str]) -> None:
                 new=new_name,
             )
         )
-        state.down_steps.insert(
-            0, state.compiler.compile_rename_column(table_sql, new_name, old_name)
-        )
+        state.undo(state.compiler.compile_rename_column(table_sql, new_name, old_name))
         if renames_check:
             assert model is not None and coldef is not None
             _add_enum_check(
@@ -368,7 +372,7 @@ def _new_table_steps(state: _Generation) -> None:
                     continue
                 state.up_steps.append(add_sql)
                 fk_downs.insert(0, drop_sql)
-    state.down_steps[0:0] = fk_downs + table_downs
+    state.undo(*fk_downs + table_downs)
 
 
 def _intent_name(statement: str) -> str:
@@ -388,7 +392,7 @@ def _late_foreign_key_steps(state: _Generation) -> None:
     for fk in state.late_foreign_keys:
         if not state.online:
             state.up_steps.append(fk.add)
-            state.down_steps.insert(0, fk.drop)
+            state.undo(fk.drop)
             continue
         late = fk.target in state.online_keys
         up, down = (
@@ -703,9 +707,7 @@ def _constraint_steps(state: _Generation) -> None:
                 )
             )
         )
-        state.down_steps.insert(
-            0, state.compiler.compile_drop_constraint(table_sql, check.name)
-        )
+        state.undo(state.compiler.compile_drop_constraint(table_sql, check.name))
         _validate_online(state, table_sql, model, check.name)
     for model, fk in state.diff.new_foreign_keys:
         if state.skip(model):
@@ -782,10 +784,8 @@ def _constraint_steps(state: _Generation) -> None:
             if restore is None:
                 state.reversible = False
             else:
-                state.down_steps.insert(0, restore)
-                state.down_steps.insert(
-                    0, state.compiler.compile_drop_foreign_key(table_sql, fk.name)
-                )
+                state.undo(restore)
+                state.undo(state.compiler.compile_drop_foreign_key(table_sql, fk.name))
         # With online, the drops run in the migration outside the DDL
         # transaction, after everything else, each with IF EXISTS.
         drop_up, drop_down = _drop_lists(state)
