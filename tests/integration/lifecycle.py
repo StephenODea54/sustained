@@ -450,8 +450,10 @@ class ServerCase(
     def test_a_column_comment_round_trips(self):
         """
         A declared comment lands where the engine stores one and reads
-        back, and it never drifts: a dialect that stores no comments
-        renders nothing and plans nothing.
+        back, and it never drifts. A dialect that stores no comments
+        renders nothing and plans nothing. SQL Server reads a comment that
+        someone set by hand, but the generated migration sets none, so the
+        read finds no comment there.
         """
         compiler = Dialects.get_compiler(self.DIALECT)
         self.Widget.tableColumns["name"] = String(
@@ -467,7 +469,7 @@ class ServerCase(
                 "Display name", snapshot["it_widgets"].columns["name"].comment
             )
         else:
-            self.assertFalse(snapshot.comments_read)
+            self.assertIsNone(snapshot["it_widgets"].columns["name"].comment)
         self.assertIsNone(migrator.plan([self.Widget]))
 
     def test_a_drifted_comment_is_migrated_back(self):
