@@ -213,15 +213,6 @@ def _rename_table(facts: Facts) -> Outcome:
     return Outcome.of(Effect(RENAME, table, SCH_M, Work.CATALOG, notes=(note,)))
 
 
-def _truncate(facts: Facts) -> Outcome:
-    return Outcome(
-        tuple(
-            Effect(TRUNCATE, table, SCH_M, Work.CATALOG)
-            for table in common.tables(facts)
-        )
-    )
-
-
 def _drop_table(facts: Facts) -> Outcome:
     """
     DROP TABLE takes Sch-M on the table, and on each table its foreign
@@ -340,22 +331,13 @@ def _write_rows(facts: Facts) -> Outcome:
     )
 
 
-def _update_statistics(facts: Facts) -> Outcome:
-    """
-    UPDATE STATISTICS reads the table, or a sample of it, holding Sch-S,
-    which only other schema changes wait for.
-    """
-    table = common.table(facts)
-    return Outcome.of(Effect(UPDATE_STATISTICS, table, SCH_S, Work.SCAN))
-
-
 STATEMENTS: Dict[str, common.Handler] = {
     "alter_table": alter_table,
     "create_index": _create_index,
     "drop_index": _drop_index,
     "alter_index": _alter_index,
     "rename_table": _rename_table,
-    "truncate": _truncate,
+    "truncate": common.fixed(TRUNCATE, SCH_M, Work.CATALOG, many=True),
     "drop_table": _drop_table,
     "create_table": _create_table,
     "create_trigger": _trigger,
@@ -363,7 +345,9 @@ STATEMENTS: Dict[str, common.Handler] = {
     "update": _write_rows,
     "delete": _write_rows,
     "insert": _write_rows,
-    "update_statistics": _update_statistics,
+    # UPDATE STATISTICS reads the table, or a sample of it, holding
+    # Sch-S, which only other schema changes wait for.
+    "update_statistics": common.fixed(UPDATE_STATISTICS, SCH_S, Work.SCAN),
     "create_view": common.nothing,
     "drop_view": common.nothing,
     "create_object": common.nothing,

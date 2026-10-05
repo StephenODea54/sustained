@@ -25,8 +25,6 @@ from sustained.impact.rules.postgres.catalog import (
     DROP_INDEX_CONCURRENTLY,
     DROP_SCHEMA,
     DROP_TABLE,
-    DROP_VIEW,
-    INSERT_ROWS,
     LOCK_TABLE,
     REFRESH,
     REFRESH_CONCURRENTLY,
@@ -491,15 +489,6 @@ def foreign_key_effect(
     )
 
 
-def _drop_view(facts: Facts) -> Outcome:
-    return Outcome(
-        tuple(
-            Effect(DROP_VIEW, table, ACCESS_EXCLUSIVE, Work.CATALOG)
-            for table in common.tables(facts)
-        )
-    )
-
-
 def _write_rows(facts: Facts) -> Outcome:
     table = common.table(facts)
     message = common.row_write_message(facts, table)
@@ -513,11 +502,6 @@ def _write_rows(facts: Facts) -> Outcome:
             blocks=Blocks.WRITES,
         )
     )
-
-
-def _insert(facts: Facts) -> Outcome:
-    table = common.table(facts)
-    return Outcome.of(Effect(INSERT_ROWS, table, ROW_EXCLUSIVE, Work.ROWS))
 
 
 def _reindex(facts: Facts) -> Outcome:

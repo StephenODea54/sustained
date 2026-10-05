@@ -168,11 +168,6 @@ def _alter_table(facts: Facts) -> Outcome:
     return common.each_action(facts, _read)
 
 
-def _create_index(facts: Facts) -> Outcome:
-    table = common.table(facts)
-    return Outcome.of(_effect(CREATE_INDEX, table, None, Work.INDEX_BUILD))
-
-
 def _drop_index(facts: Facts) -> Outcome:
     return Outcome(
         tuple(
@@ -184,11 +179,6 @@ def _drop_index(facts: Facts) -> Outcome:
     )
 
 
-def _comment(facts: Facts) -> Outcome:
-    table = facts.parsed.table or DATABASE
-    return Outcome.of(_effect(COMMENT, table, CATALOG_ENTRY, Work.CATALOG))
-
-
 def _create_table(facts: Facts) -> Outcome:
     """
     A new table, which no other transaction sees, and a catalog entry on
@@ -198,11 +188,6 @@ def _create_table(facts: Facts) -> Outcome:
     for target in facts.parsed.items("references"):
         effects.append(_effect(CREATE_TABLE, str(target), CATALOG_ENTRY, Work.CATALOG))
     return Outcome(tuple(effects))
-
-
-def _schema_change(facts: Facts) -> Outcome:
-    table = facts.parsed.table or DATABASE
-    return Outcome.of(_effect(SCHEMA_CHANGE, table, None, Work.CATALOG))
 
 
 def _drop_table(facts: Facts) -> Outcome:
@@ -250,16 +235,13 @@ def _write_rows(facts: Facts) -> Outcome:
     return Outcome(tuple(effects))
 
 
-def _analyze(facts: Facts) -> Outcome:
-    tables = common.tables(facts) or [DATABASE]
-    return Outcome(tuple(_effect(ANALYZE, table, None, Work.SCAN) for table in tables))
-
+_schema_change = common.fixed(SCHEMA_CHANGE, None, Work.CATALOG, default=DATABASE)
 
 STATEMENTS: Dict[str, common.Handler] = {
     "alter_table": _alter_table,
-    "create_index": _create_index,
+    "create_index": common.fixed(CREATE_INDEX, None, Work.INDEX_BUILD),
     "drop_index": _drop_index,
-    "comment_on": _comment,
+    "comment_on": common.fixed(COMMENT, CATALOG_ENTRY, Work.CATALOG, default=DATABASE),
     "create_table": _create_table,
     "create_view": _schema_change,
     "drop_view": _schema_change,
@@ -272,6 +254,6 @@ STATEMENTS: Dict[str, common.Handler] = {
     "update": _write_rows,
     "delete": _write_rows,
     "truncate": _write_rows,
-    "analyze": _analyze,
+    "analyze": common.fixed(ANALYZE, None, Work.SCAN, many=True, default=DATABASE),
     "set": common.nothing,
 }

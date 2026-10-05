@@ -129,6 +129,29 @@ def fixed_action(rule: Rule, lock: str, work: Work) -> ActionHandler:
     return handler
 
 
+def fixed(
+    rule: Rule,
+    lock: Optional[str],
+    work: Work,
+    many: bool = False,
+    default: Optional[str] = None,
+) -> Handler:
+    """
+    The handler of a statement that always takes one lock and work on
+    the table it names, or with `many` on each table it names. `default`
+    stands for the table when the statement names none.
+    """
+
+    def handler(facts: Facts) -> Outcome:
+        if many:
+            named = tables(facts) or ([default] if default else [])
+        else:
+            named = [facts.parsed.table or default or UNNAMED_TABLE]
+        return Outcome(tuple(Effect(rule, t, lock, work) for t in named))
+
+    return handler
+
+
 def by_kind(handlers: Mapping[str, ActionHandler]) -> ActionReader:
     """Reads each ALTER TABLE action with the handler for its kind."""
 
