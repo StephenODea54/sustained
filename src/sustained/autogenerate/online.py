@@ -49,7 +49,7 @@ import re
 from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
 from sustained.analysis import MigrationStatement, with_intent
-from sustained.schema import dotted_name
+from sustained.schema import Index, create_index_sql, dotted_name
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
@@ -280,9 +280,7 @@ def partitioned_index(
     compiler: "Compiler",
     table_sql: str,
     table: str,
-    name: str,
-    columns: Sequence[str],
-    unique: bool,
+    index: Index,
     partitions: Sequence["IntrospectedPartition"],
 ) -> List[MigrationStatement]:
     """
@@ -294,7 +292,8 @@ def partitioned_index(
     ATTACH PARTITION attaches it. The index on the table turns valid
     when an index of every partition is attached. A partition that is
     partitioned in turn gets an index ON ONLY, with its own partitions
-    attached to it first.
+    attached to it first. Every build takes the key part directions and
+    the predicate of `index`.
 
     Each statement runs again after a failed attempt: the builds take
     IF NOT EXISTS, and ATTACH PARTITION does nothing to an index that
@@ -303,22 +302,29 @@ def partitioned_index(
     cannot be, so a run again fails on the attach of the invalid index
     and names it.
     """
-    index = compiler.quote_ddl_identifier(name)
-    columns_sql = ", ".join(compiler.quote_ddl_identifier(c) for c in columns)
+    name, columns, unique = index.name, index.columns, index.unique
+    parts_sql = ", ".join(compiler.compile_index_column(c) for c in index.key_parts)
+    where_sql = "" if index.where is None else f" WHERE {index.where}"
     unique_sql = "UNIQUE " if unique else ""
     statements: List[MigrationStatement] = [
         with_intent(
-            f"CREATE {unique_sql}INDEX IF NOT EXISTS {index} ON ONLY {table_sql} "
-            f"({columns_sql})",
+            f"CREATE {unique_sql}INDEX IF NOT EXISTS "
+            f"{compiler.quote_ddl_identifier(name)} ON ONLY {table_sql} "
+            f"({parts_sql}){where_sql}",
             "create_index",
             table,
             name=name,
-            columns=tuple(columns),
+            columns=columns,
             unique=unique,
         )
     ]
     for partition in partitions:
-        child = partition_index_name(partition.name, columns)
+        child = Index(
+            partition_index_name(partition.name, columns),
+            *index.key_parts,
+            unique=unique,
+            where=index.where,
+        )
         child_sql = _qualified(compiler, partition.schema, partition.name)
         if partition.partitioned:
             statements.extend(
@@ -327,8 +333,6 @@ def partitioned_index(
                     child_sql,
                     _reported(partition),
                     child,
-                    columns,
-                    unique,
                     partition.partitions,
                 )
             )
@@ -336,13 +340,11 @@ def partitioned_index(
             statements.append(
                 concurrently(
                     with_intent(
-                        compiler.compile_create_index(
-                            child, child_sql, list(columns), unique
-                        ),
+                        create_index_sql(compiler, child_sql, child),
                         "create_index",
                         _reported(partition),
-                        name=child,
-                        columns=tuple(columns),
+                        name=child.name,
+                        columns=columns,
                         unique=unique,
                     )
                 )
@@ -351,7 +353,7 @@ def partitioned_index(
             with_intent(
                 f"ALTER INDEX {_index_sql(compiler, table_sql, name)} "
                 f"ATTACH PARTITION "
-                f"{_qualified(compiler, partition.schema, child)}",
+                f"{_qualified(compiler, partition.schema, child.name)}",
                 "attach_index",
                 table,
                 name=name,

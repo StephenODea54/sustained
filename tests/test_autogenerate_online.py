@@ -29,7 +29,7 @@ from sustained.introspect.model import (
 from sustained.migrations import Migration, Migrator
 from sustained.migrations.checks import run_statements
 from sustained.migrations.migration import _restore_migration, _stored_steps
-from sustained.schema import Check, ForeignKey, Index, Integer, String
+from sustained.schema import Check, ForeignKey, Index, IndexColumn, Integer, String
 from sustained.types import Expression
 from tests.test_autogenerate import make_model
 
@@ -832,6 +832,24 @@ class PartitionedTestCase(unittest.TestCase):
         )
         self.assertEqual(online.up[1].intent.table, "arch.orders_a")
         self.assertEqual(online.up[2].intent.get("partition"), "arch.orders_a")
+
+    def test_each_build_keeps_the_directions_and_the_predicate(self):
+        index = Index(
+            "ix_orders_email", IndexColumn("email", desc=True), where="email <> ''"
+        )
+        orders = pg_model("PartDetails", "orders", self.COLUMNS, [index])
+        partitions = (IntrospectedPartition("orders_a"),)
+        (online,) = generate(True, found(partitioned_orders(partitions)), [orders])
+        self.assertEqual(
+            online.up,
+            [
+                'CREATE INDEX IF NOT EXISTS "ix_orders_email" ON ONLY "orders" '
+                "(\"email\" DESC) WHERE email <> ''",
+                'CREATE INDEX CONCURRENTLY IF NOT EXISTS "orders_a_email_idx" '
+                'ON "orders_a" ("email" DESC) WHERE email <> \'\'',
+                'ALTER INDEX "ix_orders_email" ATTACH PARTITION "orders_a_email_idx"',
+            ],
+        )
 
     def test_without_online_the_index_is_built_directly(self):
         orders = pg_model(

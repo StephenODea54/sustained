@@ -645,9 +645,7 @@ def _built_online(
                 state.compiler,
                 table_sql,
                 table,
-                index.name,
-                list(index.columns),
-                index.unique,
+                index,
                 found.partitions,
             )
         )

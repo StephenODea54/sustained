@@ -41,6 +41,7 @@ from sustained.exceptions import DialectError
 from sustained.rebuild import add_column_needs_rebuild, tightening_filler
 from sustained.schema import (
     ColumnState,
+    Index,
     add_column_statements,
     bare_table_name,
     enum_check_name,
@@ -672,9 +673,7 @@ def _column_keys_online(
                     state.compiler,
                     table_sql,
                     table,
-                    key,
-                    [name],
-                    True,
+                    Index(key, name, unique=True),
                     actual_table.partitions,
                 )
             )
