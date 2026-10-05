@@ -3,8 +3,8 @@ Identifier quoting rules that hold for every dialect.
 
 A quoted identifier must contain its own delimiter safely, and an alias
 must be a plain name because the default dialect writes identifiers bare.
-A column string can come from a request, so one that is not a column name
-is refused rather than rendered.
+A column string can come from a request, so every name in it is quoted, and
+the default dialect, which writes names bare, refuses one that is not plain.
 """
 
 import unittest
@@ -14,6 +14,7 @@ from sustained.dialects import Dialects
 from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
+    ColumnExpr,
     Func,
     Subquery,
     WindowExpression,
@@ -122,7 +123,7 @@ INJECTIONS = (
 
 
 class TestColumnStrings(unittest.TestCase):
-    """Every clause that takes a column string refuses SQL in it."""
+    """Every clause that takes a column string keeps SQL in it out of the query."""
 
     def tearDown(self):
         Item.set_dialect(Dialects.DEFAULT)
@@ -137,14 +138,66 @@ class TestColumnStrings(unittest.TestCase):
         yield "distinctOn", lambda: Item.query().distinctOn(text)
         yield "from_", lambda: Item.query().from_(text)
 
-    def test_sql_in_a_column_string_is_refused_on_every_dialect(self):
-        for dialect in (Dialects.DEFAULT, Dialects.POSTGRES, Dialects.MYSQL):
+    def test_default_dialect_refuses_sql_in_a_column_string(self):
+        for text in INJECTIONS:
+            for clause, build in self.clauses(text):
+                with self.subTest(clause=clause, text=text):
+                    with self.assertRaises(ValueError):
+                        str(build())
+
+    def test_quoting_dialects_render_sql_as_one_quoted_name(self):
+        for dialect, quoted in (
+            (Dialects.POSTGRES, '"id; DROP TABLE items"'),
+            (Dialects.MYSQL, "`id; DROP TABLE items`"),
+            (Dialects.MSSQL, "[id; DROP TABLE items]"),
+        ):
             Item.set_dialect(dialect)
-            for text in INJECTIONS:
-                for clause, build in self.clauses(text):
-                    with self.subTest(dialect=dialect.name, clause=clause, text=text):
-                        with self.assertRaises(ValueError):
-                            str(build())
+            with self.subTest(dialect=dialect.name):
+                sql = Item.query().where("id; DROP TABLE items", "=", 1).to_sql()[0]
+                self.assertIn(f"WHERE {quoted} = ", sql)
+
+    def test_hostile_strings_render_as_quoted_names(self):
+        compiler = Dialects.get_compiler(Dialects.POSTGRES)
+        cases = {
+            "name UNION SELECT s FROM secrets --": '"name UNION SELECT s FROM secrets --"',
+            "id = 0 OR 1": '"id = 0 OR 1"',
+            "a) OR (1=1": '"a) OR (1=1"',
+            "COUNT(id) OR 1": '"COUNT(id) OR 1"',
+            "LOWER(name, 1)": 'LOWER("name, 1")',
+            "items.* , 1": '"items"."* , 1"',
+            'a"b': '"a""b"',
+            '"a"; DROP TABLE x': '"""a""; DROP TABLE x"',
+            '"unclosed': '"""unclosed"',
+            "SUM(a) + SUM(b)": 'SUM("a) + SUM(b")',
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(compiler.quote_column_reference(text), expected)
+
+    def test_mssql_and_mysql_double_the_closing_quote(self):
+        mssql = Dialects.get_compiler(Dialects.MSSQL)
+        mysql = Dialects.get_compiler(Dialects.MYSQL)
+        self.assertEqual(mssql.quote_column_reference("a]; DROP x"), "[a]]; DROP x]")
+        self.assertEqual(mysql.quote_column_reference("a`; DROP x"), "`a``; DROP x`")
+
+    def test_empty_parts_are_refused_on_every_dialect(self):
+        for dialect in Dialects:
+            compiler = Dialects.get_compiler(dialect)
+            for text in ("", "a..b", ".a", "a.", '""', "t.[].x", ".*", "COUNT(a.)"):
+                with self.subTest(dialect=dialect.name, text=text):
+                    with self.assertRaisesRegex(ValueError, "not a column name"):
+                        compiler.quote_column_reference(text)
+
+    def test_error_names_the_string_and_the_raw_path(self):
+        Item.set_dialect(Dialects.POSTGRES)
+        with self.assertRaises(ValueError) as caught:
+            str(Item.query().orderBy("items..id"))
+        self.assertIn("'items..id'", str(caught.exception))
+        self.assertIn("QueryBuilder.raw()", str(caught.exception))
+
+    def test_default_dialect_error_names_the_part(self):
+        with self.assertRaisesRegex(ValueError, "'id DESC, \\(SELECT 1\\)'"):
+            str(Item.query().orderBy("id DESC, (SELECT 1)"))
 
     def test_from_takes_only_a_table_name(self):
         for text in ("items.*", "COUNT(id)", "*"):
@@ -155,12 +208,6 @@ class TestColumnStrings(unittest.TestCase):
         self.assertEqual(
             str(Item.query().from_("sales.items")), 'SELECT * FROM "sales"."items"'
         )
-
-    def test_error_names_the_string_and_the_raw_path(self):
-        with self.assertRaises(ValueError) as caught:
-            str(Item.query().orderBy("id DESC, (SELECT 1)"))
-        self.assertIn("'id DESC, (SELECT 1)'", str(caught.exception))
-        self.assertIn("QueryBuilder.raw()", str(caught.exception))
 
     def test_column_forms_are_quoted_per_dialect(self):
         Item.set_dialect(Dialects.POSTGRES)
@@ -186,6 +233,121 @@ class TestColumnStrings(unittest.TestCase):
             "SELECT LOWER(name) FROM items GROUP BY LOWER(name) "
             "ORDER BY LOWER(name) ASC",
         )
+
+
+class Staff(Model):
+    tableName = "staff"
+
+
+class TestColumnNamesThatAreNotPlainWords(unittest.TestCase):
+    """A column name with a space or a non-ASCII letter works on read paths."""
+
+    QUOTES = {
+        Dialects.POSTGRES: ('"', '"'),
+        Dialects.MSSQL: ("[", "]"),
+        Dialects.MYSQL: ("`", "`"),
+        Dialects.DUCKDB: ('"', '"'),
+        Dialects.PRESTO: ('"', '"'),
+        Dialects.ATHENA: ('"', '"'),
+    }
+
+    def tearDown(self):
+        Staff.set_dialect(Dialects.DEFAULT)
+
+    def test_read_paths_quote_a_name_with_a_space(self):
+        for dialect, (opening, closing) in self.QUOTES.items():
+            Staff.set_dialect(dialect)
+
+            def q(name):
+                return f"{opening}{name}{closing}"
+
+            with self.subTest(dialect=dialect.name):
+                query = (
+                    Staff.query()
+                    .select("Employee ID", "staff.Employee ID AS eid")
+                    .where("Employee ID", "=", 3)
+                    .where(ColumnExpr("Employee ID") > 1)
+                    .orderBy("Employee ID", "desc")
+                )
+                sql = query.to_sql()[0]
+                self.assertIn(
+                    f"SELECT {q('Employee ID')}, {q('staff')}.{q('Employee ID')} "
+                    f"AS {q('eid')} FROM",
+                    sql,
+                )
+                self.assertIn(f"WHERE {q('Employee ID')} = ", sql)
+                self.assertIn(f"AND {q('Employee ID')} > ", sql)
+                self.assertIn(f"ORDER BY {q('Employee ID')} DESC", sql)
+                self.assertIn(
+                    f"SUM({q('Employee ID')})",
+                    Staff.query().sum("Employee ID").to_sql()[0],
+                )
+                self.assertIn(
+                    f"COUNT({q('Employee ID')})",
+                    Staff.query().count("Employee ID").to_sql()[0],
+                )
+
+    def test_non_ascii_name(self):
+        compiler = Dialects.get_compiler(Dialects.POSTGRES)
+        self.assertEqual(compiler.quote_column_reference("prénom"), '"prénom"')
+        self.assertEqual(
+            compiler.quote_column_reference("staff.prénom"), '"staff"."prénom"'
+        )
+
+    def test_quoted_parts_take_the_quotes_of_the_dialect(self):
+        cases = {
+            'dbo."a.b"': ("dbo", "a.b"),
+            "[Employee ID]": ("Employee ID",),
+            "`a``b`.c": ("a`b", "c"),
+            '"a""b"': ('a"b',),
+            "[a]]b]": ("a]b",),
+        }
+        for dialect, (opening, closing) in self.QUOTES.items():
+            compiler = Dialects.get_compiler(dialect)
+            for text, names in cases.items():
+                with self.subTest(dialect=dialect.name, text=text):
+                    expected = ".".join(
+                        opening + name.replace(closing, closing * 2) + closing
+                        for name in names
+                    )
+                    self.assertEqual(compiler.quote_column_reference(text), expected)
+
+    def test_calls_and_table_star_take_the_same_parts(self):
+        compiler = Dialects.get_compiler(Dialects.MSSQL)
+        self.assertEqual(
+            compiler.quote_column_reference('SUM("Employee ID")'), "SUM([Employee ID])"
+        )
+        self.assertEqual(
+            compiler.quote_column_reference("COUNT(DISTINCT staff.[Employee ID])"),
+            "COUNT(DISTINCT [staff].[Employee ID])",
+        )
+        self.assertEqual(compiler.quote_column_reference("COUNT(*)"), "COUNT(*)")
+        self.assertEqual(
+            compiler.quote_column_reference('dbo."Staff List".*'),
+            "[dbo].[Staff List].*",
+        )
+
+    def test_select_alias_and_names_with_spaces(self):
+        compiler = Dialects.get_compiler(Dialects.POSTGRES)
+        self.assertEqual(
+            compiler.compile_select_item("Employee ID AS eid"), '"Employee ID" AS "eid"'
+        )
+        self.assertEqual(
+            compiler.compile_select_item('"Employee ID" as eid'),
+            '"Employee ID" AS "eid"',
+        )
+        self.assertEqual(compiler.compile_select_item("Employee ID"), '"Employee ID"')
+        self.assertEqual(compiler.compile_select_item('"Cost AS Pct"'), '"Cost AS Pct"')
+        with self.assertRaisesRegex(ValueError, "not a plain identifier"):
+            compiler.compile_select_item("id AS a b")
+
+    def test_default_dialect_refuses_a_name_that_is_not_plain(self):
+        compiler = Dialects.get_compiler(Dialects.DEFAULT)
+        for text in ("Employee ID", "SUM(Employee ID)", "Staff List.*", "prénom"):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, "DEFAULT dialect"):
+                    compiler.quote_column_reference(text)
+        self.assertEqual(compiler.quote_column_reference('"id"'), "id")
 
 
 class TestSubqueryStrings(unittest.TestCase):

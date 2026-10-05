@@ -108,7 +108,7 @@ The argument to `AggregateExpression` is raw SQL, so any dialect-specific quotin
 
 ### Functions
 
-`select_func()` calls any SQL function and treats each string argument as a column name. To pass a string as data, wrap it in `Literal`, and to pass it as raw SQL, wrap it in `Column`:
+`select_func()` calls any SQL function and treats each string argument as a column name. To pass a string as data, wrap it in `Literal`, and to pass it as raw SQL, wrap it in `Column`. Sustained does not quote the text of a `Column`:
 
 ```python
 from sustained import Literal

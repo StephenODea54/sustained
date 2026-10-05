@@ -147,7 +147,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | `limit()` and `top()` in one query, or either one set twice | Paging |
 | `top()` and `offset()` in one query | Paging |
 | An operator outside the allowlist | `where`, `having` |
-| A column string that is not a column name, `table.*`, or a call on one column | `where`, `having`, `join` |
+| A column string with an empty part, such as `'a..b'`, or with a part that is not a plain name on the default dialect | `where`, `having`, `join` |
 | A table name that is not a plain dotted name | `from_` |
 | A name that is not plain letters, digits, and underscores, on the default dialect | `join`, `on` |
 | A `Predicate` passed with an operator or a value | `where`, `having` |
@@ -169,7 +169,7 @@ Invalid input the builder can detect. The method you call raises some of these, 
 | Condition |
 | --- |
 | `UPDATE` or `DELETE` with no `where()` |
-| A column string that is not a column name, `table.*`, or a call on one column, in `select`, `orderBy`, `groupBy`, `distinctOn`, or `returning` |
+| A column string with an empty part, or with a part that is not a plain name on the default dialect, in `select`, `orderBy`, `groupBy`, `distinctOn`, or `returning` |
 | Two different subqueries sharing a CTE alias |
 | A `Subquery`, `Func`, aggregate, window, or `CASE` alias that is not letters, digits, and underscores |
 | `merge()` where every inserted column is a conflict column |

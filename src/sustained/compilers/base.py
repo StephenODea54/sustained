@@ -6,6 +6,7 @@ from functools import wraps
 from typing import (
     TYPE_CHECKING,
     Callable,
+    List,
     Mapping,
     Optional,
     Sequence,
@@ -39,10 +40,9 @@ _IDENTIFIER_PATH_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)*$"
 )
 
-# A select list entry with an alias, such as "name AS label".
-_SELECT_ALIAS_RE = re.compile(
-    r"^(?P<column>.+?)\s+AS\s+(?P<alias>[A-Za-z_][A-Za-z0-9_$]*)$", re.IGNORECASE
-)
+# A select list entry with an alias, such as "name AS label". The alias
+# goes through quote_alias(), which refuses one that is not a plain name.
+_SELECT_ALIAS_RE = re.compile(r"^(?P<column>.+?)\s+AS\s+(?P<alias>.+)$", re.IGNORECASE)
 
 # How each dialect's name is written in prose, for error messages.
 _DISPLAY_NAMES = {
@@ -56,21 +56,67 @@ _DISPLAY_NAMES = {
 # One plain identifier such as "users".
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
-# "users.*": every column of one table.
-_TABLE_STAR_RE = re.compile(
-    r"^(?P<table>[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)*)\.\*$"
-)
+# "users.*": every column of one table. The table is an identifier path.
+_TABLE_STAR_RE = re.compile(r"^(?P<table>.+)\.\*$")
 
 # A call with one column argument, such as "COUNT(*)", "SUM(tickets.price)",
-# or "COUNT(DISTINCT user_id)". The argument is quoted like any column.
+# or "COUNT(DISTINCT user_id)". The argument is "*" or an identifier path.
 _COLUMN_CALL_RE = re.compile(
     r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\(\s*(?P<distinct>DISTINCT\s+)?"
-    r"(?P<arg>\*|[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)*)\s*\)$",
+    r"(?P<arg>.+?)\s*\)$",
     re.IGNORECASE,
 )
 
 # The closing character of each identifier quote a dialect writes.
 _QUOTE_CLOSERS = {'"': '"', "`": "`", "[": "]"}
+
+
+def _read_quoted(text: str, start: int, closer: str) -> Optional[Tuple[int, str]]:
+    """
+    Reads a quoted name that starts after its opening quote at start. A
+    doubled closing quote is one quote character of the name. Returns the
+    position after the closing quote and the name, or None when the quote
+    does not close.
+    """
+    name: List[str] = []
+    position = start
+    while position < len(text):
+        char = text[position]
+        if char == closer:
+            if text[position + 1 : position + 2] != closer:
+                return position + 1, "".join(name)
+            position += 1
+        name.append(char)
+        position += 1
+    return None
+
+
+def _identifier_parts(text: str) -> Optional[List[Tuple[str, bool]]]:
+    """
+    Splits an identifier path such as 'dbo.users.id' on its dots. A part
+    in "..", [..] or `..` quotes is read without its quotes, so a dot
+    inside it is part of the name. Each item is the name and whether it
+    was quoted. Returns None when a part is empty.
+    """
+    parts: List[Tuple[str, bool]] = []
+    position = 0
+    while True:
+        closer = _QUOTE_CLOSERS.get(text[position : position + 1])
+        quoted = None if closer is None else _read_quoted(text, position + 1, closer)
+        if quoted is not None and text[quoted[0] : quoted[0] + 1] in ("", "."):
+            position, name = quoted
+            parts.append((name, True))
+        else:
+            dot = text.find(".", position)
+            end = len(text) if dot < 0 else dot
+            name = text[position:end]
+            position = end
+            parts.append((name, False))
+        if not name:
+            return None
+        if position == len(text):
+            return parts
+        position += 1
 
 
 def table_qualifier(table_sql: str) -> str:
@@ -373,12 +419,16 @@ class Compiler:
         """
         Quotes a column reference for use inside a clause.
 
-        A string is an identifier path, "*", "table.*", or a call with one
-        column argument such as "COUNT(*)" or "SUM(tickets.price)". Every
-        identifier in it is quoted per dialect. A string can arrive from a
-        request, such as a sort parameter, so any other string raises
-        ValueError rather than reaching the SQL. Expression objects are raw
-        SQL.
+        A string is "*", "table.*", a call with one column argument such as
+        "COUNT(*)" or "SUM(tickets.price)", or else an identifier path. A
+        path splits on its dots, and each part goes through
+        quote_identifier(), so "Employee ID" and "prénom" are names too. A
+        part already in "..", [..] or `..` quotes loses those quotes and
+        takes the quotes of this dialect, so 'dbo."a.b"' names one column
+        "a.b". A string can arrive from a request, such as a sort
+        parameter, and every part of it is quoted, so text in it never runs
+        as SQL. The default dialect writes names bare and raises ValueError
+        for a part that is not a plain name. Expression objects are raw SQL.
         """
         if isinstance(column, Expression):
             return str(column)
@@ -388,22 +438,33 @@ class Compiler:
             )
         if column == "*":
             return column
-        if _IDENTIFIER_PATH_RE.match(column):
-            return self.quote_fully_qualified_identifier(column)
         star = _TABLE_STAR_RE.match(column)
         if star:
-            return f"{self.quote_fully_qualified_identifier(star['table'])}.*"
+            return f"{self._quote_column_path(column, star['table'])}.*"
         call = _COLUMN_CALL_RE.match(column)
         if call:
             distinct = "DISTINCT " if call["distinct"] else ""
-            arg = self.quote_column_reference(call["arg"])
+            arg = call["arg"]
+            if arg != "*":
+                arg = self._quote_column_path(column, arg)
             return f"{call['name']}({distinct}{arg})"
-        raise ValueError(
-            f"Column reference {column!r} is not a column name. A string "
-            "names a column, such as 'users.id', 'users.*', or a call on one "
-            "column such as 'COUNT(*)' or 'SUM(price)'. Pass any other SQL "
-            "through QueryBuilder.raw()."
-        )
+        return self._quote_column_path(column, column)
+
+    def _quote_column_path(self, column: str, path: str) -> str:
+        """
+        Quotes each part of an identifier path from the column string
+        column. An empty part raises ValueError.
+        """
+        parts = _identifier_parts(path)
+        if parts is None:
+            raise ValueError(
+                f"Column reference {column!r} is not a column name. A string "
+                "names a column, such as 'users.id', 'users.*', or a call on "
+                "one column such as 'COUNT(*)' or 'SUM(price)', and no part "
+                "of a dotted name is empty. Pass any other SQL through "
+                "QueryBuilder.raw()."
+            )
+        return ".".join(self.quote_identifier(name) for name, _ in parts)
 
     def validate_operator(self, operator: str) -> str:
         """
@@ -1668,8 +1729,13 @@ class Compiler:
     def _compile_select_string(self, column: str) -> str:
         """
         Quotes a string select entry, supporting an optional "col AS alias"
-        suffix so aliased selections quote correctly in every dialect.
+        suffix so aliased selections quote correctly in every dialect. A
+        string that is one identifier path with every part in quotes is a
+        column, so '"Cost AS Pct"' names one column.
         """
+        parts = _identifier_parts(column)
+        if parts is not None and all(quoted for _, quoted in parts):
+            return self.quote_column_reference(column)
         alias_match = _SELECT_ALIAS_RE.match(column)
         if alias_match:
             quoted = self.quote_column_reference(alias_match.group("column").strip())
