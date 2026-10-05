@@ -31,7 +31,7 @@ from sustained.introspect import (
     normalize_default,
 )
 from sustained.rebuild import implied_constraint_names
-from sustained.schema import Check, ForeignKey, bare_table_name
+from sustained.schema import Check, ForeignKey, bare_table_name, enum_check_name
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
@@ -346,7 +346,7 @@ def _diff_enum_checks(
         if coldef.type_name != "ENUM" or name.lower() not in actual_table.columns:
             continue
         assert coldef.enum_values is not None
-        expression = actual_table.checks.get(f"ck_{table}_{name}_enum".lower())
+        expression = actual_table.checks.get(enum_check_name(table, name).lower())
         live = () if expression is None else _enum_check_values(expression)
         if expression is None or set(live) != set(coldef.enum_values):
             diff.changed_enum_checks.append((model, name, live, expression))

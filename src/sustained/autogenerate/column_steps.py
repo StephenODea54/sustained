@@ -38,6 +38,7 @@ from sustained.schema import (
     ColumnState,
     add_column_statements,
     bare_table_name,
+    enum_check_name,
     render_column_sql,
 )
 from sustained.type_changes import type_change_loses_data
@@ -66,7 +67,7 @@ def _enum_checks_off(state: _Generation) -> None:
             continue
         if expression is not None:
             table_sql = model._qualified_table_sql(compiler)
-            constraint = f"ck_{bare_table_name(model.tableName or '')}_{name}_enum"
+            constraint = enum_check_name(model.tableName or "", name)
             up_steps.append(
                 with_intent(
                     compiler.compile_drop_constraint(table_sql, constraint),

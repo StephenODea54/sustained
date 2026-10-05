@@ -47,6 +47,8 @@ from sustained.schema import (
     build_create_table_sql,
     collect_enum_types,
     create_index_statement,
+    enum_check_expression,
+    enum_check_name,
 )
 from sustained.types import Expression
 
@@ -437,13 +439,11 @@ def _render_add_column(args: _Args, compiler: "Compiler") -> List[str]:
     )
     if column.type_name == "ENUM" and compiler.enum_strategy() == "check":
         assert column.enum_values is not None
-        constraint = _enum_check_name(table_sql, name)
-        column_ref = compiler.quote_ddl_identifier(name)
-        values_sql = ", ".join(compiler.format_value(v) for v in column.enum_values)
+        constraint = enum_check_name(table_sql, name)
         statements.append(
             _tag(
                 compiler.compile_add_check(
-                    table_sql, constraint, f"{column_ref} IN ({values_sql})"
+                    table_sql, constraint, enum_check_expression(compiler, name, column)
                 ),
                 "add_check",
                 table,
@@ -452,10 +452,6 @@ def _render_add_column(args: _Args, compiler: "Compiler") -> List[str]:
             )
         )
     return statements
-
-
-def _enum_check_name(table_sql: str, column_name: str) -> str:
-    return f"ck_{bare_table_name(table_sql)}_{column_name}_enum"
 
 
 @_inverse_of("add_column")
@@ -492,7 +488,7 @@ def _render_drop_column(args: _Args, compiler: "Compiler") -> List[str]:
     table_sql = _table_sql(args, compiler)
     statements: List[str] = []
     if args["drop_enum_check"] and compiler.enum_strategy() == "check":
-        constraint = _enum_check_name(table_sql, name)
+        constraint = enum_check_name(table_sql, name)
         statements.append(
             _tag(
                 compiler.compile_drop_constraint(table_sql, constraint),
@@ -552,7 +548,7 @@ def _render_rename_column(args: _Args, compiler: "Compiler") -> List[str]:
     )
     statements: List[str] = []
     if renames_check:
-        old_check = _enum_check_name(table_sql, old)
+        old_check = enum_check_name(table_sql, old)
         statements.append(
             _tag(
                 compiler.compile_drop_constraint(table_sql, old_check),
@@ -573,13 +569,11 @@ def _render_rename_column(args: _Args, compiler: "Compiler") -> List[str]:
     )
     if renames_check:
         assert isinstance(column, ColumnDef) and column.enum_values is not None
-        new_check = _enum_check_name(table_sql, new)
-        column_ref = compiler.quote_ddl_identifier(new)
-        values_sql = ", ".join(compiler.format_value(v) for v in column.enum_values)
+        new_check = enum_check_name(table_sql, new)
         statements.append(
             _tag(
                 compiler.compile_add_check(
-                    table_sql, new_check, f"{column_ref} IN ({values_sql})"
+                    table_sql, new_check, enum_check_expression(compiler, new, column)
                 ),
                 "add_check",
                 args["table"],

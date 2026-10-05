@@ -613,11 +613,26 @@ def enum_check_constraint_sql(
     Renders the named CHECK constraint that holds an enum column to its
     values, on dialects without an enum type.
     """
+    constraint = compiler.quote_ddl_identifier(enum_check_name(table_name, column_name))
+    expression = enum_check_expression(compiler, column_name, col)
+    return f"CONSTRAINT {constraint} CHECK ({expression})"
+
+
+def enum_check_name(table: str, column: str) -> str:
+    """
+    The name of the CHECK constraint that keeps an enum column to its
+    values. `table` is a table name or a rendered table reference, and
+    only its last part, unquoted, goes into the name.
+    """
+    return f"ck_{bare_table_name(table)}_{column}_enum"
+
+
+def enum_check_expression(compiler: "Compiler", column: str, col: ColumnDef) -> str:
+    """The `column IN (values)` expression of an enum column's CHECK."""
     assert col.enum_values is not None
-    constraint = compiler.quote_ddl_identifier(f"ck_{table_name}_{column_name}_enum")
-    column_sql = compiler.quote_ddl_identifier(column_name)
+    column_sql = compiler.quote_ddl_identifier(column)
     values_sql = ", ".join(compiler.format_value(v) for v in col.enum_values)
-    return f"CONSTRAINT {constraint} CHECK ({column_sql} IN ({values_sql}))"
+    return f"{column_sql} IN ({values_sql})"
 
 
 def check_constraint_sql(compiler: "Compiler", check: Check) -> str:

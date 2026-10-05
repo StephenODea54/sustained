@@ -35,7 +35,8 @@ from sustained.schema import (
     bare_table_name,
     build_create_table_sql,
     create_index_statement,
-    enum_check_constraint_sql,
+    enum_check_expression,
+    enum_check_name,
 )
 from sustained.type_changes import removed_enum_values
 from sustained.types import Connection
@@ -567,23 +568,19 @@ def _add_enum_check(
     """
     if coldef.type_name != "ENUM" or compiler.enum_strategy() != "check":
         return
-    from sustained.schema import bare_table_name
-
-    table_name = bare_table_name(table_sql)
-    constraint_sql = enum_check_constraint_sql(compiler, table_name, name, coldef)
+    constraint = enum_check_name(table_sql, name)
     up_steps.append(
         with_intent(
-            f"ALTER TABLE {table_sql} ADD {constraint_sql}",
+            compiler.compile_add_check(
+                table_sql, constraint, enum_check_expression(compiler, name, coldef)
+            ),
             "add_check",
             _intent_table(model),
             name,
-            name=f"ck_{table_name}_{name}_enum",
+            name=constraint,
         )
     )
-    down_steps.insert(
-        0,
-        compiler.compile_drop_constraint(table_sql, f"ck_{table_name}_{name}_enum"),
-    )
+    down_steps.insert(0, compiler.compile_drop_constraint(table_sql, constraint))
 
 
 def _relaxed_copy(coldef: "ColumnDef") -> "ColumnDef":

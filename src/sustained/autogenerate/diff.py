@@ -30,7 +30,13 @@ from sustained.introspect import (
     type_params,
 )
 from sustained.introspect.normalize import normalize_check
-from sustained.schema import Check, ForeignKey, bare_table_name, collect_enum_types
+from sustained.schema import (
+    Check,
+    ForeignKey,
+    bare_table_name,
+    collect_enum_types,
+    enum_check_name,
+)
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
@@ -462,10 +468,10 @@ def _apply_renames(
             name: _rename_in_expression(expression, old_key, new_key)
             for name, expression in old_table.checks.items()
         }
-        bare = bare_table_name(table_key)
-        old_check = f"ck_{bare}_{old_key}_enum"
+        old_check = enum_check_name(table_key, old_key)
         if old_check in renamed_checks:
-            renamed_checks[f"ck_{bare}_{new_key}_enum"] = renamed_checks.pop(old_check)
+            new_check = enum_check_name(table_key, new_key)
+            renamed_checks[new_check] = renamed_checks.pop(old_check)
             actual.renamed_enum_checks[(table_key, new_key)] = (
                 old_check,
                 old_table.checks[old_check],

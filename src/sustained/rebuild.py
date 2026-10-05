@@ -16,7 +16,12 @@ import re
 from typing import TYPE_CHECKING, Dict, List, Set, Tuple, Type
 
 from sustained.introspect import IntrospectedColumn, IntrospectedTable, Snapshot
-from sustained.schema import bare_table_name, build_create_table_sql, create_index_sql
+from sustained.schema import (
+    bare_table_name,
+    build_create_table_sql,
+    create_index_sql,
+    enum_check_name,
+)
 from sustained.types import Expression
 
 if TYPE_CHECKING:
@@ -40,7 +45,7 @@ def implied_constraint_names(
     fk_columns: Set[Tuple[str, ...]] = set()
     for name, coldef in (model.tableColumns or {}).items():
         if coldef.type_name == "ENUM" and compiler.enum_strategy() == "check":
-            check_names.add(f"ck_{table}_{name}_enum".lower())
+            check_names.add(enum_check_name(table, name).lower())
         if coldef.references is not None:
             fk_columns.add((name.lower(),))
     return check_names, fk_columns
