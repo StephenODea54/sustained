@@ -254,6 +254,15 @@ class StatementTestCase(unittest.TestCase):
         self.assertEqual(found.tables[0].table, "w")
         self.assertEqual(table("DROP INDEX ix").table, "(table of index ix)")
 
+    def test_an_intent_table_stands_only_for_a_single_dropped_index(self):
+        generated = MigrationStatement("DROP INDEX ia, ib", "001")
+        generated.intent = Intent("drop_index", "w")
+        (found,) = analyze([generated], DUCKDB).statements
+        self.assertEqual(
+            [t.table for t in found.tables],
+            ["(table of index ia)", "(table of index ib)"],
+        )
+
     def test_a_new_table_opens_a_catalog_entry_on_what_it_references(self):
         found = impact("CREATE TABLE n (id integer, r_id integer REFERENCES r (id))")
         tables = {t.table: t for t in found.tables}

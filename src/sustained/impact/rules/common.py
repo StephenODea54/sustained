@@ -1,7 +1,8 @@
 """
 The handler helpers every rule profile uses.
 
-- `table()` and `tables()` name the tables a statement acts on.
+- `table()` and `tables()` name the tables a statement acts on, and
+  `index_table()` and `dropped_indexes()` the tables of its indexes.
 - `dispatch()` hands a statement to the handler for its kind, and
   `unknown()` is the outcome for a statement or ALTER TABLE action no
   handler reads. `each_action()` joins the outcomes of an ALTER TABLE
@@ -63,6 +64,33 @@ def tables(facts: Facts) -> List[str]:
     if named:
         return [str(t) for t in named]
     return [facts.parsed.table] if facts.parsed.table else []
+
+
+def index_table(facts: Facts, name: str) -> Optional[str]:
+    """The table an index is on, as the run or the context knows it."""
+    return facts.state.index_table(name) or facts.context.index_table(name)
+
+
+def index_label(name: str, table: Optional[str]) -> str:
+    """The table, or a placeholder that names the index when none was found."""
+    return table if table else f"(table of index {name})"
+
+
+def dropped_indexes(facts: Facts) -> List[Tuple[str, Optional[str]]]:
+    """
+    Each index a DROP INDEX names, with the table it is on, or None. The
+    intent's table stands for an index no read found only when the
+    statement names one index, since the intent cannot say which of
+    several it means.
+    """
+    names = [str(name) for name in facts.parsed.items("names")]
+    found = []
+    for name in names:
+        table = index_table(facts, name)
+        if table is None and facts.intent is not None and len(names) == 1:
+            table = facts.intent.table
+        found.append((name, table))
+    return found
 
 
 def nothing(facts: Facts) -> Outcome:

@@ -197,25 +197,15 @@ def _create_index(facts: Facts) -> Outcome:
     return Outcome.of(_effect(CREATE_INDEX, table, None, Work.INDEX_BUILD))
 
 
-def _index_table(facts: Facts, name: str) -> Optional[str]:
-    return facts.state.index_table(name) or facts.context.index_table(name)
-
-
 def _drop_index(facts: Facts) -> Outcome:
-    effects = []
-    for name in facts.parsed.items("names"):
-        table = _index_table(facts, str(name))
-        if table is None and facts.intent is not None:
-            table = facts.intent.table
-        effects.append(
+    return Outcome(
+        tuple(
             _effect(
-                DROP_INDEX,
-                table or f"(table of index {name})",
-                CATALOG_ENTRY,
-                Work.CATALOG,
+                DROP_INDEX, common.index_label(name, table), CATALOG_ENTRY, Work.CATALOG
             )
+            for name, table in common.dropped_indexes(facts)
         )
-    return Outcome(tuple(effects))
+    )
 
 
 def _comment(facts: Facts) -> Outcome:

@@ -63,10 +63,6 @@ from sustained.impact.rules.postgres.remedies import (
 )
 
 
-def _table_label(index: str, table: Optional[str]) -> str:
-    return table if table else f"(table of index {index})"
-
-
 def refused(rule: Rule, message: str) -> Finding:
     """The finding for a statement the server refuses to run."""
     return rule.finding(Severity.DANGER, message)
@@ -196,21 +192,19 @@ def _attach_index(facts: Facts) -> Outcome:
     name = str(facts.parsed.options.get("name"))
     partition = str(facts.parsed.options.get("partition"))
     intent = facts.intent
-    parent_table = facts.state.index_table(name) or facts.context.index_table(name)
+    parent_table = common.index_table(facts, name)
     if parent_table is None and intent is not None:
         parent_table = intent.table
-    child_table = facts.state.index_table(partition) or facts.context.index_table(
-        partition
-    )
+    child_table = common.index_table(facts, partition)
     if child_table is None and intent is not None:
         reported = intent.get("partition")
         child_table = None if reported is None else str(reported)
     confidence = Confidence.KNOWN if parent_table and child_table else Confidence.LIKELY
-    child_label = _table_label(partition, child_table)
+    child_label = common.index_label(partition, child_table)
     return Outcome.of(
         Effect(
             ATTACH_INDEX,
-            _table_label(name, parent_table),
+            common.index_label(name, parent_table),
             ACCESS_SHARE,
             Work.CATALOG,
         ),
@@ -230,7 +224,6 @@ def _attach_index(facts: Facts) -> Outcome:
 
 def _drop_index(facts: Facts) -> Outcome:
     options = facts.parsed.options
-    names = [str(n) for n in facts.parsed.items("names")]
     concurrently = bool(options.get("concurrently"))
     effects: List[Effect] = []
     findings: List[Finding] = []
@@ -240,11 +233,9 @@ def _drop_index(facts: Facts) -> Outcome:
                 facts, DROP_INDEX_CONCURRENTLY, "DROP INDEX CONCURRENTLY"
             )
         )
-    for name in names:
-        table = facts.state.index_table(name) or facts.context.index_table(name)
-        if table is None and facts.intent is not None and len(names) == 1:
-            table = facts.intent.table
-        label = _table_label(name, table)
+    dropped = common.dropped_indexes(facts)
+    for name, table in dropped:
+        label = common.index_label(name, table)
         parent = table is not None and partitioned(facts, table)
         named = table if table is not None else f"the table of index {name}"
         refusal = f"the server refuses DROP INDEX CONCURRENTLY of {name}"
@@ -294,7 +285,7 @@ def _drop_index(facts: Facts) -> Outcome:
         )
         concurrent = (
             insert_after(facts.statement, "INDEX", "CONCURRENTLY")
-            if len(names) == 1
+            if len(dropped) == 1
             else None
         )
         effects.append(
@@ -540,8 +531,8 @@ def _reindex(facts: Facts) -> Outcome:
         label = named = name
         parent = partitioned(facts, name)
     elif target == "index":
-        table = facts.state.index_table(name) or facts.context.index_table(name)
-        label = _table_label(name, table)
+        table = common.index_table(facts, name)
+        label = common.index_label(name, table)
         named = table if table is not None else f"the table of index {name}"
         parent = table is not None and partitioned(facts, table)
     else:

@@ -42,10 +42,6 @@ from sustained.impact.rules.mssql.facts import (
 from sustained.impact.rules.mssql.locks import IX, SCH_M, SCH_S, S, X, enterprise
 
 
-def _index_table(facts: Facts, name: str) -> Optional[str]:
-    return facts.state.index_table(name) or facts.context.index_table(name)
-
-
 def _online_remedy(facts: Facts, statement: str, resumable: bool) -> Tuple[str, ...]:
     """
     The statement with ONLINE = ON, where the edition may have it, and
@@ -104,10 +100,10 @@ def _drop_index(facts: Facts) -> Outcome:
     effects: List[Effect] = []
     for name in facts.parsed.items("names"):
         index = str(name).rsplit(".", 1)[-1]
-        table = facts.parsed.table or _index_table(facts, index)
+        table = facts.parsed.table or common.index_table(facts, index)
         if table is None and facts.intent is not None:
             table = facts.intent.table
-        table = table or f"(table of index {index})"
+        table = common.index_label(index, table)
         stats = facts.context.stats(facts.state.original(table))
         if stats.clustered and stats.clustered.lower() == index.lower():
             effects.append(

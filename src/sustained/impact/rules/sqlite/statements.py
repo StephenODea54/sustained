@@ -330,26 +330,19 @@ def _create_index(facts: Facts) -> Outcome:
     )
 
 
-def _index_table(facts: Facts, name: str) -> Optional[str]:
-    return facts.state.index_table(name) or facts.context.index_table(name)
-
-
 def _drop_index(facts: Facts) -> Outcome:
-    effects = []
-    for name in facts.parsed.items("names"):
-        table = _index_table(facts, str(name))
-        if table is None and facts.intent is not None:
-            table = facts.intent.table
-        effects.append(
+    return Outcome(
+        tuple(
             _effect(
                 facts,
                 DROP_INDEX,
-                table or f"(table of index {name})",
+                common.index_label(name, table),
                 Work.SCAN,
                 f"DROP INDEX visits every page of {name} to free it",
             )
+            for name, table in common.dropped_indexes(facts)
         )
-    return Outcome(tuple(effects))
+    )
 
 
 def _reindex(facts: Facts) -> Outcome:
@@ -365,7 +358,7 @@ def _reindex(facts: Facts) -> Outcome:
             )
         )
     name = str(name)
-    table = _index_table(facts, name)
+    table = common.index_table(facts, name)
     confidence = Confidence.KNOWN
     if table is None:
         known = facts.context.table(name) is not None or facts.state.is_new(name)
