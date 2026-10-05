@@ -986,7 +986,7 @@ class QueryBuilder:
 
         Args:
             *columns: The unique or primary key columns that define a
-                conflict.
+                conflict. Each is one name, read like an insert() key.
 
         Returns:
             The current QueryBuilder instance for chaining.
@@ -995,26 +995,29 @@ class QueryBuilder:
             raise ValueError("onConflict() applies to insert() statements.")
         if not columns:
             raise ValueError("onConflict() requires at least one column.")
+        names = [write_column_name(c) for c in columns]
         insert_columns = set(self._insert_rows[0].keys())
-        missing = [c for c in columns if c not in insert_columns]
+        missing = [c for c in names if c not in insert_columns]
         if missing:
             raise ValueError(
                 f"Conflict columns must be inserted columns; missing: {missing}."
             )
-        self._conflict_columns = list(columns)
+        self._conflict_columns = names
         return self
 
     def merge(self, columns: Optional[List[str]] = None) -> "QueryBuilder":
         """
         On conflict, updates the existing row. Updates every inserted
         column except the conflict columns, or only the columns given.
+        Each given column is one name, read like an insert() key.
 
         Returns:
             The current QueryBuilder instance for chaining.
         """
         if self._conflict_columns is None:
             raise ValueError("merge() requires onConflict() first.")
-        self._conflict_action = ("merge", list(columns) if columns else None)
+        names = [write_column_name(c) for c in columns] if columns else None
+        self._conflict_action = ("merge", names)
         return self
 
     def ignore(self) -> "QueryBuilder":

@@ -365,14 +365,14 @@ onConflict(*columns)
 ```
 {: .sig #onconflict}
 
-Declares the upsert conflict target. Raises `ValueError` when it does not follow `insert()`, when it gets no columns, and when a conflict column was not one of the inserted columns.
+Declares the upsert conflict target. Each column is one name, read like an `insert()` key, so `'"id"'` and `'[id]'` both name the column `id`. Raises `ValueError` when it does not follow `insert()`, when it gets no columns, and when a conflict column was not one of the inserted columns.
 
 ```python
 merge(columns=None)
 ```
 {: .sig #merge}
 
-Updates the row on conflict. Defaults to every inserted column that is not a conflict column. Raises `ValueError` without `onConflict()`, and at render time when no column is left to update.
+Updates the row on conflict. Defaults to every inserted column that is not a conflict column. `columns` lists the columns to update, each read like an `insert()` key. Raises `ValueError` without `onConflict()`, and at render time when no column is left to update.
 
 ```python
 ignore()

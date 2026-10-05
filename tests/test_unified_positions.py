@@ -224,6 +224,27 @@ class TestQuotedWriteKeys(unittest.TestCase):
         sql = str(Thing.query().insert_from(['"a.b"', "c"], source))
         self.assertIn('INSERT INTO "things" ("a.b", "c") SELECT', sql)
 
+    def test_conflict_and_merge_take_quoted_columns(self) -> None:
+        Thing.set_dialect(Dialects.POSTGRES)
+        sql = str(
+            Thing.query()
+            .insert({"[Full Name]": "x", "id": 1, "n": 2})
+            .onConflict('"id"')
+            .merge(["`n`"])
+        )
+        self.assertEqual(
+            sql,
+            'INSERT INTO "things" ("Full Name", "id", "n") '
+            "VALUES ('x', 1, 2) ON CONFLICT (\"id\") "
+            'DO UPDATE SET "n" = EXCLUDED."n"',
+        )
+
+    def test_conflict_quoted_column_not_inserted_raises(self) -> None:
+        query = Thing.query().insert({"id": 1})
+        with self.assertRaises(ValueError) as caught:
+            query.onConflict('"other"')
+        self.assertIn("['other']", str(caught.exception))
+
     def test_dotted_key_stays_one_name(self) -> None:
         Thing.set_dialect(Dialects.POSTGRES)
         sql = str(Thing.query().insert({"a.b": 1}))
