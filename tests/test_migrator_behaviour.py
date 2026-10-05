@@ -22,12 +22,12 @@ from sustained.migrations import (
     REHEARSAL_PASSED,
     Migration,
     Migrator,
-    _legacy_checksum,
-    _legacy_rehearsal_key,
     create_table_migration,
     migration_checksum,
     rehearsal_key,
 )
+from sustained.migrations.migration import _legacy_checksum
+from sustained.migrations.rehearsal import _legacy_rehearsal_key
 from sustained.schema import Integer, String
 
 # sqlite3.connect(autocommit=...) and Connection.autocommit arrived in

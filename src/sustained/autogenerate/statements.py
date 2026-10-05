@@ -28,7 +28,7 @@ from sustained.introspect import (
     IntrospectedTable,
     Snapshot,
 )
-from sustained.migrations import _ReplayConnection
+from sustained.migrations.replay import _ReplayConnection
 from sustained.schema import (
     ColumnState,
     ForeignKey,

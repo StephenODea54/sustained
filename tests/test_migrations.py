@@ -30,13 +30,13 @@ from sustained.migrations import (
     AppliedRecord,
     Migration,
     Migrator,
-    _destructive_prefix_keys,
-    _legacy_checksum,
     checked_unique_ids,
     migration_checksum,
     rehearsal_key,
 )
 from sustained.migrations.core import bookkeeping
+from sustained.migrations.migration import _legacy_checksum
+from sustained.migrations.rehearsal import _destructive_prefix_keys
 from sustained.schema import Integer
 
 
@@ -151,7 +151,7 @@ class TestValidateAndRepair(MigrationTestCase):
         self.assertEqual(migrator.validate(), [])
 
     def test_tag_migration_never_masks_the_original_error(self):
-        from sustained.migrations import _tag_migration
+        from sustained.migrations.migration import _tag_migration
 
         class Frozen(Exception):
             def __setattr__(self, name, value):

@@ -156,7 +156,8 @@ from sustained.introspect import (
     parse_inline_enum,
     type_params,
 )
-from sustained.migrations import Migration, _ReplayConnection
+from sustained.migrations import Migration
+from sustained.migrations.replay import _ReplayConnection
 from sustained.rebuild import (
     add_column_needs_rebuild,
     create_indexes_sql,

@@ -18,6 +18,8 @@ from sustained.migrations import (
     Migration,
     Migrator,
     SchemaRead,
+)
+from sustained.migrations.replay import (
     _is_read_savepoint,
     _ReplayCursor,
 )

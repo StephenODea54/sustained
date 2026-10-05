@@ -1039,7 +1039,7 @@ class RehearsalRowCliTestCase(CliBase):
 
     def test_a_row_an_earlier_release_wrote_still_covers_the_drop(self):
         from sustained.migration_files import load_migrations
-        from sustained.migrations import _legacy_rehearsal_key
+        from sustained.migrations.rehearsal import _legacy_rehearsal_key
 
         with contextlib.closing(self.db()) as conn:
             migrator = Migrator(

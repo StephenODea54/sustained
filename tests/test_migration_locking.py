@@ -11,7 +11,11 @@ from sustained.aio import AsyncAdapter
 from sustained.aio_migrations import AsyncMigrator
 from sustained.dialects import Dialects
 from sustained.exceptions import MigrationError
-from sustained.migrations import Migration, Migrator, _lock_row
+from sustained.migrations import (
+    Migration,
+    Migrator,
+)
+from sustained.migrations.tracking import _lock_row
 
 UNLOCK = "SELECT pg_advisory_unlock(hashtext('sustained_migrations'))"
 

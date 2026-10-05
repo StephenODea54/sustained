@@ -48,8 +48,6 @@ from sustained.migrations import (
     PreflightCheck,
     Rehearsal,
     SchemaRead,
-    _render_elements,
-    _step_elements,
 )
 from sustained.migrations.core import bookkeeping, rehearsing, runs
 from sustained.migrations.core.base import MigratorBase
@@ -76,6 +74,10 @@ from sustained.migrations.core.requests import (
     T,
     TakeLock,
     Transaction,
+)
+from sustained.migrations.migration import (
+    _render_elements,
+    _step_elements,
 )
 from sustained.migrations.planning import DiffOptions
 from sustained.types import RowValue, SqlValue
