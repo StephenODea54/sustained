@@ -19,11 +19,16 @@ class PrestoCompiler(Compiler):
     _typed_temporal_literals = True
     _TEMPORAL_KEYWORDS = {"TIMESTAMPTZ": "TIMESTAMP"}
 
+    _parenthesized_set_members = True
+    # Presto and Trino query external storage; there are no CHECK or
+    # FOREIGN KEY constraints to declare or enforce.
+    _supports_constraints = False
+    _stores_column_comments = True
+    # CREATE TABLE takes the comment inside the column definition.
+    _inline_column_comments = True
+
     def display_name(self) -> str:
         return self._DISPLAY_NAMES.get(self.dialect_name(), self.dialect_name())
-
-    def parenthesized_set_members(self) -> bool:
-        return True
 
     def compile_is_boolean(self, column_sql: str, operator: str, value: bool) -> str:
         # Trino has no IS TRUE. IS NOT DISTINCT FROM gives the same answer,
@@ -43,23 +48,11 @@ class PrestoCompiler(Compiler):
                 "application."
             )
 
-    def supports_constraints(self) -> bool:
-        # Presto and Trino query external storage; there are no CHECK or
-        # FOREIGN KEY constraints to declare or enforce.
-        return False
-
     def rebuild_strategy(self) -> str:
         # Presto cannot alter a column, and it cannot run the rebuild
         # either: it has no DROP TABLE and rename swap that keeps the
         # data, and no CREATE INDEX at all.
         return "unsupported"
-
-    def stores_column_comments(self) -> bool:
-        return True
-
-    def inline_column_comments(self) -> bool:
-        # CREATE TABLE takes the comment inside the column definition.
-        return True
 
     def compile_add_check(
         self, table_sql: str, constraint: str, expression: str

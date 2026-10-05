@@ -32,17 +32,18 @@ class MssqlCompiler(Compiler):
     # SQL Server has no NULLS FIRST or NULLS LAST.
     _native_nulls_order = False
 
+    # T-SQL refuses INSERT INTO t WITH ... SELECT and a WITH inside
+    # parentheses, so the one WITH clause of a write goes in front of
+    # INSERT, UPDATE, or DELETE.
+    _with_leads_write = True
+    _parenthesized_set_members = True
+    _supports_alter_column = True
+    _alter_column_index_scope = "column"
+    _alter_type_keeps_default = False
+    _limit_needs_order_by = True
+
     def compile_top(self, value: int) -> str:
         return f"TOP {value}"
-
-    def with_leads_write(self) -> bool:
-        # T-SQL refuses INSERT INTO t WITH ... SELECT and a WITH inside
-        # parentheses, so the one WITH clause of a write goes in front of
-        # INSERT, UPDATE, or DELETE.
-        return True
-
-    def parenthesized_set_members(self) -> bool:
-        return True
 
     def compile_upsert_statement(
         self,
@@ -138,9 +139,6 @@ class MssqlCompiler(Compiler):
             return create
         return f"IF OBJECT_ID({self.format_value(table_sql)}, 'U') IS NULL {create}"
 
-    def supports_alter_column(self) -> bool:
-        return True
-
     def _alter_column_sql(
         self, table_sql: str, column_name: str, state: "ColumnState"
     ) -> str:
@@ -182,12 +180,6 @@ class MssqlCompiler(Compiler):
         column: "ColumnState",
     ) -> "list[str]":
         return [self._alter_column_sql(table_sql, column_name, column)]
-
-    def alter_column_index_scope(self) -> str:
-        return "column"
-
-    def alter_type_keeps_default(self) -> bool:
-        return False
 
     def compile_drop_column_default(self, table_sql: str, column_name: str) -> str:
         # The engine names a default constraint itself, so the statement
@@ -284,9 +276,6 @@ class MssqlCompiler(Compiler):
         if operator == "IS":
             return f"({column_sql} IS NOT NULL AND {column_sql} = {bit})"
         return f"({column_sql} IS NULL OR {column_sql} <> {bit})"
-
-    def limit_needs_order_by(self) -> bool:
-        return True
 
     def compile_limit_offset(
         self,

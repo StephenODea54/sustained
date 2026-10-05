@@ -56,6 +56,21 @@ class MysqlCompiler(Compiler):
     _typed_temporal_literals = True
     _TEMPORAL_KEYWORDS = {"TIMESTAMPTZ": "TIMESTAMP"}
 
+    _parenthesized_set_members = True
+    # The %s style used by PyMySQL and mysqlclient.
+    _placeholder = "%s"
+    _stores_column_comments = True
+    # The comment is part of the column definition; there is no
+    # standalone COMMENT statement.
+    _inline_column_comments = True
+    # The value list is part of the column type; there is no separate
+    # type object to create or drop.
+    _enum_strategy = "inline"
+    # InnoDB parses a column-level REFERENCES clause and creates
+    # nothing. Only a table constraint makes a real foreign key.
+    _inline_references = False
+    _supports_alter_column = True
+
     def compile_group_by_mode(self, mode: str, columns_sql: str) -> str:
         # MySQL and MariaDB spell ROLLUP as a WITH ROLLUP suffix and have
         # no CUBE.
@@ -69,17 +84,6 @@ class MysqlCompiler(Compiler):
         raise DialectError(
             f"The '{self._dialect.name}' dialect does not support GROUPING SETS."
         )
-
-    def parenthesized_set_members(self) -> bool:
-        return True
-
-    def placeholder(self) -> str:
-        # The %s style used by PyMySQL and mysqlclient.
-        return "%s"
-
-    def escapes_percent(self) -> bool:
-        # PyMySQL and mysqlclient read %% as one literal % sign.
-        return True
 
     def format_value(self, value: SqlValue) -> str:
         if isinstance(value, str):
@@ -106,14 +110,6 @@ class MysqlCompiler(Compiler):
 
     def compile_identity(self) -> str:
         return "AUTO_INCREMENT"
-
-    def stores_column_comments(self) -> bool:
-        return True
-
-    def inline_column_comments(self) -> bool:
-        # The comment is part of the column definition; there is no
-        # standalone COMMENT statement.
-        return True
 
     def _modify_column_sql(self, column_name: str, state: "ColumnState") -> str:
         """
@@ -167,11 +163,6 @@ class MysqlCompiler(Compiler):
             f"ALTER TABLE {table_sql} MODIFY COLUMN "
             f"{self._modify_column_sql(column_name, state)}"
         ]
-
-    def enum_strategy(self) -> str:
-        # The value list is part of the column type; there is no separate
-        # type object to create or drop.
-        return "inline"
 
     def validate_column_def(self, column: "ColumnDef") -> None:
         if column.type_name not in _OFF_ROW_TYPES:
@@ -254,11 +245,6 @@ class MysqlCompiler(Compiler):
         # both.
         return f"DROP INDEX {self.quote_identifier(index_name)} ON {table_sql}"
 
-    def inline_references(self) -> bool:
-        # InnoDB parses a column-level REFERENCES clause and creates
-        # nothing. Only a table constraint makes a real foreign key.
-        return False
-
     def compile_drop_foreign_key(self, table_sql: str, constraint: str) -> str:
         # MySQL spells this DROP FOREIGN KEY; DROP CONSTRAINT arrived in
         # 8.0.19 and MariaDB 10.2, and does not reach back further.
@@ -272,9 +258,6 @@ class MysqlCompiler(Compiler):
         # declared without an action as RESTRICT, where MySQL reports
         # NO ACTION. The two compare equal so neither reads as a change.
         return "NO ACTION" if action == "RESTRICT" else action
-
-    def supports_alter_column(self) -> bool:
-        return True
 
     def compile_alter_column_type(
         self,

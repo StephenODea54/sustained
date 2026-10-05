@@ -23,15 +23,24 @@ class DuckDbCompiler(Compiler):
     _typed_temporal_literals = True
     _ALTER_TYPE_KEYWORD = "SET DATA TYPE"
 
-    def supports_qualify(self) -> bool:
-        return True
+    _supports_qualify = True
+    _parenthesized_set_members = True
+    _supports_alter_column = True
+    _keeps_constraint_names = False
+    _stores_column_comments = True
+    # "Cannot alter entry because there are entries that depend on
+    # it": any index on the table stops a change to any column.
+    _alter_column_index_scope = "table"
+    _index_drop_waits_for_commit = True
+    _enum_strategy = "native"
+    # The duckdb driver autocommits every statement and gives every
+    # cursor its own session, so transaction() runs BEGIN, COMMIT, and
+    # ROLLBACK itself on the one cursor the block shares.
+    _driver_transaction_control = False
 
     def compile_binary_literal(self, hex_text: str) -> str:
         # DuckDB reads X'...' as a string, not as bytes.
         return f"from_hex('{hex_text}')"
-
-    def parenthesized_set_members(self) -> bool:
-        return True
 
     def normalize_diff_type(self, type_name: str) -> str:
         # DuckDB stores TEXT as VARCHAR and reports it back as VARCHAR, so
@@ -40,27 +49,10 @@ class DuckDbCompiler(Compiler):
             return "VARCHAR"
         return type_name
 
-    def supports_alter_column(self) -> bool:
-        return True
-
     def supports_add_constraint(self) -> bool:
         # DuckDB takes no ALTER TABLE ADD CONSTRAINT; a constraint has to
         # be part of the CREATE TABLE statement.
         return False
-
-    def keeps_constraint_names(self) -> bool:
-        return False
-
-    def stores_column_comments(self) -> bool:
-        return True
-
-    def alter_column_index_scope(self) -> str:
-        # "Cannot alter entry because there are entries that depend on
-        # it": any index on the table stops a change to any column.
-        return "table"
-
-    def index_drop_waits_for_commit(self) -> bool:
-        return True
 
     def compile_backfill(
         self,
@@ -85,15 +77,6 @@ class DuckDbCompiler(Compiler):
             "DuckDB has no identity columns. Use a sequence with a DEFAULT "
             "expression instead."
         )
-
-    def enum_strategy(self) -> str:
-        return "native"
-
-    def driver_transaction_control(self) -> bool:
-        # The duckdb driver autocommits every statement and gives every
-        # cursor its own session, so transaction() runs BEGIN, COMMIT, and
-        # ROLLBACK itself on the one cursor the block shares.
-        return False
 
     def savepoint_sql(self, name: str) -> Optional[str]:
         # DuckDB has transactions but no savepoints, so transaction()

@@ -395,13 +395,17 @@ class Compiler:
             )
         return normalized
 
+    _supports_qualify = False
+
     def supports_qualify(self) -> bool:
         """Reports whether the dialect supports the QUALIFY clause."""
-        return False
+        return self._supports_qualify
 
     def compile_with_keyword(self, recursive: bool) -> str:
         """Renders the WITH keyword, adding RECURSIVE where required."""
         return "WITH RECURSIVE" if recursive else "WITH"
+
+    _with_leads_write = False
 
     def with_leads_write(self) -> bool:
         """
@@ -413,7 +417,7 @@ class Compiler:
         parenthesized subquery. SQL Server takes it in front only, and
         MySQL takes it after only.
         """
-        return False
+        return self._with_leads_write
 
     def compile_group_by_mode(self, mode: str, columns_sql: str) -> str:
         """Renders GROUP BY ROLLUP or GROUP BY CUBE over quoted columns."""
@@ -423,6 +427,8 @@ class Compiler:
         """Renders GROUP BY GROUPING SETS over parenthesized groups."""
         return f"GROUP BY GROUPING SETS ({groups_sql})"
 
+    _parenthesized_set_members = False
+
     def parenthesized_set_members(self) -> bool:
         """
         Reports whether UNION, INTERSECT, and EXCEPT members render inside
@@ -430,7 +436,7 @@ class Compiler:
         portable default renders members bare; a bare member cannot carry
         its own ORDER BY or LIMIT, and the builder refuses one that does.
         """
-        return False
+        return self._parenthesized_set_members
 
     def compile_distinct_on(self, columns_sql: "list[str]") -> str:
         """
@@ -481,16 +487,20 @@ class Compiler:
             return f"LOWER({column_sql}) NOT LIKE LOWER({pattern_sql})"
         return f"{column_sql} {operator} {pattern_sql}"
 
+    _placeholder = "?"
+
     def placeholder(self) -> str:
-        return "?"
+        return self._placeholder
 
     def escapes_percent(self) -> bool:
         """
         Reports whether the driver reads a % sign in a statement with
         parameters as the start of a placeholder. to_sql() then writes each
-        literal % sign as %%, which the driver reads back as one.
+        literal % sign as %%, which the driver reads back as one. The
+        drivers that take %s placeholders (psycopg, psycopg2, PyMySQL, and
+        mysqlclient) all read %% this way.
         """
-        return False
+        return self.placeholder() == "%s"
 
     def prepare_execution(
         self, sql: str, params: "tuple[SqlValue, ...]"
@@ -648,6 +658,8 @@ class Compiler:
         "JSON": "JSON",
     }
 
+    _enum_strategy = "check"
+
     def enum_strategy(self) -> str:
         """
         How this dialect renders an enum column. One of:
@@ -662,7 +674,7 @@ class Compiler:
         Presto and Athena refuse enum columns in validate_column_def,
         so their strategy is never consulted.
         """
-        return "check"
+        return self._enum_strategy
 
     def normalize_diff_type(self, type_name: str) -> str:
         """
@@ -741,13 +753,17 @@ class Compiler:
             "enum type in place."
         )
 
+    _stores_column_comments = False
+
     def stores_column_comments(self) -> bool:
         """
         Reports whether the engine keeps a column comment in its catalog.
         On an engine that does not, a declared comment stays on the model
         and renders nothing.
         """
-        return False
+        return self._stores_column_comments
+
+    _inline_column_comments = False
 
     def inline_column_comments(self) -> bool:
         """
@@ -755,7 +771,7 @@ class Compiler:
         definition, as MySQL, Presto, and Athena spell it. Postgres and
         DuckDB store it with a COMMENT ON COLUMN statement instead.
         """
-        return False
+        return self._inline_column_comments
 
     def compile_set_column_comment(
         self,
@@ -821,6 +837,8 @@ class Compiler:
         new_sql = self.quote_ddl_identifier(new_name)
         return f"ALTER TABLE {table_sql} RENAME COLUMN {old_sql} TO {new_sql}"
 
+    _inline_references = True
+
     def inline_references(self) -> bool:
         """
         Reports whether a REFERENCES clause written beside a column
@@ -828,7 +846,7 @@ class Compiler:
         nothing, so it says no and takes its foreign keys as table
         constraints instead.
         """
-        return True
+        return self._inline_references
 
     def compile_add_foreign_key(
         self,
@@ -997,13 +1015,15 @@ class Compiler:
         exists_sql = "IF NOT EXISTS " if if_missing else ""
         return f"CREATE TABLE {exists_sql}{table_sql} ({body}){suffix_sql}"
 
+    _supports_alter_column = False
+
     def supports_alter_column(self) -> bool:
         """
         Reports whether the dialect can change a column's type or
         nullability with ALTER TABLE. SQLite cannot and needs a table
         rebuild instead.
         """
-        return False
+        return self._supports_alter_column
 
     def rebuild_strategy(self) -> str:
         """
@@ -1048,6 +1068,8 @@ class Compiler:
         """
         return ["PRAGMA foreign_keys = ON"]
 
+    _alter_column_index_scope = "none"
+
     def alter_column_index_scope(self) -> str:
         """
         Which indexes stop an ALTER COLUMN statement, so a migration
@@ -1062,7 +1084,9 @@ class Compiler:
         - "table": every index on the table. DuckDB refuses a change to
           any column of a table that has an index.
         """
-        return "none"
+        return self._alter_column_index_scope
+
+    _index_drop_waits_for_commit = False
 
     def index_drop_waits_for_commit(self) -> bool:
         """
@@ -1071,7 +1095,9 @@ class Compiler:
         works this way, so a migration that drops indexes around a column
         change runs outside a transaction there.
         """
-        return False
+        return self._index_drop_waits_for_commit
+
+    _alter_type_keeps_default = True
 
     def alter_type_keeps_default(self) -> bool:
         """
@@ -1082,7 +1108,7 @@ class Compiler:
         the new type on its own, so on both the default comes off before
         the change and goes back on after it.
         """
-        return True
+        return self._alter_type_keeps_default
 
     def lifted_default_sql(
         self, model_default_sql: Optional[str], live_default_sql: str
@@ -1120,6 +1146,8 @@ class Compiler:
         """
         return self.supports_constraints() and self.supports_alter_column()
 
+    _keeps_constraint_names = True
+
     def keeps_constraint_names(self) -> bool:
         """
         Reports whether the catalog returns the name a constraint was
@@ -1127,7 +1155,9 @@ class Compiler:
         its table and columns, such as k_pid_id_fkey, so a diff there
         pairs declared constraints with the catalog's by content.
         """
-        return True
+        return self._keeps_constraint_names
+
+    _supports_constraints = True
 
     def supports_constraints(self) -> bool:
         """
@@ -1135,14 +1165,16 @@ class Compiler:
         such as PRIMARY KEY, UNIQUE, DEFAULT, and REFERENCES. Athena does
         not; its tables are files on object storage.
         """
-        return True
+        return self._supports_constraints
+
+    _supports_transactions = True
 
     def supports_transactions(self) -> bool:
         """
         Reports whether the engine supports transactions. The migration
         runner wraps each migration in a transaction only when it does.
         """
-        return True
+        return self._supports_transactions
 
     def supports_transactional_ddl(self) -> bool:
         """
@@ -1187,6 +1219,8 @@ class Compiler:
         """
         return "COMMIT" if self.supports_transactions() else None
 
+    _driver_transaction_control = True
+
     def driver_transaction_control(self) -> bool:
         """
         Reports whether the driver's own commit() and rollback() calls
@@ -1196,7 +1230,7 @@ class Compiler:
         transaction() drives it with BEGIN, COMMIT, and ROLLBACK statements
         on one cursor instead.
         """
-        return True
+        return self._driver_transaction_control
 
     def savepoint_sql(self, name: str) -> Optional[str]:
         """
@@ -1410,12 +1444,14 @@ class Compiler:
             f"ELSE {value_rank} END, {entry}"
         )
 
+    _limit_needs_order_by = False
+
     def limit_needs_order_by(self) -> bool:
         """
         Reports whether compile_limit_offset() raises DialectError for a
         query with no ORDER BY. first() then caps the query with TOP.
         """
-        return False
+        return self._limit_needs_order_by
 
     def compile_limit_offset(
         self,

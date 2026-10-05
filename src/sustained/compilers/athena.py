@@ -99,6 +99,9 @@ class AthenaCompiler(PrestoCompiler):
         "JSON": "STRING",
     }
 
+    _supports_alter_column = True
+    _supports_transactions = False
+
     def compile_column_type(self, column: "ColumnDef") -> str:
         # Every VARCHAR renders as STRING. Iceberg tables reject VARCHAR
         # outright ("Unsupported Hive type: VARCHAR, use string instead"),
@@ -245,16 +248,10 @@ class AthenaCompiler(PrestoCompiler):
     def compile_drop_index(self, index_name: str, table_sql: str) -> str:
         raise DialectError("Athena has no indexes.")
 
-    def supports_alter_column(self) -> bool:
-        return True
-
     def rebuild_strategy(self) -> str:
         # An Iceberg table takes CHANGE COLUMN, so Athena alters in place
         # rather than taking Presto's refusal.
         return "alter"
-
-    def supports_transactions(self) -> bool:
-        return False
 
     def compile_alter_column_type(
         self,
