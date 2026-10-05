@@ -399,5 +399,46 @@ class TestJoinBuilderStr(unittest.TestCase):
             str(OnClauseBuilder())
 
 
+class SelfJoinCategory(Model):
+    tableName = "categories"
+    tableSchema = "shop"
+    relationMappings = {
+        "children": {
+            "relation": RelationType.HasManyRelation,
+            "modelClass": "SelfJoinCategory",
+            "join": {"from": "shop.categories.id", "to": "categories.parent_id"},
+        },
+        "related": {
+            "relation": RelationType.ManyToManyRelation,
+            "modelClass": "SelfJoinCategory",
+            "join": {
+                "from": "categories.id",
+                "through": {
+                    "from": {"table": "category_links", "key": "from_id"},
+                    "to": {"table": "category_links", "key": "to_id"},
+                },
+                "to": "categories.id",
+            },
+        },
+    }
+
+
+class TestSelfRelationJoin(unittest.TestCase):
+    def test_self_join_without_alias_raises(self):
+        for relation in ("children", "related"):
+            with self.subTest(relation=relation):
+                query = SelfJoinCategory.query()
+                with self.assertRaisesRegex(ValueError, "alias="):
+                    query.joinRelated(relation)
+
+    def test_self_join_with_alias_renders(self):
+        query = SelfJoinCategory.query().leftJoinRelated("children", alias="kid")
+        self.assertEqual(
+            str(query),
+            "SELECT * FROM shop.categories LEFT JOIN shop.categories AS kid "
+            "ON shop.categories.id = kid.parent_id",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

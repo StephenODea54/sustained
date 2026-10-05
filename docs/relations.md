@@ -131,6 +131,8 @@ Show.query().select('shows.title', 'v.name').innerJoinRelated('venue', alias='v'
 # INNER JOIN venues AS v ON shows.venue_id = v.id
 ```
 
+A relation from a model to itself, such as a category and its child categories, needs an alias. Without one, both sides of the join name the same table, so `joinRelated()` raises `ValueError`.
+
 ### What a through join renders
 
 Joining a `ManyToManyRelation` produces two joins. The join type you asked for applies to the far table. The hop to the link table is a `LEFT JOIN` for a left or full join, so an artist with no link row stays in the result, and an `INNER JOIN` for every other type:

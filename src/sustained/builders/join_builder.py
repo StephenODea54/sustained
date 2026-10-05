@@ -269,11 +269,20 @@ class JoinClauseBuilder:
         self, join_type: str, relation_name: str, alias: Optional[str] = None
     ) -> None:
         """Internal handler for adding a join based on a defined relation."""
-        from ..model import resolve_relation
+        from ..model import qualified_table_name, resolve_relation
 
         relation, related_model_class = resolve_relation(
             self._model_class, relation_name
         )
+        related_table = qualified_table_name(related_model_class)
+        if not alias and related_table == qualified_table_name(self._model_class):
+            # Both sides of the ON clause would name the same table, which
+            # the database rejects as ambiguous or reads as a self-match.
+            raise ValueError(
+                f"The relation '{relation_name}' joins the table "
+                f"'{related_table}' to itself. Pass alias= to name the "
+                "joined copy."
+            )
         join_info = relation["join"]
         if "through" in join_info:
             # Cast to the more specific TypedDict to satisfy mypy
