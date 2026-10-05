@@ -61,7 +61,7 @@ InnoDB transactions for the live preflight;
 
 from __future__ import annotations
 
-from sustained.impact.rules import Facts, Outcome, Profile, Trace, common
+from sustained.impact.rules import Profile, Trace, common
 from sustained.impact.rules.mysql.catalog import (
     FIXTURE_SCHEMA,
     MARIADB_DOCS,
@@ -89,18 +89,13 @@ from sustained.impact.rules.mysql.trace import (
 )
 
 
-def effects(facts: Facts) -> Outcome:
-    """What the statement does on MySQL or MariaDB, table by table."""
-    return common.dispatch(facts, STATEMENTS)
-
-
 def _profile(name: str) -> Profile:
     mariadb = name == "mariadb"
     return Profile(
         name=name,
         title="MariaDB" if mariadb else "MySQL",
         prefix=name,
-        effects=effects,
+        effects=common.dispatcher(STATEMENTS),
         blocks=blocks,
         lock_rank=lock_rank,
         timeout_setting="lock_wait_timeout",

@@ -54,7 +54,7 @@ count for. Both reads leave out the tables whose names start with
 
 from __future__ import annotations
 
-from sustained.impact.rules import Facts, Outcome, Profile, common
+from sustained.impact.rules import Profile, common
 from sustained.impact.rules.sqlite.catalog import DOCS, FIXTURE_SCHEMA, RULES
 from sustained.impact.rules.sqlite.context import context_plan
 from sustained.impact.rules.sqlite.statements import (
@@ -64,21 +64,11 @@ from sustained.impact.rules.sqlite.statements import (
     timeout_statement,
 )
 
-
-def effects(facts: Facts) -> Outcome:
-    """What the statement does on SQLite, table by table."""
-    return common.dispatch(facts, STATEMENTS)
-
-
-def _never_queues(lock: object) -> bool:
-    return False
-
-
 PROFILE = Profile(
     name="sqlite",
     title="SQLite",
     prefix="sqlite",
-    effects=effects,
+    effects=common.dispatcher(STATEMENTS),
     blocks=blocks,
     lock_rank=lock_rank,
     timeout_setting="busy_timeout",
@@ -88,7 +78,7 @@ PROFILE = Profile(
     timeout_source=DOCS + "pragma.html#pragma_busy_timeout",
     context_plan=context_plan,
     fixture_schema=FIXTURE_SCHEMA,
-    queues=_never_queues,
+    queues=common.never_queues,
     locks_database=True,
 )
 

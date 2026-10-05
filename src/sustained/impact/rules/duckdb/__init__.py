@@ -57,7 +57,7 @@ table.
 
 from __future__ import annotations
 
-from sustained.impact.rules import Facts, Outcome, Profile, common
+from sustained.impact.rules import Profile, common
 from sustained.impact.rules.duckdb.catalog import CONCURRENCY, FIXTURE_SCHEMA, RULES
 from sustained.impact.rules.duckdb.context import context_plan
 from sustained.impact.rules.duckdb.statements import (
@@ -67,21 +67,11 @@ from sustained.impact.rules.duckdb.statements import (
     timeout_statement,
 )
 
-
-def effects(facts: Facts) -> Outcome:
-    """What the statement does on DuckDB, table by table."""
-    return common.dispatch(facts, STATEMENTS)
-
-
-def _never_queues(lock: object) -> bool:
-    return False
-
-
 PROFILE = Profile(
     name="duckdb",
     title="DuckDB",
     prefix="duckdb",
-    effects=effects,
+    effects=common.dispatcher(STATEMENTS),
     blocks=blocks,
     lock_rank=lock_rank,
     # DuckDB has no lock timeout setting, and `queues` never draws the
@@ -93,7 +83,7 @@ PROFILE = Profile(
     timeout_source=CONCURRENCY,
     context_plan=context_plan,
     fixture_schema=FIXTURE_SCHEMA,
-    queues=_never_queues,
+    queues=common.never_queues,
 )
 
 __all__ = [

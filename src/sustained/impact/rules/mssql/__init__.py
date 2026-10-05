@@ -97,7 +97,7 @@ database is another one.
 
 from __future__ import annotations
 
-from sustained.impact.rules import Facts, Outcome, Profile, Trace, common
+from sustained.impact.rules import Profile, Trace, common
 from sustained.impact.rules.mssql.catalog import DOCS, FIXTURE_SCHEMA, RULES
 from sustained.impact.rules.mssql.context import context_plan
 from sustained.impact.rules.mssql.locks import (
@@ -115,17 +115,11 @@ from sustained.impact.rules.mssql.trace import (
     with_observations,
 )
 
-
-def effects(facts: Facts) -> Outcome:
-    """What the statement does on SQL Server, table by table."""
-    return common.dispatch(facts, STATEMENTS)
-
-
 PROFILE = Profile(
     name="mssql",
     title="SQL Server",
     prefix="mssql",
-    effects=effects,
+    effects=common.dispatcher(STATEMENTS),
     blocks=blocks,
     lock_rank=lock_rank,
     timeout_setting="lock_timeout",

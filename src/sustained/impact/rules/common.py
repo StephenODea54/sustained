@@ -125,6 +125,20 @@ def dispatch(facts: Facts, handlers: Mapping[str, Handler]) -> Outcome:
     return handler(facts)
 
 
+def dispatcher(handlers: Mapping[str, Handler]) -> Handler:
+    """A profile's `effects()`: `dispatch()` over the handlers."""
+
+    def effects(facts: Facts) -> Outcome:
+        return dispatch(facts, handlers)
+
+    return effects
+
+
+def never_queues(lock: object) -> bool:
+    """A profile's `queues()` for an engine where no lock wait queues others."""
+    return False
+
+
 def fixed_action(rule: Rule, lock: str, work: Work) -> ActionHandler:
     """The handler of an ALTER TABLE action that always takes one lock and work."""
 
