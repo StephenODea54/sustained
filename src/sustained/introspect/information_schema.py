@@ -19,10 +19,10 @@ from sustained.introspect.model import (
 )
 from sustained.introspect.normalize import mysql_default_sql
 from sustained.introspect.scope import (
+    _add_check,
     _declared_schema,
-    _is_generated_not_null_check,
+    _foreign_keys,
     _one_schema_per_table,
-    _row_text,
     _scoped_filter,
 )
 from sustained.types import RowValue
@@ -388,12 +388,7 @@ def _check_plan(catalog: Catalog, constraint_filter: str) -> Generator[
             # the view; the last case degrades to no checks.
             continue
         for table, cname, clause in check_rows:
-            name = str(cname).lower()
-            expression = str(clause)
-            if _is_generated_not_null_check(name, expression):
-                continue
-            checks.setdefault(str(table).lower(), {})[name] = expression
-            check_names.setdefault(str(table).lower(), {})[name] = str(cname)
+            _add_check(checks, check_names, table, cname, str(clause))
         checks_read = True
         break
     return checks, check_names, checks_read
@@ -410,21 +405,9 @@ def _replace_foreign_keys(schema: Snapshot, rows: Sequence[Sequence[RowValue]]) 
     at '?'. SQL Server spells an action with an underscore, as in
     SET_NULL.
     """
-    parts: Dict[Tuple[str, str], List[Sequence[RowValue]]] = {}
-    for row in rows:
-        parts.setdefault((str(row[0]).lower(), str(row[1]).lower()), []).append(row)
-    foreign_keys: Dict[str, Dict[str, IntrospectedForeignKey]] = {}
-    for (table, name), key_rows in parts.items():
-        first = key_rows[0]
-        foreign_keys.setdefault(table, {})[name] = IntrospectedForeignKey(
-            columns=tuple(str(r[2]).lower() for r in key_rows),
-            target_table=str(first[3]).lower(),
-            target_columns=tuple(str(r[4]).lower() for r in key_rows),
-            on_delete=str(first[5]).replace("_", " ").upper(),
-            on_update=str(first[6]).replace("_", " ").upper(),
-            name=str(first[1]),
-            target_schema=_row_text(first, 7),
-        )
+    foreign_keys = _foreign_keys(
+        rows, lambda action: str(action).replace("_", " ").upper()
+    )
     for table, existing in list(schema.items()):
         schema[table] = existing._replace(foreign_keys=foreign_keys.get(table, {}))
     schema.constraints_read = True

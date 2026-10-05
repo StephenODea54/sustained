@@ -19,10 +19,11 @@ from sustained.introspect.model import (
 )
 from sustained.introspect.normalize import is_sequence_default
 from sustained.introspect.scope import (
+    _add_check,
+    _apply_comments,
     _declared_schema,
-    _is_generated_not_null_check,
+    _foreign_keys,
     _one_schema_per_table,
-    _row_text,
     _scoped_filter,
 )
 from sustained.types import RowValue
@@ -234,23 +235,12 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             f"AND {namespace_filter} "
             "ORDER BY src.relname, con.conname, k.ord"
         )
-        fk_parts: Dict[Tuple[str, str], List[Sequence[RowValue]]] = {}
+        foreign_keys = _foreign_keys(fk_rows, _pg_fk_action)
         for row in fk_rows:
-            part_key = (str(row[0]).lower(), str(row[1]).lower())
-            fk_parts.setdefault(part_key, []).append(row)
-        for (table, cname), rows in fk_parts.items():
-            first = rows[0]
-            foreign_keys.setdefault(table, {})[cname] = IntrospectedForeignKey(
-                columns=tuple(str(r[2]).lower() for r in rows),
-                target_table=str(first[3]).lower(),
-                target_columns=tuple(str(r[4]).lower() for r in rows),
-                on_delete=_pg_fk_action(first[5]),
-                on_update=_pg_fk_action(first[6]),
-                name=str(first[1]),
-                target_schema=_row_text(first, 7),
-            )
-            if len(first) > 8 and first[8] is False:
-                not_valid.setdefault(table, set()).add(cname)
+            if len(row) > 8 and row[8] is False:
+                not_valid.setdefault(str(row[0]).lower(), set()).add(
+                    str(row[1]).lower()
+                )
         constraints_read = True
     except Exception:
         # No pg_constraint to read; degrade to no foreign keys.
@@ -260,7 +250,6 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
         namespace_filter, not_valid
     )
 
-    comments: Dict[str, Dict[str, str]] = {}
     comments_read = False
     try:
         comment_rows = yield (
@@ -275,10 +264,7 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "AND d.objsubid > 0 "
             f"AND {namespace_filter}"
         )
-        for table, name, description in comment_rows:
-            comments.setdefault(str(table).lower(), {})[str(name).lower()] = str(
-                description
-            )
+        _apply_comments(columns_by_table, comment_rows)
         comments_read = True
     except Exception:
         # No pg_description to read; degrade to no comments.
@@ -325,9 +311,6 @@ def _postgres_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
                 columns[name] = column._replace(
                     enum_name=column.raw_type.lower(), enum_values=values
                 )
-        for name, comment in comments.get(table, {}).items():
-            if name in columns:
-                columns[name] = columns[name]._replace(comment=comment)
         schema[table] = IntrospectedTable(
             columns=columns,
             primary_key=pk,
@@ -397,15 +380,10 @@ def _check_plan(namespace_filter: str, not_valid: Dict[str, Set[str]]) -> Genera
             f"AND {namespace_filter}"
         )
         for row in check_rows:
-            table, cname = row[:2]
-            name = str(cname).lower()
             expression, validated = _check_clause(row)
-            if _is_generated_not_null_check(name, expression):
-                continue
-            checks.setdefault(str(table).lower(), {})[name] = expression
-            check_names.setdefault(str(table).lower(), {})[name] = str(cname)
-            if not validated:
-                not_valid.setdefault(str(table).lower(), set()).add(name)
+            name = _add_check(checks, check_names, row[0], row[1], expression)
+            if name is not None and not validated:
+                not_valid.setdefault(str(row[0]).lower(), set()).add(name)
         checks_read = True
     except Exception:
         # No pg_constraint to read; degrade to no checks.

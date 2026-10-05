@@ -20,6 +20,7 @@ from sustained.introspect.model import (
     SchemaPlan,
     Snapshot,
 )
+from sustained.introspect.scope import _apply_comments
 from sustained.types import RowValue
 
 _DUCKDB_IDENTIFIER_RE = re.compile(r"^\w+$")
@@ -147,14 +148,9 @@ def _duckdb_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "SELECT table_name, column_name, comment FROM duckdb_columns() "
             f"WHERE comment IS NOT NULL AND {schema_filter}"
         )
-        for table, name, comment in comment_rows:
-            existing = schema.get(str(table).lower())
-            if existing is None:
-                continue
-            key = str(name).lower()
-            column = existing.columns.get(key)
-            if column is not None:
-                existing.columns[key] = column._replace(comment=str(comment))
+        _apply_comments(
+            {table: read.columns for table, read in schema.items()}, comment_rows
+        )
         schema.comments_read = True
     except Exception:
         # A DuckDB from before COMMENT ON; degrade to no comments.

@@ -16,6 +16,7 @@ from sustained.introspect.information_schema import (
     _replace_foreign_keys,
 )
 from sustained.introspect.model import IntrospectedIndex, SchemaPlan, with_details
+from sustained.introspect.scope import _apply_comments
 
 
 def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
@@ -105,20 +106,11 @@ def _mssql_plan(schemas: Tuple[str, ...] = ()) -> SchemaPlan:
             "AND ep.name = 'MS_Description' "
             f"AND {index_filter}"
         )
-        comments: Dict[str, Dict[str, str]] = {}
-        for table, column, value in comment_rows:
-            if value in (None, ""):
-                continue
-            comments.setdefault(str(table).lower(), {})[str(column).lower()] = str(
-                value
-            )
-        for table, by_column in comments.items():
-            if table not in schema:
-                continue
-            table_columns = schema[table].columns
-            for name, comment in by_column.items():
-                if name in table_columns:
-                    table_columns[name] = table_columns[name]._replace(comment=comment)
+        _apply_comments(
+            {table: read.columns for table, read in schema.items()},
+            comment_rows,
+            skip_empty=True,
+        )
         schema.comments_read = True
     except Exception:
         # No sys.extended_properties to read; degrade to no comments.
