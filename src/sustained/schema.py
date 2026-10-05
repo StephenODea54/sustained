@@ -565,6 +565,11 @@ def collect_enum_types(columns: Dict[str, ColumnDef]) -> Dict[str, Tuple[str, ..
     return types
 
 
+def dotted_name(*parts: Optional[str]) -> str:
+    """The unquoted, dotted name of the parts given, without empty parts."""
+    return ".".join(p for p in parts if p)
+
+
 def bare_table_name(table_sql: str) -> str:
     """
     The unquoted table name at the end of a rendered table reference,

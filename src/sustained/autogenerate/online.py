@@ -49,6 +49,7 @@ import re
 from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
 from sustained.analysis import MigrationStatement, with_intent
+from sustained.schema import dotted_name
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
@@ -372,9 +373,7 @@ def _qualified(compiler: "Compiler", schema: Optional[str], name: str) -> str:
 
 def _reported(partition: "IntrospectedPartition") -> str:
     """A partition as an intent names it: schema.name, or the name alone."""
-    if partition.schema is None:
-        return partition.name
-    return f"{partition.schema}.{partition.name}"
+    return dotted_name(partition.schema, partition.name)
 
 
 def _index_sql(compiler: "Compiler", table_sql: str, name: str) -> str:

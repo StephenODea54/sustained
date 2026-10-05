@@ -48,6 +48,7 @@ from sustained.schema import (
     collect_enum_types,
     create_index_statement,
     create_table_statements,
+    dotted_name,
     enum_check_expression,
     enum_check_name,
 )
@@ -210,8 +211,7 @@ def _table_name(table: TableRef) -> str:
         return table
     if not table.tableName:
         raise ValueError(f"Model '{table.__name__}' must define a tableName.")
-    parts = [table.database, table.tableSchema, table.tableName]
-    return ".".join(p for p in parts if p)
+    return dotted_name(table.database, table.tableSchema, table.tableName)
 
 
 def _table_sql(args: _Args, compiler: "Compiler", key: str = "table") -> str:

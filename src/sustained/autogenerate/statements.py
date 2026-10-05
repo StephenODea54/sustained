@@ -35,6 +35,7 @@ from sustained.schema import (
     ForeignKey,
     bare_table_name,
     create_table_statements,
+    dotted_name,
     enum_check_expression,
     enum_check_name,
 )
@@ -79,8 +80,7 @@ def _declared_table_sql(
 
 def _intent_table(model: Type["Model"]) -> str:
     """The dotted, unquoted table name an Intent gives a model's table."""
-    parts = [model.database, model.tableSchema, model.tableName]
-    return ".".join(p for p in parts if p)
+    return dotted_name(model.database, model.tableSchema, model.tableName)
 
 
 KeyTarget = Tuple[str, Tuple[str, ...]]
@@ -163,10 +163,7 @@ def _reported_intent_table(
     read = actual.get(table.lower())
     if read is None:
         return table
-    parts = [read.name or table]
-    if read.schema is not None:
-        parts.insert(0, read.schema)
-    return ".".join(parts)
+    return dotted_name(read.schema, read.name or table)
 
 
 def _tagged(
@@ -387,7 +384,7 @@ def _lift_statements(
 ) -> Tuple[str, str]:
     """The statements that drop one lifted index and create it again."""
     columns = _spelled_columns(table, index)
-    intent_table = ".".join(p for p in (table.schema, table.name) if p)
+    intent_table = dotted_name(table.schema, table.name)
     if index.constraint:
         return (
             with_intent(
