@@ -24,6 +24,10 @@ from sustained.execution import (
 HAS_SQLITE_AUTOCOMMIT = hasattr(sqlite3.Connection, "autocommit")
 
 
+class FactoryConnection(sqlite3.Connection):
+    """A connect(factory=...) class, which reports this module as its own."""
+
+
 class TxUser(Model):
     tableName = "users"
 
@@ -385,6 +389,27 @@ class TestNeedsExplicitBegin(unittest.TestCase):
         conn = sqlite3.connect(":memory:", autocommit=False)
         try:
             self.assertFalse(needs_explicit_begin(conn))
+        finally:
+            conn.close()
+
+    def test_a_sqlite3_factory_subclass_needs_one(self):
+        conn = sqlite3.connect(":memory:", factory=FactoryConnection)
+        try:
+            self.assertTrue(needs_explicit_begin(conn))
+        finally:
+            conn.close()
+
+    def test_a_factory_subclass_rolls_back_schema_statements(self):
+        conn = sqlite3.connect(":memory:", factory=FactoryConnection)
+        try:
+            with self.assertRaises(RuntimeError):
+                with transaction(conn):
+                    conn.execute("CREATE TABLE t (a INTEGER)")
+                    raise RuntimeError("boom")
+            tables = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+            self.assertEqual(tables, [])
         finally:
             conn.close()
 

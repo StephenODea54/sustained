@@ -288,13 +288,9 @@ def needs_explicit_begin(connection: Connection) -> bool:
     in the new autocommit=False control open their transaction before
     every statement already and are left alone.
     """
-    if type(connection).__module__.partition(".")[0] != "sqlite3":
-        return False
-    if getattr(connection, "autocommit", -1) != -1:
-        return False
-    if getattr(connection, "in_transaction", False):
-        return False
-    return True
+    return legacy_sqlite_control(connection) and not getattr(
+        connection, "in_transaction", False
+    )
 
 
 def _execute_or_close(cursor: Cursor, sql: str) -> None:
