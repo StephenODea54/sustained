@@ -7,7 +7,7 @@ back as SQL.
 from __future__ import annotations
 
 import re
-from typing import Callable, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 # Engine type spellings mapped to Sustained's logical types. Both sides of
 # a comparison pass through this table, so a model column compared against
@@ -130,12 +130,7 @@ def normalize_check(expression: str) -> str:
     value = _outside_literals(value, _unquote_identifiers)
     value = _outside_literals(value, lambda part: _OPERATOR_SPACING_RE.sub(r"\1", part))
     value = _outside_literals(value, lambda part: _LONE_PARENS_RE.sub(r"\1", part))
-    while (
-        value.startswith("(")
-        and value.endswith(")")
-        and _balanced_paren_body(value, 0) == value[1:-1]
-    ):
-        value = value[1:-1].strip()
+    value = _strip_outer_parens(value)
     return value.casefold()
 
 
@@ -182,12 +177,7 @@ def normalize_default(raw: Optional[str]) -> Optional[str]:
     if is_sequence_default(raw):
         return None
     value = str(raw).strip()
-    while (
-        value.startswith("(")
-        and value.endswith(")")
-        and _balanced_paren_body(value, 0) == value[1:-1]
-    ):
-        value = value[1:-1].strip()
+    value = _strip_outer_parens(value)
     value = _CAST_RE.sub("", value)
     # MSSQL reports a Unicode string default as N'...'.
     if value[:2] in ("N'", "n'"):
@@ -197,29 +187,57 @@ def normalize_default(raw: Optional[str]) -> Optional[str]:
     return re.sub(r"\(\s*\)$", "", value.strip())
 
 
+# The quote that closes each quoting character: a string literal, and
+# the three ways to quote an identifier.
+_QUOTES = {"'": "'", '"': '"', "`": "`", "[": "]"}
+
+
+def _unquoted(text: str) -> List[Tuple[int, str]]:
+    """
+    Every character of `text` that sits outside a string literal and a
+    quoted identifier, with its position. A doubled quote closes the
+    span and opens it again, which leaves it inside.
+    """
+    found: List[Tuple[int, str]] = []
+    closer: Optional[str] = None
+    for position, char in enumerate(text):
+        if closer is not None:
+            if char == closer:
+                closer = None
+        elif char in _QUOTES:
+            closer = _QUOTES[char]
+        else:
+            found.append((position, char))
+    return found
+
+
 def _balanced_paren_body(text: str, start: int) -> Optional[str]:
     """
     The text between the parenthesis at `start` and its matching close,
-    or None when the parentheses do not balance. Quoted strings are
-    skipped, so a ')' inside a literal does not end the expression.
+    or None when the parentheses do not balance. String literals and
+    quoted identifiers are skipped, so a ')' inside one does not end the
+    expression.
     """
     depth = 0
-    in_string = False
-    for position in range(start, len(text)):
-        char = text[position]
-        if in_string:
-            if char == "'":
-                in_string = False
-            continue
-        if char == "'":
-            in_string = True
-        elif char == "(":
+    for position, char in _unquoted(text[start:]):
+        if char == "(":
             depth += 1
         elif char == ")":
             depth -= 1
             if depth == 0:
-                return text[start + 1 : position]
+                return text[start + 1 : start + position]
     return None
+
+
+def _strip_outer_parens(value: str) -> str:
+    """`value` with every pair of balanced outer parentheses taken off."""
+    while (
+        value.startswith("(")
+        and value.endswith(")")
+        and _balanced_paren_body(value, 0) == value[1:-1]
+    ):
+        value = value[1:-1].strip()
+    return value
 
 
 _MYSQL_ENUM_RE = re.compile(r"^\s*enum\s*\((.*)\)\s*$", re.IGNORECASE | re.DOTALL)

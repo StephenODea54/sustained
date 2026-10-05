@@ -6,7 +6,7 @@ collations, and triggers held in the SQL stored in sqlite_master.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Sequence, Tuple, cast
+from typing import Dict, List, Sequence, Tuple, cast
 
 from sustained.introspect.model import (
     IntrospectedColumn,
@@ -16,7 +16,7 @@ from sustained.introspect.model import (
     SchemaPlan,
     Snapshot,
 )
-from sustained.introspect.normalize import _balanced_paren_body
+from sustained.introspect.normalize import _QUOTES, _balanced_paren_body, _unquoted
 from sustained.types import RowValue
 
 
@@ -25,9 +25,6 @@ def _strip_identifier(name: str) -> str:
     return name.strip().strip('"`[]').lower()
 
 
-# The quote that closes each quoting character SQLite takes: a string
-# literal, and the three ways to quote an identifier.
-_SQLITE_QUOTES = {"'": "'", '"': '"', "`": "`", "[": "]"}
 # One constraint or column name as SQLite takes it: quoted any of three
 # ways, or bare.
 _SQLITE_NAME = r"(\"(?:[^\"]|\"\")*\"|`[^`]*`|\[[^\]]*\]|\w+)"
@@ -46,7 +43,7 @@ _SQLITE_FK_NAME_RE = re.compile(
 
 def _sqlite_unquote(name: str) -> str:
     """A name from a CREATE TABLE statement, unquoted and lowercased."""
-    closer = _SQLITE_QUOTES.get(name[0])
+    closer = _QUOTES.get(name[0])
     if closer is not None and name.endswith(closer):
         name = name[1:-1].replace(closer * 2, closer)
     return name.lower()
@@ -78,25 +75,6 @@ def _sqlite_fk_names(create_sql: str) -> Dict[Tuple[str, ...], str]:
         )
         names[columns] = _sqlite_unquote(match.group(1))
     return names
-
-
-def _unquoted(text: str) -> List[Tuple[int, str]]:
-    """
-    Every character of `text` that sits outside a string literal and a
-    quoted identifier, with its position. A doubled quote closes the
-    span and opens it again, which leaves it inside.
-    """
-    found: List[Tuple[int, str]] = []
-    closer: Optional[str] = None
-    for position, char in enumerate(text):
-        if closer is not None:
-            if char == closer:
-                closer = None
-        elif char in _SQLITE_QUOTES:
-            closer = _SQLITE_QUOTES[char]
-        else:
-            found.append((position, char))
-    return found
 
 
 def _sqlite_table_parts(create_sql: str) -> List[str]:

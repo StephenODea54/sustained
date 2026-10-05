@@ -91,6 +91,7 @@ from sustained.introspect.normalize import (
     _balanced_paren_body,
     _outside_literals,
     _unquote_identifiers,
+    _unquoted,
     is_sequence_default,
     mysql_default_sql,
     normalize_check,
@@ -129,7 +130,6 @@ from sustained.introspect.sqlite import (
     _SQLITE_FK_NAME_RE,
     _SQLITE_NAME,
     _SQLITE_NAMED_BEFORE_RE,
-    _SQLITE_QUOTES,
     _SQLITE_TABLE_CONSTRAINT_RE,
     _sqlite_collations,
     _sqlite_column_name,
@@ -141,7 +141,6 @@ from sustained.introspect.sqlite import (
     _sqlite_unnamed_checks,
     _sqlite_unquote,
     _strip_identifier,
-    _unquoted,
 )
 
 __all__ = [
@@ -208,7 +207,6 @@ __all__ = [
     "_SQLITE_NAMED_BEFORE_RE",
     "_sqlite_plan",
     "_sqlite_quote",
-    "_SQLITE_QUOTES",
     "_sqlite_table_checks",
     "_SQLITE_TABLE_CONSTRAINT_RE",
     "_sqlite_table_parts",

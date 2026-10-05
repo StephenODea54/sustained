@@ -112,6 +112,19 @@ class TestSqliteChecks(unittest.TestCase):
         )
         self.assertEqual(schema["posts"].checks, {"ck_posts_tag": "tag <> ')'"})
 
+    def test_a_close_paren_inside_a_quoted_identifier_stays_inside(self):
+        from sustained.introspect import _sqlite_table_checks, _sqlite_unnamed_checks
+
+        for column in ('"a)b"', "`a)b`", "[a)b]"):
+            with self.subTest(column=column):
+                named = (
+                    f"CREATE TABLE t ({column} INT, "
+                    f"CONSTRAINT c CHECK ({column} > 0))"
+                )
+                self.assertEqual(_sqlite_table_checks(named), {"c": f"{column} > 0"})
+                unnamed = f"CREATE TABLE t ({column} INT CHECK ({column} > 0))"
+                self.assertEqual(_sqlite_unnamed_checks(unnamed), (f"{column} > 0",))
+
     def test_a_check_without_the_ck_prefix_is_read_back(self):
         schema = self.read(
             "CREATE TABLE shows (seats INTEGER, "
