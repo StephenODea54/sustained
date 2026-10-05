@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from abc import ABC, abstractmethod
 from typing import (
     TYPE_CHECKING,
     Callable,
@@ -39,8 +38,11 @@ def _raw_subquery_message(operator: str, sql: str) -> str:
     )
 
 
-class ConditionalClauseBuilder(ABC):
-    """An abstract base class for building conditional clauses like WHERE and HAVING."""
+class ConditionalClauseBuilder:
+    """The shared base for the WHERE and HAVING clause builders."""
+
+    # The clause keyword, set by each subclass.
+    _clause_keyword = ""
 
     _WHERE_METHOD_MAP = {
         "where": "_add_internal",
@@ -65,14 +67,6 @@ class ConditionalClauseBuilder(ABC):
             compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
         )
         self._clauses: List[Tuple[str, Renderable]] = []
-
-    @property
-    @abstractmethod
-    def _clause_keyword(self) -> str: ...
-
-    @property
-    @abstractmethod
-    def _clause_type(self) -> str: ...
 
     def _quote_column(self, column: ColumnReference) -> str:
         """Quotes a column reference through the compiler.

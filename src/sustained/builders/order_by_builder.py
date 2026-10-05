@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, List, Optional, Tuple, Type
 
 if TYPE_CHECKING:
     from ..compilers import Compiler
-    from ..dialects import Dialects
     from ..model import Model
     from ..types import ColumnReference
 
