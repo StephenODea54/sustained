@@ -12,7 +12,15 @@ from typing import (
     Union,
 )
 
-from ..expressions import refuse_null_member
+from ..expressions import (
+    between,
+    compare,
+    compare_with_none,
+    in_list,
+    in_subquery,
+    like,
+    null_test,
+)
 from ..rendering import (
     Renderable,
     RenderContext,
@@ -153,14 +161,7 @@ class ConditionalClauseBuilder:
         op_like_override: Optional[str] = None,
     ) -> None:
         """Internal handler for adding `BETWEEN` and `NOT BETWEEN` clauses."""
-        actual_op = "NOT BETWEEN" if op_override else "BETWEEN"
-        quoted_col = self._quote_column(col)
-
-        def render(ctx: RenderContext) -> str:
-            low = ctx.compiler.format_operand(val1, ctx)
-            high = ctx.compiler.format_operand(val2, ctx)
-            return f"{quoted_col} {actual_op} {low} AND {high}"
-
+        render = between(self._quote_column(col), val1, val2, negate=op_override)
         self._clauses.append((conjunction, render))
 
     def _add_exists_internal(
@@ -224,12 +225,9 @@ class ConditionalClauseBuilder:
     ) -> None:
         """Internal handler for adding `LIKE` and `ILIKE` clauses."""
         actual_op = op_like_override if op_like_override else "LIKE"
-        quoted_col = self._quote_column(col)
-
-        def render(ctx: RenderContext) -> str:
-            return ctx.compiler.compile_like(quoted_col, ctx.value(pattern), actual_op)
-
-        self._clauses.append((conjunction, render))
+        self._clauses.append(
+            (conjunction, like(self._quote_column(col), pattern, actual_op))
+        )
 
     def _add_raw_internal(
         self,
@@ -271,9 +269,8 @@ class ConditionalClauseBuilder:
         op_like_override: Optional[str] = None,
     ) -> None:
         """Internal handler for adding `IS NULL` and `IS NOT NULL` clauses."""
-        actual_op = "IS NOT NULL" if op_override else "IS NULL"
-        clause = f"{self._quote_column(col)} {actual_op}"
-        self._clauses.append((conjunction, clause))
+        render = null_test(self._quote_column(col), negate=op_override)
+        self._clauses.append((conjunction, render))
 
     def _add_internal(
         self,
@@ -316,13 +313,11 @@ class ConditionalClauseBuilder:
                 )
             operator = self._compiler.validate_operator(op)
             if val is None:
-                if operator in ("=", "IS"):
-                    self._add_null_internal(conjunction, column_or_callable)
-                    return
-                if operator in ("!=", "<>", "IS NOT"):
-                    self._add_null_internal(
-                        conjunction, column_or_callable, op_override=True
-                    )
+                null = compare_with_none(
+                    self._quote_column(column_or_callable), operator
+                )
+                if null is not None:
+                    self._clauses.append((conjunction, null))
                     return
                 raise ValueError(
                     f"Value must be provided for non-callable {self._clause_keyword.lower()} clause."
@@ -350,10 +345,7 @@ class ConditionalClauseBuilder:
                     return ctx.compiler.compile_is_boolean(quoted_col, operator, truth)
 
             else:
-
-                def render(ctx: RenderContext) -> str:
-                    operand = ctx.compiler.format_operand(val, ctx)
-                    return f"{quoted_col} {operator} {operand}"
+                render = compare(quoted_col, operator, val)
 
             self._clauses.append((conjunction, render))
 
@@ -367,36 +359,18 @@ class ConditionalClauseBuilder:
         op_like_override: Optional[str] = None,
     ) -> None:
         """Internal handler for adding `IN` and `NOT IN` clauses."""
-        actual_op = "NOT IN" if op_override else "IN"
         quoted_col = self._quote_column(col)
-
         if isinstance(vals, list):
-            if not vals:
-                raise ValueError("IN/NOT IN requires a non-empty list of values.")
-            if op_override:
-                refuse_null_member(vals)
-            value_list = list(vals)
-
-            def render(ctx: RenderContext) -> str:
-                values_str = ", ".join(
-                    ctx.compiler.format_operand(v, ctx) for v in value_list
-                )
-                return f"{quoted_col} {actual_op} ({values_str})"
-
-            self._clauses.append((conjunction, render))
-            return
-
-        inner = self._subquery(
-            vals,
-            actual_op,
-            "Argument for In/NotIn must be a list, a callable, "
-            "QueryBuilder.raw(), or QueryBuilder instance.",
-        )
-
-        def render_sub(ctx: RenderContext) -> str:
-            return f"{quoted_col} {actual_op} ({inner(ctx)})"
-
-        self._clauses.append((conjunction, render_sub))
+            render = in_list(quoted_col, vals, negate=op_override)
+        else:
+            inner = self._subquery(
+                vals,
+                "NOT IN" if op_override else "IN",
+                "Argument for In/NotIn must be a list, a callable, "
+                "QueryBuilder.raw(), or QueryBuilder instance.",
+            )
+            render = in_subquery(quoted_col, inner, negate=op_override)
+        self._clauses.append((conjunction, render))
 
     def _build_clause_list_string(self, ctx: RenderContext) -> str:
         """Builds the complete clause string from all parts."""

@@ -166,5 +166,24 @@ class TestPredicateQuoting(unittest.TestCase):
         self.assertEqual(sql, "SELECT users.name FROM users")
 
 
+class TestCompareWithNone(unittest.TestCase):
+    def test_each_null_operator_maps_to_a_null_test(self):
+        from sustained.expressions import compare_with_none
+        from sustained.rendering import RenderContext
+
+        ctx = RenderContext(Dialects.get_compiler(Dialects.DEFAULT))
+        for operator, expected in [
+            ("=", "x IS NULL"),
+            ("IS", "x IS NULL"),
+            ("!=", "x IS NOT NULL"),
+            ("<>", "x IS NOT NULL"),
+            ("IS NOT", "x IS NOT NULL"),
+        ]:
+            render = compare_with_none("x", operator)
+            assert render is not None
+            self.assertEqual(render(ctx), expected)
+        self.assertIsNone(compare_with_none("x", ">"))
+
+
 if __name__ == "__main__":
     unittest.main()

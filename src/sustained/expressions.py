@@ -4,6 +4,7 @@ SQL expression classes.
 
 from typing import TYPE_CHECKING, Callable, List, Optional, Sequence, Tuple, Union
 
+from .rendering import Renderable, render_part
 from .types import SqlValue
 
 if TYPE_CHECKING:
@@ -24,6 +25,99 @@ def refuse_null_member(values: "Sequence[object]") -> None:
             "To match rows where the column is NULL as well, add "
             "orWhereNull() or col(...).is_null()."
         )
+
+
+RenderFn = Callable[["RenderContext"], str]
+"""Renders one predicate with the statement's render context."""
+
+# The operators that compare a column with None, and the null test each
+# one means.
+_NULL_TESTS = {
+    "=": "IS NULL",
+    "IS": "IS NULL",
+    "!=": "IS NOT NULL",
+    "<>": "IS NOT NULL",
+    "IS NOT": "IS NOT NULL",
+}
+
+
+def null_test(column: Renderable, negate: bool = False) -> RenderFn:
+    """Builds `column IS NULL`, or `column IS NOT NULL` with negate."""
+    test = "IS NOT NULL" if negate else "IS NULL"
+    return lambda ctx: f"{render_part(column, ctx)} {test}"
+
+
+def compare_with_none(column: Renderable, operator: str) -> Optional[RenderFn]:
+    """
+    Builds the null test that a comparison with None means: = and IS give
+    IS NULL, and !=, <>, and IS NOT give IS NOT NULL. Returns None for any
+    other operator, which has no meaning against None.
+    """
+    test = _NULL_TESTS.get(operator)
+    if test is None:
+        return None
+    return null_test(column, negate=test == "IS NOT NULL")
+
+
+def compare(column: Renderable, operator: str, value: SqlValue) -> RenderFn:
+    """Builds `column <operator> value`, with the value as an operand."""
+
+    def render(ctx: "RenderContext") -> str:
+        operand = ctx.compiler.format_operand(value, ctx)
+        return f"{render_part(column, ctx)} {operator} {operand}"
+
+    return render
+
+
+def between(
+    column: Renderable, low: SqlValue, high: SqlValue, negate: bool = False
+) -> RenderFn:
+    """Builds `column BETWEEN low AND high`, or NOT BETWEEN with negate."""
+    operator = "NOT BETWEEN" if negate else "BETWEEN"
+
+    def render(ctx: "RenderContext") -> str:
+        low_sql = ctx.compiler.format_operand(low, ctx)
+        high_sql = ctx.compiler.format_operand(high, ctx)
+        return f"{render_part(column, ctx)} {operator} {low_sql} AND {high_sql}"
+
+    return render
+
+
+def like(column: Renderable, pattern: SqlValue, operator: str) -> RenderFn:
+    """Builds a LIKE or ILIKE test through the dialect's compile_like()."""
+    return lambda ctx: ctx.compiler.compile_like(
+        render_part(column, ctx), ctx.value(pattern), operator
+    )
+
+
+def in_list(
+    column: Renderable, values: Sequence[SqlValue], negate: bool = False
+) -> RenderFn:
+    """
+    Builds `column IN (values)`, or NOT IN with negate.
+
+    Raises:
+        ValueError: If the list is empty, or a NOT IN list has a None
+            member.
+    """
+    if not values:
+        raise ValueError("IN/NOT IN requires a non-empty list of values.")
+    items = list(values)
+    if negate:
+        refuse_null_member(items)
+    operator = "NOT IN" if negate else "IN"
+
+    def render(ctx: "RenderContext") -> str:
+        rendered = ", ".join(ctx.compiler.format_operand(v, ctx) for v in items)
+        return f"{render_part(column, ctx)} {operator} ({rendered})"
+
+    return render
+
+
+def in_subquery(column: Renderable, inner: RenderFn, negate: bool = False) -> RenderFn:
+    """Builds `column IN (subquery)`, or NOT IN with negate."""
+    operator = "NOT IN" if negate else "IN"
+    return lambda ctx: f"{render_part(column, ctx)} {operator} ({inner(ctx)})"
 
 
 class Predicate:
@@ -86,23 +180,13 @@ class ColumnExpr:
 
     def _compare(self, operator: str, value: SqlValue) -> Predicate:
         if value is None:
-            if operator == "=":
-                return self.is_null()
-            if operator in ("!=", "<>"):
-                return self.not_null()
-            raise ValueError(
-                f"Cannot compare a column to None with the '{operator}' operator."
-            )
-
-        def render(ctx: "RenderContext") -> str:
-            if isinstance(value, ColumnExpr):
-                return f"{self._quoted(ctx)} {operator} {value._quoted(ctx)}"
-            return (
-                f"{self._quoted(ctx)} {operator} "
-                f"{ctx.compiler.format_operand(value, ctx)}"
-            )
-
-        return Predicate(render)
+            null = compare_with_none(self._quoted, operator)
+            if null is None:
+                raise ValueError(
+                    f"Cannot compare a column to None with the '{operator}' operator."
+                )
+            return Predicate(null)
+        return Predicate(compare(self._quoted, operator, value))
 
     def __eq__(self, value: object) -> Predicate:  # type: ignore[override]
         return self._compare("=", value)
@@ -123,25 +207,13 @@ class ColumnExpr:
         return self._compare("<=", value)
 
     def like(self, pattern: str) -> Predicate:
-        return Predicate(
-            lambda ctx: ctx.compiler.compile_like(
-                self._quoted(ctx), ctx.value(pattern), "LIKE"
-            )
-        )
+        return Predicate(like(self._quoted, pattern, "LIKE"))
 
     def not_like(self, pattern: str) -> Predicate:
-        return Predicate(
-            lambda ctx: ctx.compiler.compile_like(
-                self._quoted(ctx), ctx.value(pattern), "NOT LIKE"
-            )
-        )
+        return Predicate(like(self._quoted, pattern, "NOT LIKE"))
 
     def ilike(self, pattern: str) -> Predicate:
-        return Predicate(
-            lambda ctx: ctx.compiler.compile_like(
-                self._quoted(ctx), ctx.value(pattern), "ILIKE"
-            )
-        )
+        return Predicate(like(self._quoted, pattern, "ILIKE"))
 
     def in_(self, values: "Union[Sequence[SqlValue], AnyQuery]") -> Predicate:
         return self._in("IN", values)
@@ -154,17 +226,16 @@ class ColumnExpr:
     ) -> Predicate:
         from .builder import QueryBuilder
 
+        negate = operator == "NOT IN"
         if isinstance(values, QueryBuilder):
             subquery = values
 
             def render_sub(ctx: "RenderContext") -> str:
                 from .rendering import render_nested
 
-                return (
-                    f"{self._quoted(ctx)} {operator} ({render_nested(subquery, ctx)})"
-                )
+                return render_nested(subquery, ctx)
 
-            return Predicate(render_sub)
+            return Predicate(in_subquery(self._quoted, render_sub, negate))
 
         if isinstance(values, (str, bytes)):
             # A string is a sequence of characters, so list() would turn
@@ -173,41 +244,19 @@ class ColumnExpr:
                 f"{operator} takes a list of values or a query, not the string "
                 f"{values!r}. Pass [{values!r}] to match one value."
             )
-        if not values:
-            raise ValueError("IN/NOT IN requires a non-empty list of values.")
-        items = list(values)
-        if operator == "NOT IN":
-            refuse_null_member(items)
-
-        def render(ctx: "RenderContext") -> str:
-            rendered = ", ".join(ctx.compiler.format_operand(v, ctx) for v in items)
-            return f"{self._quoted(ctx)} {operator} ({rendered})"
-
-        return Predicate(render)
+        return Predicate(in_list(self._quoted, values, negate))
 
     def between(self, low: SqlValue, high: SqlValue) -> Predicate:
-        return Predicate(
-            lambda ctx: (
-                f"{self._quoted(ctx)} BETWEEN "
-                f"{ctx.compiler.format_operand(low, ctx)} AND "
-                f"{ctx.compiler.format_operand(high, ctx)}"
-            )
-        )
+        return Predicate(between(self._quoted, low, high))
 
     def not_between(self, low: SqlValue, high: SqlValue) -> Predicate:
-        return Predicate(
-            lambda ctx: (
-                f"{self._quoted(ctx)} NOT BETWEEN "
-                f"{ctx.compiler.format_operand(low, ctx)} AND "
-                f"{ctx.compiler.format_operand(high, ctx)}"
-            )
-        )
+        return Predicate(between(self._quoted, low, high, negate=True))
 
     def is_null(self) -> Predicate:
-        return Predicate(lambda ctx: f"{self._quoted(ctx)} IS NULL")
+        return Predicate(null_test(self._quoted))
 
     def not_null(self) -> Predicate:
-        return Predicate(lambda ctx: f"{self._quoted(ctx)} IS NOT NULL")
+        return Predicate(null_test(self._quoted, negate=True))
 
 
 def col(name: str) -> ColumnExpr:
