@@ -447,9 +447,11 @@ class Compiler:
         quote_identifier(), so "Employee ID" and "prénom" are names too. A
         part already in "..", [..] or `..` quotes loses those quotes and
         takes the quotes of this dialect, so 'dbo."a.b"' names one column
-        "a.b". A string can arrive from a request, such as a sort
-        parameter, and every part of it is quoted, so text in it never runs
-        as SQL. The default dialect writes names bare and raises ValueError
+        "a.b". The name of a call is written into the SQL as given, so
+        "pg_sleep(id)" calls pg_sleep() on the server. Only the argument
+        is quoted. Check a string that comes from a request, such as a sort
+        parameter, against the known column names before you pass it here.
+        The default dialect writes names bare and raises ValueError
         for a part that is not a plain name. Expression and Column objects
         are raw SQL. col() names a column by the same rule as a string.
         Literal renders its value as an inline SQL literal, and a Func,

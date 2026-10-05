@@ -16,7 +16,7 @@ Show.query().where(Show.c.sold_out == True)
 
 The three-argument form takes a column name, an operator, and a value, and quotes the name for the dialect. The typed form uses Python's own comparison operators against `Model.c`, checks the name against the model's declared columns, and qualifies it with the table. Strings are quicker to type and work on any column, including ones not declared on a model. Typed predicates combine with `&`, `|`, and `~`, so they suit compound and nested WHERE clauses.
 
-A column string is a column name such as `'city'` or `'venues.city'`, the star forms `'*'` and `'venues.*'`, or a call on one column such as `'COUNT(id)'` or `'COUNT(DISTINCT city)'`. Sustained splits a name on its dots and quotes each part for the dialect, so a name with a space or a non-ASCII letter works too:
+A column string is a column name such as `'city'` or `'venues.city'`, the star forms `'*'` and `'venues.*'`, or a call on one column such as `'COUNT(id)'` or `'COUNT(DISTINCT city)'`. The call can name any function, and Sustained writes the function name into the SQL as given. Sustained splits a name on its dots and quotes each part for the dialect, so a name with a space or a non-ASCII letter works too:
 
 ```python
 Venue.query().select('Seat Count').where('région', '=', 'Bretagne')
@@ -26,7 +26,20 @@ Venue.query().select('Seat Count').where('région', '=', 'Bretagne')
 
 To put a dot inside one part, write that part in quotes. Sustained accepts `"..."`, `[...]`, and `` `...` `` on every dialect, removes them, and quotes the part again for the target dialect. A doubled closing quote inside the part is one quote character. So `'dbo."a.b"'` names the column `a.b` in the schema `dbo`, and `'[Employee ID]'` renders as `"Employee ID"` on Postgres.
 
-A column name often comes from a request, such as a sort parameter. Because Sustained quotes every part, SQL inside the string stays inside one quoted name and does not run. `'id; DROP TABLE x'` renders as `"id; DROP TABLE x"`, and the database then reports that no such column exists. The default dialect writes names without quotes, so it raises `ValueError` for a part that is not letters, digits, underscores, and dollar signs, the same as `insert()` does. A string with an empty part, such as `'a..b'`, raises `ValueError` on every dialect.
+Never pass a column string from untrusted input, such as a sort parameter in a request, to the builder as it is. Sustained quotes each part of a name, so `'id; DROP TABLE x'` renders as `"id; DROP TABLE x"` and the database reports that no such column exists. A call does not get the same protection. In `'pg_sleep(id)'`, Sustained quotes only the argument and writes `pg_sleep` as given, so the database runs that function.
+
+Check a column or sort key from a request against a set of the column names you allow, and only then pass it to the builder:
+
+```python
+SORTABLE = {'name', 'city', 'capacity'}
+
+sort = request.args.get('sort', 'name')
+if sort not in SORTABLE:
+    raise ValueError(f'Cannot sort by {sort!r}.')
+Venue.query().orderBy(sort)
+```
+
+The default dialect writes names without quotes, so it raises `ValueError` for a part that is not letters, digits, underscores, and dollar signs, the same as `insert()` does. A string with an empty part, such as `'a..b'`, raises `ValueError` on every dialect.
 
 In `select()`, `'column AS alias'` sets an alias. Sustained reads the text after ` AS ` as the alias, so write a name that contains ` AS ` in quotes, such as `'"Cost AS Pct"'`. The rules apply to `select()`, `where()`, `having()`, `orderBy()`, `groupBy()`, `distinctOn()`, `returning()`, and `ColumnExpr`, and `from_()` takes a plain table name only.
 

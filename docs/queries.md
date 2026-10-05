@@ -117,7 +117,7 @@ Venue.query().select_func('COALESCE', 'name', Literal('unknown'), alias='label')
 # SELECT COALESCE(name, 'unknown') AS label FROM venues
 ```
 
-A string argument follows the same rule as a column string in `select()` or `where()`. It can be a dotted path, a name already in `".."`, `[..]` or `` `..` `` quotes, or a call on one column such as `'COUNT(id)'`. Each part goes through the dialect's quoting, so the text never runs as SQL.
+A string argument follows the same rule as a column string in `select()` or `where()`. It can be a dotted path, a name already in `".."`, `[..]` or `` `..` `` quotes, or a call on one column such as `'COUNT(id)'`. Each part of a path goes through the dialect's quoting. Sustained writes the function name of a call as given, so a column string must not come from untrusted input. Check a column name from a request against a set of allowed names first, as [Filtering](./filtering) shows.
 
 If you forget `Literal`, the value becomes a quoted column name, and the database rejects the query unless a column of that name exists:
 

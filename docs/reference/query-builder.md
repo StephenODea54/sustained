@@ -40,7 +40,7 @@ select(*columns)
 ```
 {: .sig #select}
 
-Adds columns to the `SELECT` list. Accepts strings, the `'col AS alias'` form, `Model.column` references, `ColumnExpr`, and any expression object. A string is a column name, `'*'`, `'table.*'`, or a call on one column such as `'COUNT(*)'`, and any other string raises `ValueError` at render time. Pass other SQL through `QueryBuilder.raw()`. The `SELECT` list defaults to `*` when you never call `select()`.
+Adds columns to the `SELECT` list. Accepts strings, the `'col AS alias'` form, `Model.column` references, `ColumnExpr`, and any expression object. A string is a column name or dotted path, `'*'`, `'table.*'`, or a call on one column such as `'COUNT(*)'`. Sustained quotes each part of a name and writes the function name of a call as given, so a column string must not come from untrusted input. Check a column name from a request against a set of allowed names first. Pass other SQL through `QueryBuilder.raw()`. The `SELECT` list defaults to `*` when you never call `select()`.
 
 ```python
 distinct()
@@ -221,7 +221,7 @@ orderBy(column, direction='asc')
 ```
 {: .sig #orderby}
 
-Sorts the result. Chain calls to sort by several columns. Any direction other than `asc` or `desc` raises `ValueError`. The column follows the same rule as `select()`, so a sort parameter taken from a request cannot carry SQL. Pass an expression through `QueryBuilder.raw()`. A `Literal` raises `ValueError`, because `ORDER BY 1` names a select-list position. Write `raw('1')` for a position.
+Sorts the result. Chain calls to sort by several columns. Any direction other than `asc` or `desc` raises `ValueError`. The column follows the same rule as `select()`. A string such as `'pg_sleep(id)'` is a call, and Sustained writes its function name as given, so check a sort parameter from a request against a set of allowed column names before you pass it. Pass an expression through `QueryBuilder.raw()`. A `Literal` raises `ValueError`, because `ORDER BY 1` names a select-list position. Write `raw('1')` for a position.
 
 ```python
 limit(value)

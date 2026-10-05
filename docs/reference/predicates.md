@@ -63,7 +63,7 @@ Every argument you pass to the builder is a column, a value, or raw SQL. Sustain
 
 A plain string takes its meaning from its position. In a column position it is a column: `select()`, the column of `where()` and `having()`, `orderBy()`, `groupBy()`, aggregates, function arguments, window partitions and orders, both sides of a join `ON`, and the keys of `insert()` and `update()`. In a value position it is a value: the value of `where()`, the members of `IN` and `BETWEEN`, the values of `insert()` and `update()`, and `CASE` results.
 
-A column string follows one rule everywhere. It is `*`, `table.*`, a call on one column such as `'COUNT(id)'`, or a dotted path. Each part of a path takes the dialect's quotes, and a part already in `".."`, `[..]` or `` `..` `` quotes loses those quotes first. The keys of `insert()` and `update()` are one name each, so `'a.b'` there names one column called `a.b`.
+A column string follows one rule everywhere. It is `*`, `table.*`, a call on one column such as `'COUNT(id)'`, or a dotted path. The function name of a call goes into the SQL as given, so a column string must not come from untrusted input. Each part of a path takes the dialect's quotes, and a part already in `".."`, `[..]` or `` `..` `` quotes loses those quotes first. The keys of `insert()` and `update()` are one name each, so `'a.b'` there names one column called `a.b`.
 
 If you want to override the position, wrap the argument. Each wrapper means the same thing in every position.
 
