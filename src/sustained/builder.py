@@ -179,6 +179,13 @@ class QueryBuilder:
         self._select_clause_builder.select(*columns)
         return self
 
+    def _aggregate(
+        self, name: str, column: str, alias: Optional[str]
+    ) -> "QueryBuilder":
+        self._validate_function(name)
+        self._select_clause_builder.select(AggregateExpression(name, column, alias))
+        return self
+
     def count(self, column: str = "*", alias: Optional[str] = None) -> "QueryBuilder":
         """
         Adds a COUNT() aggregate to the select clause.
@@ -190,10 +197,7 @@ class QueryBuilder:
         Returns:
             The current QueryBuilder instance for chaining.
         """
-        self._validate_function("COUNT")
-        agg = AggregateExpression("COUNT", column, alias)
-        self._select_clause_builder.select(agg)
-        return self
+        return self._aggregate("COUNT", column, alias)
 
     def sum(self, column: str, alias: Optional[str] = None) -> "QueryBuilder":
         """
@@ -206,10 +210,7 @@ class QueryBuilder:
         Returns:
             The current QueryBuilder instance for chaining.
         """
-        self._validate_function("SUM")
-        agg = AggregateExpression("SUM", column, alias)
-        self._select_clause_builder.select(agg)
-        return self
+        return self._aggregate("SUM", column, alias)
 
     def avg(self, column: str, alias: Optional[str] = None) -> "QueryBuilder":
         """
@@ -222,10 +223,7 @@ class QueryBuilder:
         Returns:
             The current QueryBuilder instance for chaining.
         """
-        self._validate_function("AVG")
-        agg = AggregateExpression("AVG", column, alias)
-        self._select_clause_builder.select(agg)
-        return self
+        return self._aggregate("AVG", column, alias)
 
     def min(self, column: str, alias: Optional[str] = None) -> "QueryBuilder":
         """
@@ -238,10 +236,7 @@ class QueryBuilder:
         Returns:
             The current QueryBuilder instance for chaining.
         """
-        self._validate_function("MIN")
-        agg = AggregateExpression("MIN", column, alias)
-        self._select_clause_builder.select(agg)
-        return self
+        return self._aggregate("MIN", column, alias)
 
     def max(self, column: str, alias: Optional[str] = None) -> "QueryBuilder":
         """
@@ -254,10 +249,7 @@ class QueryBuilder:
         Returns:
             The current QueryBuilder instance for chaining.
         """
-        self._validate_function("MAX")
-        agg = AggregateExpression("MAX", column, alias)
-        self._select_clause_builder.select(agg)
-        return self
+        return self._aggregate("MAX", column, alias)
 
     def select_func(
         self, function_name: str, *args: SqlValue, alias: Optional[str] = None
@@ -556,12 +548,8 @@ class QueryBuilder:
         flag is put back afterwards, so a later subquery elsewhere in an
         UPDATE or DELETE still renders its own WITH.
         """
-        hoisting = ctx.hoisting
-        ctx.hoisting = hoisting or include_ctes
-        try:
+        with ctx.hoisted(include_ctes):
             return self._render_select_parts(ctx, include_ctes)
-        finally:
-            ctx.hoisting = hoisting
 
     def _render_with_clause(self, ctx: RenderContext) -> str:
         """
@@ -714,10 +702,7 @@ class QueryBuilder:
         Returns:
             QueryBuilder: The current QueryBuilder instance for chaining.
         """
-        union_type = "UNION ALL" if all else "UNION"
-        for q in queries:
-            self._union_clauses.append((union_type, q))
-        return self
+        return self._add_set_op("UNION ALL" if all else "UNION", queries)
 
     def unionAll(self, *queries: "QueryBuilder") -> "QueryBuilder":
         """
@@ -734,9 +719,7 @@ class QueryBuilder:
         Adds one or more INTERSECT clauses to the query, keeping only rows
         present in every query.
         """
-        for q in queries:
-            self._union_clauses.append(("INTERSECT", q))
-        return self
+        return self._add_set_op("INTERSECT", queries)
 
     def except_(self, *queries: "QueryBuilder") -> "QueryBuilder":
         """
@@ -744,8 +727,12 @@ class QueryBuilder:
         appear in the given queries. Named except_ because except is a
         Python keyword.
         """
-        for q in queries:
-            self._union_clauses.append(("EXCEPT", q))
+        return self._add_set_op("EXCEPT", queries)
+
+    def _add_set_op(
+        self, operator: str, queries: "Tuple[QueryBuilder, ...]"
+    ) -> "QueryBuilder":
+        self._union_clauses.extend((operator, q) for q in queries)
         return self
 
     def distinctOn(self, *columns: str) -> "QueryBuilder":
@@ -1112,13 +1099,9 @@ class QueryBuilder:
         for a dialect that writes the WITH in front of an enclosing
         statement. Parameters collect in that same order.
         """
-        hoisting = ctx.hoisting
-        ctx.hoisting = True
-        try:
+        with ctx.hoisted():
             with_sql = self._render_with_clause(ctx)
             return with_sql, self._render_sql(ctx, include_ctes=False)
-        finally:
-            ctx.hoisting = hoisting
 
     def _render_write(self, ctx: RenderContext, table_sql: str) -> str:
         """
@@ -1130,13 +1113,9 @@ class QueryBuilder:
         """
         if not self._compiler.with_leads_write():
             return self._render_update_or_delete(ctx, table_sql)
-        hoisting = ctx.hoisting
-        ctx.hoisting = True
-        try:
+        with ctx.hoisted():
             with_sql = self._render_with_clause(ctx)
             sql = self._render_update_or_delete(ctx, table_sql)
-        finally:
-            ctx.hoisting = hoisting
         return f"{with_sql} {sql}" if with_sql else sql
 
     def _render_update_or_delete(self, ctx: RenderContext, table_sql: str) -> str:
@@ -1187,15 +1166,7 @@ class QueryBuilder:
             else:
                 select_sql = source_query._render_sql(ctx)
                 sql = f"INSERT INTO {table_sql}{columns_part} {select_sql}"
-            if self._returning_columns:
-                returning_sql = ", ".join(
-                    self._compiler.quote_column_reference(c)
-                    for c in self._returning_columns
-                )
-                sql += f" {self._compiler.compile_returning(returning_sql)}"
-            return sql
-
-        if self._stmt_type == "insert":
+        elif self._stmt_type == "insert":
             if self._where_builder.has_clauses():
                 raise ValueError("INSERT statements cannot have a WHERE clause.")
             columns = list(self._insert_rows[0].keys())

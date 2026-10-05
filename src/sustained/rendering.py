@@ -9,7 +9,17 @@ and collected in order so the caller can pass them to a database driver.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, List, Optional, Sequence, Union
+from contextlib import contextmanager
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+    Union,
+)
 
 from sustained.types import Expression, SqlValue
 
@@ -38,6 +48,20 @@ class RenderContext:
         # Collects the subqueries a render reaches, when a CTE search asks
         # for them. See QueryBuilder._collect_ctes().
         self.nested: Optional[List["QueryBuilder[Any]"]] = None
+
+    @contextmanager
+    def hoisted(self, hoist: bool = True) -> Iterator[None]:
+        """
+        Sets the hoisting flag for the block when `hoist` is true, and puts
+        the old value back after it, so a later subquery elsewhere in the
+        statement still renders its own WITH.
+        """
+        saved = self.hoisting
+        self.hoisting = saved or hoist
+        try:
+            yield
+        finally:
+            self.hoisting = saved
 
     def value(self, value: SqlValue) -> str:
         """
