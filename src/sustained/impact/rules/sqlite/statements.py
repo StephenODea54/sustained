@@ -206,21 +206,19 @@ def _refused(
     return refusal, confidence
 
 
+def _read(facts: Facts, action: Action) -> Optional[Outcome]:
+    effect = _action(facts, action)
+    if effect is None:
+        return None
+    refused = _refused(facts, action.options) if action.kind == "add_column" else None
+    if refused is None:
+        return Outcome.of(effect)
+    refusal, confidence = refused
+    return Outcome.of(effect._replace(confidence=confidence), findings=(refusal,))
+
+
 def _alter_table(facts: Facts) -> Outcome:
-    effects: List[Effect] = []
-    findings: List[Finding] = []
-    for action in facts.parsed.actions:
-        effect = _action(facts, action)
-        if effect is None:
-            return common.unknown(facts, f"the ALTER TABLE action {action.kind}")
-        if action.kind == "add_column":
-            refused = _refused(facts, action.options)
-            if refused is not None:
-                refusal, confidence = refused
-                findings.append(refusal)
-                effect = effect._replace(confidence=confidence)
-        effects.append(effect)
-    return Outcome(tuple(effects), tuple(findings))
+    return common.each_action(facts, _read)
 
 
 def _rebuilt(facts: Facts) -> Optional[str]:

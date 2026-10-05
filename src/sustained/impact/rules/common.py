@@ -4,7 +4,9 @@ The handler helpers every rule profile uses.
 - `table()` and `tables()` name the tables a statement acts on.
 - `dispatch()` hands a statement to the handler for its kind, and
   `unknown()` is the outcome for a statement or ALTER TABLE action no
-  handler reads.
+  handler reads. `each_action()` joins the outcomes of an ALTER TABLE
+  statement's actions, and `by_kind()` reads each with the handler for
+  its kind.
 - `row_write_message()` words the finding for an UPDATE or DELETE, and
   `rename_note()` the one for a rename.
 - `add_stats()` keys a table's stats by `schema.table`, and by the bare
@@ -22,6 +24,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from sustained.impact.context import TableStats
 from sustained.impact.model import (
+    Action,
     Blocks,
     Confidence,
     Evidence,
@@ -34,12 +37,15 @@ from sustained.impact.model import (
     TableImpact,
     Work,
 )
-from sustained.impact.rules import Facts, Outcome, Profile, Rule, title
+from sustained.impact.rules import Effect, Facts, Outcome, Profile, Rule, title
 from sustained.impact.window import aggregate, row_scopes
 
 UNNAMED_TABLE = "(unnamed table)"
 
 Handler = Callable[[Facts], Outcome]
+ActionHandler = Callable[[Facts, Action], Outcome]
+# One ALTER TABLE action's outcome, or None for an action no rule reads.
+ActionReader = Callable[[Facts, Action], Optional[Outcome]]
 
 
 def table(facts: Facts) -> str:
@@ -80,6 +86,46 @@ def dispatch(facts: Facts, handlers: Mapping[str, Handler]) -> Outcome:
     if handler is None:
         return unknown(facts, f"a {facts.parsed.kind} statement")
     return handler(facts)
+
+
+def by_kind(handlers: Mapping[str, ActionHandler]) -> ActionReader:
+    """Reads each ALTER TABLE action with the handler for its kind."""
+
+    def read(facts: Facts, action: Action) -> Optional[Outcome]:
+        handler = handlers.get(action.kind)
+        return None if handler is None else handler(facts, action)
+
+    return read
+
+
+def each_action(
+    facts: Facts,
+    read: ActionReader,
+    adjust: Optional[Callable[[Action, Outcome], Outcome]] = None,
+) -> Outcome:
+    """
+    The outcomes of an ALTER TABLE statement's actions, together. An
+    action `read()` returns None for, or whose outcome is UNKNOWN, makes
+    the whole statement's outcome. `adjust(action, outcome)` changes an
+    action's outcome before it joins the others.
+    """
+    effects: List[Effect] = []
+    findings: List[Finding] = []
+    unnamed: List[Effect] = []
+    confidence = Confidence.KNOWN
+    for action in facts.parsed.actions:
+        outcome = read(facts, action)
+        if outcome is None:
+            return unknown(facts, f"the ALTER TABLE action {action.kind}")
+        if outcome.confidence is Confidence.UNKNOWN:
+            return outcome
+        if adjust is not None:
+            outcome = adjust(action, outcome)
+        effects.extend(outcome.effects)
+        findings.extend(outcome.findings)
+        unnamed.extend(outcome.unnamed)
+        confidence = min(confidence, outcome.confidence)
+    return Outcome(tuple(effects), tuple(findings), confidence, unnamed=tuple(unnamed))
 
 
 def row_write_message(facts: Facts, table: str, detail: str = "") -> str:

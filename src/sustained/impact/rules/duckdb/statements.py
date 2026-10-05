@@ -183,14 +183,13 @@ def _action(facts: Facts, action: Action) -> Optional[Effect]:
     return None
 
 
+def _read(facts: Facts, action: Action) -> Optional[Outcome]:
+    effect = _action(facts, action)
+    return None if effect is None else Outcome.of(effect)
+
+
 def _alter_table(facts: Facts) -> Outcome:
-    effects: List[Effect] = []
-    for action in facts.parsed.actions:
-        effect = _action(facts, action)
-        if effect is None:
-            return common.unknown(facts, f"the ALTER TABLE action {action.kind}")
-        effects.append(effect)
-    return Outcome(tuple(effects))
+    return common.each_action(facts, _read)
 
 
 def _create_index(facts: Facts) -> Outcome:

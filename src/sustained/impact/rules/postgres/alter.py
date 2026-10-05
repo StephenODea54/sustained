@@ -25,6 +25,7 @@ from sustained.impact.model import (
 )
 from sustained.impact.recognizer.definitions import not_null_column
 from sustained.impact.rules import Effect, Facts, Outcome, Rule, common
+from sustained.impact.rules.common import ActionHandler
 from sustained.impact.rules.postgres.catalog import (
     ADD_CHECK,
     ADD_CHECK_NOT_VALID,
@@ -82,8 +83,6 @@ from sustained.impact.rules.postgres.statements import (
     refused_in_transaction,
 )
 from sustained.impact.tokens import tokenize
-
-ActionHandler = Callable[[Facts, Action], Outcome]
 
 
 def simple(rule: Rule, lock: str, work: Work) -> ActionHandler:

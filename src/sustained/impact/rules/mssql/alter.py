@@ -114,8 +114,6 @@ _SYSTEM = (
     | _ROWVERSION
 )
 
-ActionHandler = Callable[[Facts, Action], Outcome]
-
 
 class ColumnType(NamedTuple):
     """A column type read from its text: the base name and its arguments."""
@@ -668,7 +666,7 @@ def _trigger_state(facts: Facts, action: Action) -> Outcome:
     return Outcome.of(_effect(TRIGGER, common.table(facts), Work.CATALOG))
 
 
-ACTIONS: Dict[str, ActionHandler] = {
+ACTIONS: Dict[str, common.ActionHandler] = {
     "add_column": _add_column,
     "drop_column": _drop_column,
     "alter_column": _alter_column,
@@ -689,17 +687,4 @@ ACTIONS: Dict[str, ActionHandler] = {
 
 def alter_table(facts: Facts) -> Outcome:
     """Each action's outcome, together."""
-    effects: List[Effect] = []
-    findings: List[Finding] = []
-    confidence = Confidence.KNOWN
-    for action in facts.parsed.actions:
-        handler = ACTIONS.get(action.kind)
-        if handler is None:
-            return common.unknown(facts, f"the ALTER TABLE action {action.kind}")
-        outcome = handler(facts, action)
-        if outcome.confidence is Confidence.UNKNOWN:
-            return outcome
-        effects.extend(outcome.effects)
-        findings.extend(outcome.findings)
-        confidence = min(confidence, outcome.confidence)
-    return Outcome(tuple(effects), tuple(findings), confidence)
+    return common.each_action(facts, common.by_kind(ACTIONS))

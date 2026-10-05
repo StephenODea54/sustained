@@ -43,8 +43,8 @@ from typing import (
 
 from sustained.impact.model import Action, Confidence, Finding, Work
 from sustained.impact.rules import Effect, Facts, Outcome, Profile, Trace, common
+from sustained.impact.rules.common import ActionHandler
 from sustained.impact.rules.postgres.alter import (
-    ActionHandler,
     _add_column,
     _add_constraint,
     _attach_partition,
@@ -168,18 +168,11 @@ _NO_FILE = frozenset({"set_tablespace", "set_logged", "set_unlogged"})
 
 
 def _alter_table(facts: Facts) -> Outcome:
-    effects: List[Effect] = []
-    findings: List[Finding] = []
-    unnamed: List[Effect] = []
-    confidence = Confidence.KNOWN
     table = common.table(facts)
     parent = partitioned(facts, table)
     only = bool(facts.parsed.options.get("only"))
-    for action in facts.parsed.actions:
-        handler = _ACTIONS.get(action.kind)
-        if handler is None:
-            return common.unknown(facts, f"the ALTER TABLE action {action.kind}")
-        outcome = handler(facts, action)
+
+    def adjust(action: Action, outcome: Outcome) -> Outcome:
         found = list(outcome.effects)
         if parent and action.kind in _NO_FILE:
             found = [
@@ -188,10 +181,13 @@ def _alter_table(facts: Facts) -> Outcome:
             ]
         if parent and not only and action.kind not in _PARENT_ONLY:
             found.extend(_on_partitions(facts, action, table, found))
-        effects.extend(found)
-        findings.extend(outcome.findings)
-        confidence = min(confidence, outcome.confidence)
-        unnamed.extend(outcome.unnamed)
+        return outcome._replace(effects=tuple(found))
+
+    joined = common.each_action(facts, common.by_kind(_ACTIONS), adjust)
+    if joined.confidence is Confidence.UNKNOWN:
+        return joined
+    effects = list(joined.effects)
+    findings = list(joined.findings)
     if not only and any(a.kind not in _PARENT_ONLY for a in facts.parsed.actions):
         own = [e.lock for e in effects if e.table.lower() == table.lower()]
         if own:
@@ -201,7 +197,7 @@ def _alter_table(facts: Facts) -> Outcome:
         # A remedy rewrites one action, so it cannot stand for a
         # statement that holds others.
         effects = [e._replace(remedy=()) for e in effects]
-    return Outcome(tuple(effects), tuple(findings), confidence, unnamed=tuple(unnamed))
+    return joined._replace(effects=tuple(effects), findings=tuple(findings))
 
 
 def _on_partitions(
