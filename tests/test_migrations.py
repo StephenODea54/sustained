@@ -837,6 +837,25 @@ class TestRenamedNames(unittest.TestCase):
             module.no_such_name
 
 
+class TestPlanMigrationDeprecated(unittest.TestCase):
+    """plan_migration() still plans, with a warning until 3.0."""
+
+    def test_it_warns_and_returns_the_generated_migration(self):
+        from sustained import create_model
+        from sustained.migrations import plan_migration
+        from sustained.schema import Integer
+
+        Gadget = create_model("DeprecatedPlanGadget", "deprecated_plan_gadgets")
+        Gadget.tableColumns = {"id": Integer(primary_key=True)}
+        Gadget.columns = ("id",)
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        with self.assertWarnsRegex(DeprecationWarning, "removed in 3.0"):
+            migration = plan_migration(conn, [Gadget], Dialects.DEFAULT, ())
+        self.assertIsNotNone(migration)
+        self.assertIn("deprecated_plan_gadgets", str(migration.up))
+
+
 class TestDestructiveGate(MigrationTestCase):
     """A run that removes data needs a rehearsal that proved it."""
 

@@ -7,6 +7,7 @@ execute.
 from __future__ import annotations
 
 import re
+import warnings
 from datetime import datetime, timezone
 from typing import (
     TYPE_CHECKING,
@@ -77,12 +78,20 @@ def plan_migration(
 ) -> Optional[Migration]:
     """
     The migration a diff of the models against the database produces, or
-    None when the schema already holds everything the models declare.
-    Both migrators plan through this. A snapshot already read is used
-    instead of reading the schema again.
+    None when the schema already contains everything the models declare.
+    A snapshot already read is used instead of reading the schema again.
+
+    Deprecated: it will be removed in 3.0. Call
+    sustained.autogenerate.autogenerate() with generated_id() instead.
     """
     from sustained.autogenerate import autogenerate
 
+    warnings.warn(
+        "sustained.migrations.plan_migration() is deprecated and will be "
+        "removed in 3.0. Call sustained.autogenerate.autogenerate() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return autogenerate(
         connection,
         models,
@@ -111,8 +120,8 @@ def plan_migrations(
 ) -> List[Migration]:
     """
     The migrations a diff of the models against the database produces,
-    as plan_migration() plans them, with the `diff` options and with
-    online passed on to autogenerate_migrations() on PostgreSQL. The
+    with the `diff` options and with online passed on to
+    autogenerate_migrations() on PostgreSQL. The
     migrators write the MySQL clauses online asks for themselves, after
     the diff, so the diff is never asked for them.
     """
