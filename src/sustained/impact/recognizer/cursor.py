@@ -18,7 +18,7 @@ from typing import (
     Tuple,
 )
 
-from sustained.impact.model import ParsedStatement
+from sustained.impact.model import Action, ParsedStatement
 from sustained.impact.tokens import (
     IDENT,
     NUMBER,
@@ -527,6 +527,24 @@ class Cursor:
         if found is None:
             raise Unrecognized(f"expected {' or '.join(words)} {self.where()}")
         return found
+
+    def parsed(
+        self,
+        kind: str,
+        table: Optional[str] = None,
+        options: Optional[Mapping[str, object]] = None,
+        actions: Sequence[Action] = (),
+    ) -> ParsedStatement:
+        """
+        A statement the reader understood, with its options frozen. A
+        table it names becomes `table`, so a later `finish()` that fails
+        still names it.
+        """
+        if table is not None:
+            self.table = table
+        if options is None:
+            return ParsedStatement(kind, table, tuple(actions))
+        return ParsedStatement(kind, table, tuple(actions), frozen(options))
 
     def statement(self) -> ParsedStatement:
         """One whole statement; the parser that extends this class reads it."""

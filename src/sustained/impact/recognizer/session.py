@@ -13,7 +13,7 @@ scope `local` when `is_local` is true, and `session` when it is false.
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
 
 from sustained.impact.model import ParsedStatement
 from sustained.impact.recognizer.cursor import Cursor, Unrecognized, frozen
@@ -22,24 +22,25 @@ from sustained.impact.tokens import STRING
 Setting = Tuple[str, str, str]
 
 
-def _statement(settings: List[Setting]) -> ParsedStatement:
+def set_parsed(settings: Sequence[Setting]) -> ParsedStatement:
+    """A `set` statement that makes each of `settings`."""
     return ParsedStatement("set", options=frozen({"settings": tuple(settings)}))
 
 
 def reset(cursor: Cursor) -> ParsedStatement:
     """`RESET name` or `RESET ALL`."""
     if cursor.accept("ALL"):
-        return _statement([("reset", "all", "DEFAULT")])
+        return set_parsed([("reset", "all", "DEFAULT")])
     if cursor.is_word("SESSION", "ROLE"):
         raise Unrecognized(f"no rule reads RESET {cursor.where()}")
-    return _statement([("reset", cursor.name().lower(), "DEFAULT")])
+    return set_parsed([("reset", cursor.name().lower(), "DEFAULT")])
 
 
 def discard(cursor: Cursor) -> ParsedStatement:
     """`DISCARD ALL`, which resets every setting."""
     if not cursor.accept("ALL"):
         raise Unrecognized(f"no rule reads DISCARD {cursor.where()}")
-    return _statement([("reset", "all", "DEFAULT")])
+    return set_parsed([("reset", "all", "DEFAULT")])
 
 
 def rollback(cursor: Cursor) -> ParsedStatement:
@@ -54,7 +55,7 @@ def rollback(cursor: Cursor) -> ParsedStatement:
     elif cursor.accept("AND"):
         cursor.accept("NO")
         cursor.expect("CHAIN")
-    return _statement([("rollback", "all", "")])
+    return set_parsed([("rollback", "all", "")])
 
 
 def select(cursor: Cursor) -> ParsedStatement:
@@ -62,7 +63,7 @@ def select(cursor: Cursor) -> ParsedStatement:
     settings = [_set_config(cursor)]
     while cursor.accept_punct(","):
         settings.append(_set_config(cursor))
-    return _statement(settings)
+    return set_parsed(settings)
 
 
 def _set_config(cursor: Cursor) -> Setting:

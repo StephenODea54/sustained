@@ -43,7 +43,7 @@ class AlterTable(Definitions):
                 flags["ignore"] = True
             if not flags:
                 return parsed
-            return parsed._replace(options=frozen({**parsed.options, **flags}))
+            return parsed.with_options(flags)
         if online or ignore:
             raise Unrecognized(f"expected TABLE {self.where()}")
         if self.accept("TYPE"):
@@ -64,8 +64,8 @@ class AlterTable(Definitions):
         self.expect("ATTACH", "PARTITION")
         partition = self.name()
         self.finish()
-        return ParsedStatement(
-            "attach_index", options=frozen({"name": name, "partition": partition})
+        return self.parsed(
+            "attach_index", options={"name": name, "partition": partition}
         )
 
     def alter_index(self) -> ParsedStatement:
@@ -94,7 +94,7 @@ class AlterTable(Definitions):
                 options["with"] = self.with_options()
             else:
                 raise Unrecognized(f"unread text {self.where()}")
-        return ParsedStatement("alter_index", table, options=frozen(options))
+        return self.parsed("alter_index", table, options)
 
     def alter_type(self) -> ParsedStatement:
         self.name()
@@ -103,14 +103,12 @@ class AlterTable(Definitions):
             value = self.value()
             if self.accept_any("BEFORE", "AFTER"):
                 self.value()
-            return ParsedStatement(
-                "alter_type_add_value", options=frozen({"value": value})
-            )
+            return self.parsed("alter_type_add_value", options={"value": value})
         if self.accept("RENAME", "VALUE"):
             self.value()
             self.expect("TO")
             self.value()
-            return ParsedStatement("alter_type_rename_value")
+            return self.parsed("alter_type_rename_value")
         raise Unrecognized(f"no rule reads ALTER TYPE {self.where()}")
 
     def alter_table(self) -> ParsedStatement:
@@ -132,7 +130,9 @@ class AlterTable(Definitions):
         self.finish()
         if not actions:
             raise Unrecognized("the ALTER TABLE has no action")
-        return ParsedStatement("alter_table", table, tuple(actions), frozen(options))
+        return self.parsed(
+            "alter_table", table, actions=tuple(actions), options=options
+        )
 
     def alter_action(
         self, options: Options, actions: Sequence[Action]
@@ -162,7 +162,7 @@ class AlterTable(Definitions):
         if self.mssql and actions and actions[-1].kind in ("add_column", "drop_column"):
             # SQL Server lists more columns after one ADD or DROP COLUMN.
             if actions[-1].kind == "drop_column":
-                return Action("drop_column", self.name(), frozen({}))
+                return Action("drop_column", self.name())
             return self.column_action("add_column")
         raise Unrecognized(f"no rule reads the ALTER TABLE action {self.where()}")
 
@@ -180,9 +180,7 @@ class AlterTable(Definitions):
         if_not_exists = self.accept("IF", "NOT", "EXISTS")
         action = self.column_action("add_column")
         if if_not_exists:
-            action = action._replace(
-                options=frozen({**action.options, "if_not_exists": True})
-            )
+            action = action.with_options({"if_not_exists": True})
         return action
 
     def add_index(self, kind: str) -> Action:
@@ -257,18 +255,18 @@ class AlterTable(Definitions):
         )
         for words, kind in simple:
             if self.accept(*words):
-                return Action(kind, column, frozen({}))
+                return Action(kind, column)
         if self.accept("SET", "DEFAULT"):
             default = self.expression(frozenset())
             return Action("set_default", column, frozen(self.default_options(default)))
         if self.accept("SET", "STATISTICS"):
             self.value()
-            return Action("set_statistics", column, frozen({}))
+            return Action("set_statistics", column)
         if self.accept("SET", "STORAGE"):
             self.value()
-            return Action("set_storage", column, frozen({}))
+            return Action("set_storage", column)
         if self.accept("SET", "VISIBLE") or self.accept("SET", "INVISIBLE"):
-            return Action("set_storage", column, frozen({}))
+            return Action("set_storage", column)
         if self.is_word("SET", "DROP", "ADD", "RESET", "OPTIONS"):
             raise Unrecognized(f"no rule reads ALTER COLUMN {self.where()}")
         # SQL Server restates the column: ALTER COLUMN c type [NULL].
@@ -377,9 +375,9 @@ class AlterTable(Definitions):
         if self.accept("TABLESPACE"):
             return Action("set_tablespace", None, frozen({"name": self.name()}))
         if self.accept("LOGGED"):
-            return Action("set_logged", None, frozen({}))
+            return Action("set_logged", None)
         if self.accept("UNLOGGED"):
-            return Action("set_unlogged", None, frozen({}))
+            return Action("set_unlogged", None)
         if self.accept("SCHEMA"):
             return Action("set_schema", None, frozen({"name": self.name()}))
         if self.is_punct("("):
@@ -430,7 +428,7 @@ class AlterTable(Definitions):
         return Action("convert_charset", None, frozen({"charset": charset}))
 
     def action_force(self) -> Action:
-        return Action("force", None, frozen({}))
+        return Action("force", None)
 
     def action_rebuild(self) -> Action:
         """SQL Server's `REBUILD [PARTITION = n] [WITH (...)]`."""

@@ -23,6 +23,7 @@ from sustained.impact.recognizer.cursor import (
     frozen,
     read_name,
 )
+from sustained.impact.recognizer.session import set_parsed
 from sustained.impact.recognizer.sources import tables_read
 from sustained.impact.tokens import (
     IDENT,
@@ -81,9 +82,7 @@ class Statements(Cursor):
         if self.accept("WITH"):
             words = {t.value for t in self.rest() if t.kind == WORD}
             fullscan = "FULLSCAN" in words
-        return ParsedStatement(
-            "update_statistics", table, options=frozen({"fullscan": fullscan})
-        )
+        return self.parsed("update_statistics", table, {"fullscan": fullscan})
 
     def top(self) -> bool:
         """SQL Server's `TOP (n)`, which caps the rows a write touches."""
@@ -106,8 +105,7 @@ class Statements(Cursor):
             "where": self.top_level_word(tail, "WHERE"),
             "limited": limited or self.ends_with_limit(tail),
         }
-        self.table = table
-        return ParsedStatement(kind, table, options=frozen(options))
+        return self.parsed(kind, table, options)
 
     def ends_with_limit(self, tail: Sequence[Token]) -> bool:
         """Whether the tail ends with a MySQL or SQLite LIMIT clause."""
@@ -255,7 +253,7 @@ class Statements(Cursor):
             options["reads"] = tables_read(self.tokens[start : self.pos])
         else:
             raise Unrecognized("expected VALUES or SELECT in INSERT")
-        return ParsedStatement("insert", table, options=frozen(options))
+        return self.parsed("insert", table, options)
 
     def select_group_follows(self) -> bool:
         """Whether the parenthesized group ahead is a query, not columns."""
@@ -302,10 +300,8 @@ class Statements(Cursor):
         if self.accept_any("RESTART", "CONTINUE"):
             self.expect("IDENTITY")
         cascade = self.accept_any("CASCADE", "RESTRICT") == "CASCADE"
-        return ParsedStatement(
-            "truncate",
-            tables[0],
-            options=frozen({"tables": tuple(tables), "cascade": cascade}),
+        return self.parsed(
+            "truncate", tables[0], {"tables": tuple(tables), "cascade": cascade}
         )
 
     def rename(self) -> ParsedStatement:
@@ -317,9 +313,8 @@ class Statements(Cursor):
             pairs.append((old, self.name()))
             if not self.accept_punct(","):
                 break
-        self.table = pairs[0][0]
         options: Options = {"new": pairs[0][1], "renames": tuple(pairs)}
-        return ParsedStatement("rename_table", pairs[0][0], options=frozen(options))
+        return self.parsed("rename_table", pairs[0][0], options)
 
     def reindex(self) -> ParsedStatement:
         if self.sqlite:
@@ -332,13 +327,12 @@ class Statements(Cursor):
         concurrently = self.accept("CONCURRENTLY")
         name = self.name()
         table = name if target == "TABLE" else None
-        self.table = table
         options: Options = {
             "target": target.lower(),
             "name": name,
             "concurrently": concurrently,
         }
-        return ParsedStatement("reindex", table, options=frozen(options))
+        return self.parsed("reindex", table, options)
 
     def sqlite_reindex(self) -> ParsedStatement:
         """
@@ -352,7 +346,7 @@ class Statements(Cursor):
             "name": name,
             "concurrently": False,
         }
-        return ParsedStatement("reindex", options=frozen(options))
+        return self.parsed("reindex", options=options)
 
     def vacuum(self) -> ParsedStatement:
         full = False
@@ -362,9 +356,7 @@ class Statements(Cursor):
             full = full or self.tokens[self.pos - 1].is_word("FULL")
         tables = self.table_list()
         options: Options = {"full": full, "tables": tables}
-        return ParsedStatement(
-            "vacuum", tables[0] if tables else None, options=frozen(options)
-        )
+        return self.parsed("vacuum", tables[0] if tables else None, options)
 
     def table_list(self) -> Tuple[str, ...]:
         """VACUUM and ANALYZE's optional tables, each with optional columns."""
@@ -382,33 +374,26 @@ class Statements(Cursor):
         if self.is_punct("("):
             self.group()
         tables = self.table_list()
-        return ParsedStatement(
-            "analyze",
-            tables[0] if tables else None,
-            options=frozen({"tables": tables}),
-        )
+        return self.parsed("analyze", tables[0] if tables else None, {"tables": tables})
 
     def cluster(self) -> ParsedStatement:
         self.accept("VERBOSE")
         if self.at_end():
-            return ParsedStatement("cluster", options=frozen({"index": None}))
+            return self.parsed("cluster", options={"index": None})
         first = self.name()
         if self.accept("ON"):
             # The older form: CLUSTER index ON table.
             table = self.target()
-            return ParsedStatement("cluster", table, options=frozen({"index": first}))
+            return self.parsed("cluster", table, {"index": first})
         self.table = first
         index = self.name() if self.accept("USING") else None
-        return ParsedStatement("cluster", first, options=frozen({"index": index}))
+        return self.parsed("cluster", first, {"index": index})
 
     def optimize(self) -> ParsedStatement:
         self.accept_any("NO_WRITE_TO_BINLOG", "LOCAL")
         self.expect("TABLE")
         tables = self.names()
-        self.table = tables[0]
-        return ParsedStatement(
-            "optimize_table", tables[0], options=frozen({"tables": tuple(tables)})
-        )
+        return self.parsed("optimize_table", tables[0], {"tables": tuple(tables)})
 
     def refresh(self) -> ParsedStatement:
         self.expect("MATERIALIZED", "VIEW")
@@ -419,9 +404,7 @@ class Statements(Cursor):
             with_data = not self.accept("NO")
             self.expect("DATA")
         options: Options = {"concurrently": concurrently, "with_data": with_data}
-        return ParsedStatement(
-            "refresh_materialized_view", view, options=frozen(options)
-        )
+        return self.parsed("refresh_materialized_view", view, options)
 
     def comment(self) -> ParsedStatement:
         self.expect("ON")
@@ -451,7 +434,7 @@ class Statements(Cursor):
         self.expect("IS")
         self.value()
         options: Options = {"object": kind, "column": column}
-        return ParsedStatement("comment_on", table, options=frozen(options))
+        return self.parsed("comment_on", table, options)
 
     def set_statement(self) -> ParsedStatement:
         scope = self.accept_any("SESSION", "LOCAL", "GLOBAL", "PERSIST", "PERSIST_ONLY")
@@ -460,7 +443,7 @@ class Statements(Cursor):
             # MySQL applies a leading GLOBAL or SESSION to every
             # assignment after it that names no scope of its own.
             settings.append(self.assignment(scope))
-        return ParsedStatement("set", options=frozen({"settings": tuple(settings)}))
+        return set_parsed(settings)
 
     def assignment(self, scope: Optional[str]) -> Tuple[str, str, str]:
         """One `name = value` of a SET: (scope, name, value)."""
@@ -497,9 +480,7 @@ class Statements(Cursor):
             value = self.value()
         elif self.is_punct("("):
             value = self.text(self.group())
-        return ParsedStatement(
-            "set", options=frozen({"settings": (("pragma", name, value),)})
-        )
+        return set_parsed([("pragma", name, value)])
 
     def lock(self) -> ParsedStatement:
         if self.is_word("TABLES"):
@@ -524,7 +505,7 @@ class Statements(Cursor):
             "nowait": nowait,
             "only": only,
         }
-        return ParsedStatement("lock_table", tables[0], options=frozen(options))
+        return self.parsed("lock_table", tables[0], options)
 
     def execute(self) -> ParsedStatement:
         """SQL Server's `EXEC sp_rename 'path', 'new'[, 'kind']`."""
@@ -540,29 +521,24 @@ class Statements(Cursor):
         path = arguments[0].split(".")
         if kind == "COLUMN" and len(path) >= 2:
             table = ".".join(path[:-1])
-            self.table = table
             action = Action(
                 "rename_column",
                 path[-1],
                 frozen({"old": path[-1], "new": arguments[1]}),
             )
-            return ParsedStatement("alter_table", table, (action,))
+            return self.parsed("alter_table", table, actions=(action,))
         if kind == "INDEX" and len(path) >= 2:
             table = ".".join(path[:-1])
-            self.table = table
             action = Action(
                 "rename_index", None, frozen({"old": path[-1], "new": arguments[1]})
             )
-            return ParsedStatement("alter_table", table, (action,))
+            return self.parsed("alter_table", table, actions=(action,))
         if kind == "OBJECT":
-            self.table = arguments[0]
             options: Options = {
                 "new": arguments[1],
                 "renames": ((arguments[0], arguments[1]),),
             }
-            return ParsedStatement(
-                "rename_table", arguments[0], options=frozen(options)
-            )
+            return self.parsed("rename_table", arguments[0], options)
         raise Unrecognized(f"no rule reads sp_rename of a {kind.lower()}")
 
     def if_statement(self) -> ParsedStatement:

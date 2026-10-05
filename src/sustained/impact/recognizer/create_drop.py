@@ -56,13 +56,10 @@ class CreateDrop(Cursor):
         if self.accept("INDEX"):
             parsed = self.create_index(unique, fulltext is not None)
             if fulltext == "SPATIAL":
-                parsed = parsed._replace(
-                    options=frozen({**parsed.options, "spatial": True})
-                )
+                parsed = parsed.with_options({"spatial": True})
             if clustered is None:
                 return parsed
-            options = {**parsed.options, "clustered": clustered == "CLUSTERED"}
-            return parsed._replace(options=frozen(options))
+            return parsed.with_options({"clustered": clustered == "CLUSTERED"})
         if unique or clustered or fulltext:
             raise Unrecognized(f"expected INDEX {self.where()}")
         temporary = bool(self.accept_any("TEMP", "TEMPORARY", "UNLOGGED"))
@@ -71,9 +68,7 @@ class CreateDrop(Cursor):
         materialized = self.accept("MATERIALIZED")
         if self.accept("VIEW"):
             self.body()
-            return ParsedStatement(
-                "create_view", options=frozen({"materialized": materialized})
-            )
+            return self.parsed("create_view", options={"materialized": materialized})
         if self.accept("TRIGGER") or self.accept("CONSTRAINT", "TRIGGER"):
             return self.create_trigger()
         if self.accept("TYPE"):
@@ -86,9 +81,7 @@ class CreateDrop(Cursor):
                 self.body()
             else:
                 self.rest()
-            return ParsedStatement(
-                "create_object", options=frozen({"object": found.lower()})
-            )
+            return self.parsed("create_object", options={"object": found.lower()})
         raise Unrecognized(f"no rule reads CREATE {self.where()}")
 
     def definer(self) -> None:
@@ -116,7 +109,7 @@ class CreateDrop(Cursor):
         columns = self.group()
         options["columns"] = len(self.split_top(columns))
         self.index_tail(options)
-        return ParsedStatement("create_index", table, options=frozen(options))
+        return self.parsed("create_index", table, options)
 
     def index_tail(self, options: Options) -> None:
         """What may follow an index's column list, in any order."""
@@ -177,7 +170,7 @@ class CreateDrop(Cursor):
         )
         if options["as_select"]:
             options["reads"] = tables_read(tail)
-        return ParsedStatement("create_table", table, options=frozen(options))
+        return self.parsed("create_table", table, options)
 
     def references_in(self, tokens: Sequence[Token]) -> Tuple[str, ...]:
         """The tables a CREATE TABLE body's foreign keys point at."""
@@ -198,17 +191,14 @@ class CreateDrop(Cursor):
             if depth == 0 and token.is_word("ON"):
                 sub = Cursor(self.sql, list(tokens[index + 1 :]), self.dialect)
                 table = sub.name()
-                self.table = table
-                return ParsedStatement(
-                    "create_trigger", table, options=frozen({"name": name})
-                )
+                return self.parsed("create_trigger", table, {"name": name})
         raise Unrecognized("expected ON <table> in CREATE TRIGGER")
 
     def create_type(self) -> ParsedStatement:
         self.name()
         enum = self.accept("AS", "ENUM")
         self.rest()
-        return ParsedStatement("create_type", options=frozen({"enum": enum}))
+        return self.parsed("create_type", options={"enum": enum})
 
     def create_domain(self) -> ParsedStatement:
         """
@@ -235,7 +225,7 @@ class CreateDrop(Cursor):
             "type": self.text(type_tokens),
             "constrained": constrained,
         }
-        return ParsedStatement("create_object", options=frozen(options))
+        return self.parsed("create_object", options=options)
 
     def drop(self) -> ParsedStatement:
         if self.accept("INDEX"):
@@ -245,43 +235,35 @@ class CreateDrop(Cursor):
         materialized = self.accept("MATERIALIZED")
         if self.accept("VIEW"):
             parsed = self.drop_many("drop_view")
-            return parsed._replace(
-                options=frozen({**parsed.options, "materialized": materialized})
-            )
+            return parsed.with_options({"materialized": materialized})
         if self.accept("TRIGGER"):
             return self.drop_trigger()
         if self.accept("TYPE"):
             self.accept("IF", "EXISTS")
             names = self.names()
             self.accept_any("CASCADE", "RESTRICT")
-            return ParsedStatement("drop_type", options=frozen({"names": tuple(names)}))
+            return self.parsed("drop_type", options={"names": tuple(names)})
         if self.accept("DOMAIN"):
             self.accept("IF", "EXISTS")
             names = self.names()
             self.accept_any("CASCADE", "RESTRICT")
-            return ParsedStatement(
-                "drop_object",
-                options=frozen({"object": "domain", "names": tuple(names)}),
+            return self.parsed(
+                "drop_object", options={"object": "domain", "names": tuple(names)}
             )
         found = self.accept_any(*OBJECT_WORDS)
         if found:
             self.rest()
-            return ParsedStatement(
-                "drop_object", options=frozen({"object": found.lower()})
-            )
+            return self.parsed("drop_object", options={"object": found.lower()})
         raise Unrecognized(f"no rule reads DROP {self.where()}")
 
     def drop_many(self, kind: str) -> ParsedStatement:
         if_exists = self.accept("IF", "EXISTS")
         tables = self.names()
-        self.table = tables[0]
         cascade = self.accept_any("CASCADE", "RESTRICT") == "CASCADE"
-        return ParsedStatement(
+        return self.parsed(
             kind,
             tables[0],
-            options=frozen(
-                {"tables": tuple(tables), "if_exists": if_exists, "cascade": cascade}
-            ),
+            {"tables": tuple(tables), "if_exists": if_exists, "cascade": cascade},
         )
 
     def drop_index(self) -> ParsedStatement:
@@ -314,7 +296,7 @@ class CreateDrop(Cursor):
                 options["wait"] = self.wait()
             else:
                 raise Unrecognized(f"unread text {self.where()}")
-        return ParsedStatement("drop_index", table, options=frozen(options))
+        return self.parsed("drop_index", table, options)
 
     def drop_trigger(self) -> ParsedStatement:
         self.accept("IF", "EXISTS")
@@ -323,4 +305,4 @@ class CreateDrop(Cursor):
         if self.accept("ON"):
             table = self.target()
         self.accept_any("CASCADE", "RESTRICT")
-        return ParsedStatement("drop_trigger", table, options=frozen({"name": name}))
+        return self.parsed("drop_trigger", table, {"name": name})

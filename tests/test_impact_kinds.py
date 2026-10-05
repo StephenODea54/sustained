@@ -2,9 +2,9 @@
 The recognizer's kind vocabularies agree with what the recognizer emits.
 
 The test reads the recognizer's source and collects every kind it passes
-to `ParsedStatement(...)` or `Action(...)`. A kind given as a parameter
-is read from the calls of that function, and a kind given as a loop
-variable is read from the tuple the loop walks. A kind given as a local
+to `ParsedStatement(...)`, `Cursor.parsed(...)`, or `Action(...)`. A
+kind given as a parameter is read from the calls of that function, and
+a kind given as a loop variable is read from the tuple the loop walks. A kind given as a local
 variable is read from the strings assigned to it.
 """
 
@@ -25,7 +25,7 @@ from sustained.impact.recognizer import (
 )
 
 _SOURCES = sorted(pathlib.Path(recognizer.__file__).parent.glob("*.py"))
-_BUILDERS = {"ParsedStatement": "statement", "Action": "action"}
+_BUILDERS = {"ParsedStatement": "statement", "parsed": "statement", "Action": "action"}
 _NAMED = {"UNKNOWN_KIND": UNKNOWN_KIND}
 
 

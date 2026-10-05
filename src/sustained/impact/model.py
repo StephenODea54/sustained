@@ -218,6 +218,10 @@ class ParsedStatement(NamedTuple):
         value = self.options.get(key)
         return value if isinstance(value, tuple) else ()
 
+    def with_options(self, extra: Mapping[str, object]) -> "ParsedStatement":
+        """A copy with `extra` added to the options."""
+        return self._replace(options=MappingProxyType({**self.options, **extra}))
+
 
 class Action(NamedTuple):
     """
@@ -228,6 +232,10 @@ class Action(NamedTuple):
     kind: str
     column: Optional[str] = None
     options: Mapping[str, object] = _NO_DETAILS
+
+    def with_options(self, extra: Mapping[str, object]) -> "Action":
+        """A copy with `extra` added to the options."""
+        return self._replace(options=MappingProxyType({**self.options, **extra}))
 
 
 UNKNOWN_KIND = "unknown"
