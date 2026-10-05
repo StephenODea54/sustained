@@ -603,22 +603,20 @@ def _add_enum_check(
     down_steps.insert(0, compiler.compile_drop_constraint(table_sql, constraint))
 
 
+# The attributes a copy of a new column for an ADD COLUMN leaves off.
+# The generated ADD COLUMN states the type, nullability, default, and
+# keys only.
+_ADDED_COPY_RESETS: Dict[str, object] = {
+    "primary_key": False,
+    "autoincrement": False,
+    "backfill": None,
+    "comment": None,
+}
+
+
 def _relaxed_copy(coldef: "ColumnDef") -> "ColumnDef":
     """A nullable copy of a ColumnDef, used for add-then-tighten steps."""
-    from sustained.schema import ColumnDef
-
-    return ColumnDef(
-        coldef.type_name,
-        length=coldef.length,
-        precision=coldef.precision,
-        scale=coldef.scale,
-        nullable=True,
-        unique=coldef.unique,
-        default=coldef.default,
-        references=coldef.references,
-        enum_name=coldef.enum_name,
-        enum_values=coldef.enum_values,
-    )
+    return coldef.replace(nullable=True, **_ADDED_COPY_RESETS)
 
 
 def _introspected_state(column: IntrospectedColumn) -> ColumnState:

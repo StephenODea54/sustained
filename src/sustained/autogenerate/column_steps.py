@@ -18,6 +18,7 @@ from sustained.autogenerate.online import (
     unique_using_index,
 )
 from sustained.autogenerate.statements import (
+    _ADDED_COPY_RESETS,
     _add_enum_check,
     _add_foreign_key,
     _column_fk_name,
@@ -735,16 +736,9 @@ def _keyless_copy(
     the online migration builds, with the nullability given. `default`,
     when given, stands in for the column's default.
     """
-    from sustained.schema import ColumnDef
-
-    return ColumnDef(
-        coldef.type_name,
-        length=coldef.length,
-        precision=coldef.precision,
-        scale=coldef.scale,
+    return coldef.replace(
         nullable=nullable,
+        unique=False,
         default=coldef.default if default is None else default,
-        references=coldef.references,
-        enum_name=coldef.enum_name,
-        enum_values=coldef.enum_values,
+        **_ADDED_COPY_RESETS,
     )

@@ -84,6 +84,22 @@ class TestCreateTableSql(unittest.TestCase):
         self.assertEqual(DdlUser.drop_table_sql(if_exists=False), 'DROP TABLE "users"')
 
 
+class TestColumnDefReplace(unittest.TestCase):
+    def test_the_copy_changes_only_the_named_attributes(self):
+        column = String(20, nullable=False, unique=True, comment="Code")
+        copied = column.replace(nullable=True, comment=None)
+        self.assertIsNot(copied, column)
+        self.assertEqual(
+            (copied.nullable, copied.comment, copied.unique, copied.length),
+            (True, None, True, 20),
+        )
+        self.assertEqual((column.nullable, column.comment), (False, "Code"))
+
+    def test_an_unknown_attribute_raises(self):
+        with self.assertRaises(AttributeError):
+            Integer().replace(size=4)
+
+
 class TestConstraints(unittest.TestCase):
     def test_composite_primary_key_and_references(self):
         class Link(Model):

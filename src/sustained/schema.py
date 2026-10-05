@@ -9,6 +9,7 @@ supported dialect.
 
 from __future__ import annotations
 
+import copy
 import enum as _pyenum
 from typing import (
     TYPE_CHECKING,
@@ -190,6 +191,21 @@ class ColumnDef:
             tuple(enum_values) if enum_values is not None else None
         )
         self.comment = comment
+
+    def replace(self, **changes: object) -> "ColumnDef":
+        """
+        A copy of the column with the named attributes set to new
+        values. The constructor checks do not run again, so the caller
+        keeps the values consistent, for example no autoincrement
+        without primary_key. An unknown attribute name raises
+        AttributeError.
+        """
+        copied = copy.copy(self)
+        for name, value in changes.items():
+            if not hasattr(self, name):
+                raise AttributeError(f"ColumnDef has no attribute '{name}'.")
+            setattr(copied, name, value)
+        return copied
 
 
 def _checked_enum_values(
