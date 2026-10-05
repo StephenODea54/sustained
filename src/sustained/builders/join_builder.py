@@ -18,6 +18,7 @@ from ..naming import resolve_public_name
 from ..rendering import (
     Renderable,
     RenderContext,
+    compiler_or_default,
     render_clause_list,
     render_nested,
     render_part,
@@ -27,7 +28,6 @@ from ..types import BasicJoinMapping, Expression, JoinMappingWithThrough
 if TYPE_CHECKING:
     from ..builder import QueryBuilder
     from ..compilers import Compiler
-    from ..dialects import Dialects
     from ..model import Model
 
 
@@ -54,11 +54,7 @@ class OnClauseBuilder:
     """
 
     def __init__(self, compiler: Optional["Compiler"] = None) -> None:
-        from ..dialects import Dialects  # Imported here to prevent circular dependency
-
-        self._compiler = (
-            compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
-        )
+        self._compiler = compiler_or_default(compiler)
         self._conditions: List[Tuple[str, Renderable]] = []
 
     def __getattr__(self, name: str) -> Callable[..., "OnClauseBuilder"]:
@@ -174,11 +170,7 @@ class JoinClauseBuilder:
         self, model_class: Type["Model"], compiler: Optional["Compiler"] = None
     ):
         self._model_class = model_class
-        from ..dialects import Dialects  # Imported here to prevent circular dependency
-
-        self._compiler = (
-            compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
-        )
+        self._compiler = compiler_or_default(compiler)
         self._joins: List[Renderable] = []
         # Link tables that a many-to-many join has already added. A second
         # join through the same link table renders it under an alias, so each

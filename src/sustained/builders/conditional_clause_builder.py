@@ -12,11 +12,11 @@ from typing import (
     Union,
 )
 
-from ..dialects import Dialects
 from ..expressions import refuse_null_member
 from ..rendering import (
     Renderable,
     RenderContext,
+    compiler_or_default,
     render_clause_list,
     render_nested,
     render_part,
@@ -69,9 +69,7 @@ class ConditionalClauseBuilder:
         self, model_class: Type["Model"], compiler: Optional["Compiler"] = None
     ):
         self._model_class = model_class
-        self._compiler = (
-            compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
-        )
+        self._compiler = compiler_or_default(compiler)
         self._clauses: List[Tuple[str, Renderable]] = []
 
     def _quote_column(self, column: ColumnReference) -> str:

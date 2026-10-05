@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List, Optional, Tuple, Type
 
+from ..rendering import compiler_or_default
+
 if TYPE_CHECKING:
     from ..compilers import Compiler
     from ..model import Model
@@ -23,11 +25,7 @@ class OrderByClauseBuilder:
             model_class (Type[Model]): The Model class associated with this query.
         """
         self._model_class = model_class
-        from ..dialects import Dialects  # Imported here to prevent circular dependency
-
-        self._compiler = (
-            compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
-        )
+        self._compiler = compiler_or_default(compiler)
         self._clauses: List[Tuple[ColumnReference, str, Optional[str]]] = []
 
     def orderBy(

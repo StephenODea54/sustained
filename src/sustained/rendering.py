@@ -34,6 +34,21 @@ if TYPE_CHECKING:
 _PLACEHOLDER_MARK = "\x00"
 
 
+def compiler_or_default(compiler: Optional["Compiler"]) -> "Compiler":
+    """
+    The given compiler, or the default dialect's compiler when the caller
+    passes None. The clause builders take an optional compiler and use
+    this to pick one.
+    """
+    if compiler is not None:
+        return compiler
+    # Imported here because the dialects module imports the compilers,
+    # which import this module.
+    from sustained.dialects import Dialects
+
+    return Dialects.get_compiler(Dialects.DEFAULT)
+
+
 class RenderContext:
     """Carries rendering state through a single render pass."""
 

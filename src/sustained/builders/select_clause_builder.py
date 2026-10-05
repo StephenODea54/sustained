@@ -4,9 +4,10 @@ Select-clause builder.
 
 from typing import TYPE_CHECKING, List, Optional
 
+from sustained.rendering import compiler_or_default
+
 if TYPE_CHECKING:
     from sustained.compilers import Compiler
-    from sustained.dialects import Dialects
     from sustained.rendering import RenderContext
     from sustained.types import Selectable
 
@@ -17,13 +18,7 @@ class SelectClauseBuilder:
     """
 
     def __init__(self, compiler: Optional["Compiler"] = None) -> None:
-        from sustained.dialects import (
-            Dialects,  # Imported here to prevent circular dependency
-        )
-
-        self._compiler = (
-            compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
-        )
+        self._compiler = compiler_or_default(compiler)
         self._selected_columns: List["Selectable"] = []
 
     def __str__(self) -> str:

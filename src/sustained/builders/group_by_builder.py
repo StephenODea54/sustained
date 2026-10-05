@@ -7,6 +7,8 @@ from typing import (
     Type,
 )
 
+from ..rendering import compiler_or_default
+
 if TYPE_CHECKING:
     from ..compilers import Compiler
     from ..model import Model
@@ -20,11 +22,7 @@ class GroupByClauseBuilder:
         self, model_class: Type["Model"], compiler: Optional["Compiler"] = None
     ):
         self._model_class = model_class
-        from ..dialects import Dialects  # Imported here to prevent circular dependency
-
-        self._compiler = (
-            compiler if compiler else Dialects.get_compiler(Dialects.DEFAULT)
-        )
+        self._compiler = compiler_or_default(compiler)
         self._group_by_columns: List[ColumnReference] = []
         self._mode: Optional[str] = None
         self._grouping_sets: Optional[List[tuple]] = None
