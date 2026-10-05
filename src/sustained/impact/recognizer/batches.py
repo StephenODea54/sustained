@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List, Optional, Sequence
 
-from sustained.impact.recognizer.cursor import depths, named
+from sustained.impact.recognizer.cursor import Cursor, depths, named
 from sustained.impact.tokens import IDENT, NUMBER, OP, STRING, WORD, Token
 
 if TYPE_CHECKING:
@@ -39,38 +39,44 @@ def _routine_word(tokens: Sequence[Token]) -> int:
     The words the index skips are `OR REPLACE`, `OR ALTER`, TEMP,
     TEMPORARY, CONSTRAINT, and MySQL's `DEFINER = user[@host]`.
     """
-    if not tokens[0].is_word("CREATE"):
+    cursor = Cursor("", list(tokens), None)
+    if not cursor.accept("CREATE"):
         return -1
-    index = 1
-    if index + 1 < len(tokens) and tokens[index].is_word("OR"):
-        if not tokens[index + 1].is_word("REPLACE", "ALTER"):
+    if cursor.is_word("OR"):
+        if not (cursor.accept("OR", "REPLACE") or cursor.accept("OR", "ALTER")):
             return -1
-        index += 2
-    if index + 2 < len(tokens) and tokens[index].is_word("DEFINER"):
-        if tokens[index + 1].kind != OP or tokens[index + 1].text != "=":
-            return -1
-        index += 2
-        if tokens[index].is_word("CURRENT_USER"):
-            index += 1
-            if index + 1 < len(tokens) and tokens[index].is_punct("("):
-                if not tokens[index + 1].is_punct(")"):
-                    return -1
-                index += 2
-        else:
-            if tokens[index].kind not in (WORD, IDENT, STRING):
-                return -1
-            index += 1
-            if index + 1 < len(tokens) and tokens[index].text == "@":
-                if tokens[index + 1].kind not in (WORD, IDENT, STRING):
-                    return -1
-                index += 2
-    while index < len(tokens) and tokens[index].is_word(
-        "TEMP", "TEMPORARY", "CONSTRAINT"
-    ):
-        index += 1
-    if index < len(tokens) and tokens[index].is_word(*_ROUTINE_WORDS):
-        return index
-    return -1
+    if cursor.accept("DEFINER") and not _definer_user(cursor):
+        return -1
+    while cursor.accept_any("TEMP", "TEMPORARY", "CONSTRAINT"):
+        pass
+    return cursor.pos if cursor.is_word(*_ROUTINE_WORDS) else -1
+
+
+def _definer_user(cursor: Cursor) -> bool:
+    """
+    Reads `= user[@host]` or `= CURRENT_USER[()]` after DEFINER, and
+    says whether it was there.
+    """
+    if not cursor.accept_op("="):
+        return False
+    if cursor.accept("CURRENT_USER"):
+        return not cursor.accept_punct("(") or cursor.accept_punct(")")
+    if not _user_part(cursor.peek()):
+        return False
+    cursor.pos += 1
+    at = cursor.peek()
+    if at is None or at.text != "@":
+        return True
+    cursor.pos += 1
+    if not _user_part(cursor.peek()):
+        return False
+    cursor.pos += 1
+    return True
+
+
+def _user_part(token: Optional[Token]) -> bool:
+    """Whether the token can be the user or the host of a DEFINER."""
+    return token is not None and token.kind in (WORD, IDENT, STRING)
 
 
 def _depth_zero(tokens: Sequence[Token], start: int) -> List[bool]:
