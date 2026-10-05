@@ -1783,9 +1783,10 @@ class Compiler:
         """
         Formats a function argument for inclusion in the SQL string.
 
-        Strings and ColumnExpr objects are treated as column references and
-        quoted per dialect. Literal values must be wrapped in Literal(). Numbers, booleans, and
-        None render as literals directly. A subquery argument renders
+        Strings and ColumnExpr objects are column references, read by the
+        rule of quote_column_reference(). A string value must be wrapped in
+        Literal(), or it names a column. Numbers, booleans, and None render
+        as literals directly. A subquery argument renders
         through the given context, so its values become placeholders and
         join the statement's parameter list. With no context they inline.
         """
@@ -1795,12 +1796,7 @@ class Compiler:
         if nested is not None:
             return nested
         if isinstance(arg, str):
-            if arg == "*" or _IDENTIFIER_PATH_RE.match(arg):
-                return self.quote_column_reference(arg)
-            raise ValueError(
-                f"Function argument {arg!r} is not a column name. "
-                "Wrap literal values in Literal() or raw SQL in Column()."
-            )
+            return self.quote_column_reference(arg)
         if arg is None or isinstance(arg, (bool, int, float)):
             return self.format_value(arg)
         raise TypeError(

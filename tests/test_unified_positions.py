@@ -195,5 +195,38 @@ class TestQuotedWriteKeys(unittest.TestCase):
         self.assertIn('("a.b") VALUES (1)', sql)
 
 
+class TestFuncStringArguments(unittest.TestCase):
+    """A Func string argument follows the column string rule."""
+
+    def tearDown(self) -> None:
+        Thing.set_dialect(Dialects.DEFAULT)
+
+    def test_quoted_parts_and_calls(self) -> None:
+        cases = (
+            (Dialects.POSTGRES, '"t"."a.b"', 'COALESCE("t"."a.b", COUNT("x"))'),
+            (Dialects.MYSQL, "[t].[a.b]", "COALESCE(`t`.`a.b`, COUNT(`x`))"),
+            (Dialects.MSSQL, "`t`.`a.b`", "COALESCE([t].[a.b], COUNT([x]))"),
+        )
+        for dialect, arg, expected in cases:
+            with self.subTest(dialect=dialect.name):
+                Thing.set_dialect(dialect)
+                sql = str(Thing.query().select(Func("COALESCE", arg, "COUNT(x)")))
+                self.assertIn(expected, sql)
+
+    def test_plain_paths_keep_their_output(self) -> None:
+        Thing.set_dialect(Dialects.POSTGRES)
+        sql = str(Thing.query().select(Func("LOWER", "t.name", alias="n")))
+        self.assertEqual(sql, 'SELECT LOWER("t"."name") AS "n" FROM "things"')
+
+    def test_sql_text_is_quoted_as_one_name(self) -> None:
+        Thing.set_dialect(Dialects.POSTGRES)
+        sql = str(Thing.query().select(Func("LOWER", "id; DROP TABLE things")))
+        self.assertIn('LOWER("id; DROP TABLE things")', sql)
+
+    def test_default_dialect_refuses_text_that_is_not_a_name(self) -> None:
+        with self.assertRaises(ValueError):
+            str(Thing.query().select(Func("LOWER", "not a column")))
+
+
 if __name__ == "__main__":
     unittest.main()

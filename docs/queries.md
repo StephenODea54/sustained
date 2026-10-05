@@ -117,15 +117,14 @@ Venue.query().select_func('COALESCE', 'name', Literal('unknown'), alias='label')
 # SELECT COALESCE(name, 'unknown') AS label FROM venues
 ```
 
-A string argument that is not a plain column name raises `ValueError` when the query renders:
+A string argument follows the same rule as a column string in `select()` or `where()`. It can be a dotted path, a name already in `".."`, `[..]` or `` `..` `` quotes, or a call on one column such as `'COUNT(id)'`. Each part goes through the dialect's quoting, so the text never runs as SQL.
+
+If you forget `Literal`, the value becomes a quoted column name, and the database rejects the query unless a column of that name exists:
 
 ```python
-Venue.query().select_func('COALESCE', 'not a column', alias='x')
-# ValueError: Function argument 'not a column' is not a column name.
-# Wrap literal values in Literal() or raw SQL in Column().
+Venue.query().select_func('COALESCE', 'name', 'unknown', alias='label')
+# SELECT COALESCE("name", "unknown") AS "label" FROM "venues"   (on Postgres)
 ```
-
-The rule exists because a forgotten `Literal` would turn a value into a column reference, and the query would return the wrong rows instead of failing.
 
 An argument can be another expression: a nested `Func`, an aggregate, a window call, or a `Subquery`. A subquery argument renders through the statement, so under `to_sql()` its values become placeholders and join the outer parameter tuple in the order they appear in the SQL. It renders without its alias, because a function argument takes a bare SELECT:
 
