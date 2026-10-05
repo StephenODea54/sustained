@@ -16,7 +16,6 @@ from typing import (
 )
 
 from sustained.analysis import (
-    MigrationStatement,
     PendingSummary,
     destructive_statements,
     normalize_statement,
@@ -46,7 +45,7 @@ from sustained.migrations import (
     REHEARSAL_PASSED,
     Migration,
     Migrator,
-    migration_sql,
+    run_statements,
 )
 
 
@@ -56,6 +55,15 @@ class _ModelPlans(NamedTuple):
     diffed against one schema read, each a list of the migrations it
     generates. `preview` includes the drops, and `run` is what migrate
     would generate.
+
+    The drift section prints `preview`, so it reports every difference,
+    including tables and columns the models no longer declare. Migrate
+    generates no drops unless it is called from Python with
+    allow_drops=True, so the guards read `run`, and a verdict names a
+    statement the run would run. Each statement is a MigrationStatement
+    with the id of its generated migration, so the impact analysis and a
+    rule that reads migration boundaries see each generated migration as
+    one of its own.
     """
 
     preview: List[Migration]
@@ -89,51 +97,23 @@ def _model_plans(
     )
 
 
-def _drift_statements(
-    migrator: Migrator, plans: Optional[_ModelPlans]
+def _drift(
+    migrator: Migrator, migrations: Optional[List[Migration]]
 ) -> Optional[List[str]]:
     """
-    The statements that would close the gap between the config module's
-    models and the database, or None when the module names no models.
-
-    Drops are included: a preview reports every difference, including
-    tables and columns the models no longer declare, which migrate does
-    not generate. The statements print in full, so a drop reads as a drop
-    without a separate label. Each statement is a MigrationStatement with
-    the id of its migration in the preview, so the impact analysis reads
-    the migrations apart.
+    The up statements of generated migrations, or None when the config
+    module names no models.
     """
-    if plans is None:
+    if migrations is None:
         return None
-    return _generated_statements(migrator, plans.preview)
+    return [*run_statements(migrations, migrator.compiler)]
 
 
-def _migrate_drift_statements(
-    migrator: Migrator, plans: Optional[_ModelPlans]
-) -> Optional[List[str]]:
-    """
-    The generated statements migrate would actually apply, or None when
-    the config module names no models.
-
-    This is the drift preview without the drops: migrate generates none
-    unless it is called from Python with allow_drops=True. The guards read
-    this set, so a verdict names a statement the run would run. Each
-    statement is a MigrationStatement with its generated migration's id,
-    so a rule that reads migration boundaries sees each generated
-    migration as one of its own.
-    """
-    if plans is None:
-        return None
-    return _generated_statements(migrator, plans.run)
-
-
-def _generated_statements(migrator: Migrator, migrations: List[Migration]) -> List[str]:
-    """Each generated migration's up statements, with its id and flag."""
-    return [
-        MigrationStatement(sql, migration.id, migration.transactional)
-        for migration in migrations
-        for sql in migration_sql(migration, "up", migrator.compiler)
-    ]
+def _run_statements(
+    summaries: List[PendingSummary], drift: Optional[List[str]]
+) -> List[str]:
+    """The pending statements and then the drift, as one run."""
+    return [s for summary in summaries for s in summary.sql or []] + (drift or [])
 
 
 def _rehearsal_row_covers(migrator: Migrator, plans: Optional[_ModelPlans]) -> bool:
@@ -201,8 +181,7 @@ def _plan_verdicts(
     attached before the guards run, as migrate attaches it.
     """
     guards = list(getattr(config, "guards", None) or [])
-    statements: List[str] = [s for summary in summaries for s in summary.sql or []]
-    statements.extend(drift or [])
+    statements = _run_statements(summaries, drift)
     if guards and context is not None:
         statements = list(attach_impact(statements, dialect, context))
     by_statement: Dict[str, List[Verdict]] = {}
@@ -227,8 +206,7 @@ def _with_plan_impact(
     """
     if context is None:
         return summaries, drift
-    statements = [s for summary in summaries for s in summary.sql or []]
-    statements.extend(drift or [])
+    statements = _run_statements(summaries, drift)
     attached = iter(attach_impact(statements, migrator.dialect, context))
 
     def take(group: Optional[List[str]]) -> Optional[List[str]]:
@@ -324,10 +302,24 @@ def _flagged_impact(
     prints them: those with a `warn` or `danger` finding, and those the
     analysis could not read.
     """
-    statements = [s for summary in summaries for s in summary.sql or []]
-    statements.extend(drift or [])
-    impacts = [_impact_of(s) for s in statements]
+    impacts = [_impact_of(s) for s in _run_statements(summaries, drift)]
     return flagged([impact for impact in impacts if impact is not None])
+
+
+def _section(sections: List[str], title: str, lines: List[str], noun: str) -> None:
+    """
+    Prints one titled section of indented lines, after a blank line when
+    an earlier section printed, and adds its count to `sections`. An
+    empty section prints nothing.
+    """
+    if not lines:
+        return
+    if sections:
+        print()
+    print(title)
+    for line in lines:
+        print(f"  {line}")
+    sections.append(_count(len(lines), noun))
 
 
 def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) -> int:
@@ -338,7 +330,7 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
     ]
     problems = migrator.validate(raise_on_problems=False)
     plans = _model_plans(migrator, config, args)
-    drift = _drift_statements(migrator, plans)
+    drift = _drift(migrator, None if plans is None else plans.preview)
     context = (
         read_context(migrator.connection, migrator.dialect, _exact_counts(config, args))
         if supported(migrator.dialect)
@@ -347,7 +339,7 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
     by_statement = _plan_verdicts(
         config,
         summaries,
-        _migrate_drift_statements(migrator, plans),
+        _drift(migrator, None if plans is None else plans.run),
         migrator.dialect,
         context,
     )
@@ -374,33 +366,15 @@ def _cmd_plan(migrator: Migrator, args: argparse.Namespace, config: ModuleType) 
     if summaries:
         _print_pending(summaries)
         sections.append(_count(len(summaries), "pending migration"))
-    if problems:
-        if sections:
-            print()
-        print("problems")
-        for problem in problems:
-            print(f"  {problem}")
-        sections.append(_count(len(problems), "problem"))
-    if drift:
-        if sections:
-            print()
-        print("drift")
-        for statement in drift:
-            print(f"  {statement}")
-        sections.append(_count(len(drift), "drift statement"))
+    _section(sections, "problems", problems, "problem")
+    _section(sections, "drift", drift or [], "drift statement")
     if verdicts:
         if sections:
             print()
         _print_guards(verdicts)
         sections.append(_count(len(verdicts), "guard verdict"))
-    listed = _flagged_impact(summaries, drift)
-    if listed:
-        if sections:
-            print()
-        print("impact")
-        for impact_statement in listed:
-            print(f"  {flagged_line(impact_statement)}")
-        sections.append(_count(len(listed), "impact line"))
+    listed = [flagged_line(s) for s in _flagged_impact(summaries, drift)]
+    _section(sections, "impact", listed, "impact line")
 
     if not sections:
         if drift is None:

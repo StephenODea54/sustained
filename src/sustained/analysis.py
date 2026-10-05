@@ -41,7 +41,7 @@ from sustained.impact.tokens import (
     lex,
     scan_readings,
 )
-from sustained.migrations import Migration, migration_sql
+from sustained.migrations import Migration, run_statements
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
@@ -358,10 +358,7 @@ def summarize(
     """
     if callable(migration.up):
         return PendingSummary(migration.id, state, migration.repeatable, None, [])
-    statements: List[str] = [
-        MigrationStatement(sql, migration.id, migration.transactional)
-        for sql in migration_sql(migration, "up", compiler)
-    ]
+    statements: List[str] = [*run_statements([migration], compiler)]
     return PendingSummary(
         migration.id,
         state,
