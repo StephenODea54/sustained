@@ -31,7 +31,9 @@ from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
     Column,
+    ColumnExpr,
     Func,
+    Literal,
     Predicate,
     WindowExpression,
 )
@@ -902,9 +904,13 @@ class QueryBuilder:
         return self
 
     def _has_expression_values(self) -> bool:
-        """Reports whether any insert row holds a raw SQL Expression."""
+        """
+        Reports whether any insert row has SQL in a value: raw SQL, a
+        column, a Literal, or a function call. Such a row renders as text,
+        so the batch path, which binds one plain row per execution, skips it.
+        """
         return any(
-            isinstance(value, Expression)
+            isinstance(value, (Expression, Column, ColumnExpr, Func, Literal))
             for row in self._insert_rows
             for value in row.values()
         )
@@ -1128,7 +1134,7 @@ class QueryBuilder:
             # Assignments render before the WHERE clause so parameters are
             # collected in the order they appear in the SQL.
             assignments = ", ".join(
-                f"{self._compiler.quote_identifier(c)} = {ctx.value(v)}"
+                f"{self._compiler.quote_identifier(c)} = {self._compiler.format_operand(v, ctx)}"
                 for c, v in self._update_values.items()
             )
             where_str = self._where_builder.render(ctx)
@@ -1172,7 +1178,9 @@ class QueryBuilder:
             columns_sql = ", ".join(self._compiler.quote_identifier(c) for c in columns)
             row_groups = []
             for row in self._insert_rows:
-                rendered = ", ".join(ctx.value(row[c]) for c in columns)
+                rendered = ", ".join(
+                    self._compiler.format_operand(row[c], ctx) for c in columns
+                )
                 row_groups.append(f"({rendered})")
             if self._conflict_columns is not None:
                 if self._conflict_action is None:

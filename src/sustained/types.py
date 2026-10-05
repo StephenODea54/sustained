@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         Column,
         ColumnExpr,
         Func,
+        Literal,
         Subquery,
         WindowExpression,
     )
@@ -141,11 +142,14 @@ Selectable = Union[
     "Func",
     "Subquery",
 ]
-CaseResult = Union[DbReturnValue, "Column"]
-ColumnReference = Union[str, "Expression"]
+CaseResult = Union[
+    DbReturnValue, "Column", "Expression", "ColumnExpr", "Literal", "Func"
+]
+ColumnReference = Union[str, "Expression", "Column", "ColumnExpr", "Literal", "Func"]
 """
 A column in a filter, a sort, or a grouping: a column string, which the
-builder quotes and checks, or raw() SQL, which it renders as written.
+builder quotes and checks, col(), which follows the same rule, raw() SQL,
+which it renders as written, a Literal value, or a Func call.
 """
 QueryResolvable = Union[Callable[..., "AnyQuery"], "Expression", "AnyQuery"]
 """A subquery in argument position: a builder, a callable returning one, or raw() SQL."""

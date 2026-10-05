@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from sustained.dialects import Dialects
     from sustained.rendering import RenderContext
     from sustained.schema import ColumnDef, ColumnState, IndexColumn, TableOptions
-    from sustained.types import CaseResult, Selectable
+    from sustained.types import CaseResult, ColumnReference, Selectable
 
 
 # A plain identifier path such as "users", "users.id", or "db.dbo.users.id".
@@ -415,7 +415,7 @@ class Compiler:
             )
         return self.quote_fully_qualified_identifier(table)
 
-    def quote_column_reference(self, column: Union[str, Expression]) -> str:
+    def quote_column_reference(self, column: "ColumnReference") -> str:
         """
         Quotes a column reference for use inside a clause.
 
@@ -428,11 +428,17 @@ class Compiler:
         "a.b". A string can arrive from a request, such as a sort
         parameter, and every part of it is quoted, so text in it never runs
         as SQL. The default dialect writes names bare and raises ValueError
-        for a part that is not a plain name. Expression objects are raw SQL.
+        for a part that is not a plain name. Expression and Column objects
+        are raw SQL. col() names a column by the same rule as a string.
+        Literal renders its value as an inline SQL literal, and a Func,
+        aggregate, window, or CASE object renders as its call.
         """
         if isinstance(column, Expression):
             return str(column)
         if not isinstance(column, str):
+            nested = self._compile_nested(column, None)
+            if nested is not None:
+                return nested
             raise TypeError(
                 f"Column reference must be a string or Expression, got {type(column).__name__}."
             )
@@ -1645,8 +1651,10 @@ class Compiler:
         args_sql = ", ".join(self._format_arg(arg, ctx) for arg in window.args)
         return f"{window.function_name}({args_sql}) OVER ({over_sql})"
 
-    def _quote_order_entry(self, entry: str) -> str:
+    def _quote_order_entry(self, entry: "ColumnReference") -> str:
         """Quotes an ORDER BY entry that may carry an ASC or DESC suffix."""
+        if not isinstance(entry, str):
+            return self.quote_column_reference(entry)
         parts = entry.rsplit(" ", 1)
         if len(parts) == 2 and parts[1].upper() in ("ASC", "DESC"):
             return f"{self.quote_column_reference(parts[0])} {parts[1].upper()}"
@@ -1674,9 +1682,8 @@ class Compiler:
         return sql
 
     def _format_case_result(self, result: "CaseResult") -> str:
-        if isinstance(result, Column):
-            return str(result)
-        return self.format_value(result)
+        nested = self._compile_nested(result, None)
+        return self.format_value(result) if nested is None else nested
 
     def format_operand(self, value: SqlValue, ctx: "RenderContext") -> str:
         """
@@ -1753,6 +1760,8 @@ class Compiler:
             return str(value)
         if isinstance(value, ColumnExpr):
             return self.quote_column_reference(value.name)
+        if isinstance(value, Literal):
+            return self.format_value(value.value)
         return None
 
     def _format_arg(

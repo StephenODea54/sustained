@@ -23,7 +23,12 @@ from ..rendering import (
     render_nested,
     render_part,
 )
-from ..types import BasicJoinMapping, Expression, JoinMappingWithThrough
+from ..types import (
+    BasicJoinMapping,
+    ColumnReference,
+    Expression,
+    JoinMappingWithThrough,
+)
 
 if TYPE_CHECKING:
     from ..builder import QueryBuilder
@@ -70,7 +75,7 @@ class OnClauseBuilder:
         return cast(Callable[..., "OnClauseBuilder"], getattr(self, canonical))
 
     def on(
-        self, col1: str, op: str, col2: Union[str, Expression, "AnyQuery"]
+        self, col1: ColumnReference, op: str, col2: Union[ColumnReference, "AnyQuery"]
     ) -> "OnClauseBuilder":
         """Adds an ON condition. If this is not the first condition, it's treated as AND ON."""
         conjunction = "AND" if self._conditions else ""
@@ -78,7 +83,7 @@ class OnClauseBuilder:
         return self
 
     def andOn(
-        self, col1: str, op: str, col2: Union[str, Expression, "AnyQuery"]
+        self, col1: ColumnReference, op: str, col2: Union[ColumnReference, "AnyQuery"]
     ) -> "OnClauseBuilder":
         """Adds an AND ON condition."""
         if not self._conditions:
@@ -89,7 +94,7 @@ class OnClauseBuilder:
         return self
 
     def orOn(
-        self, col1: str, op: str, col2: Union[str, Expression, "AnyQuery"]
+        self, col1: ColumnReference, op: str, col2: Union[ColumnReference, "AnyQuery"]
     ) -> "OnClauseBuilder":
         """Adds an OR ON condition."""
         if not self._conditions:
@@ -102,9 +107,9 @@ class OnClauseBuilder:
     def _add_condition(
         self,
         conjunction: str,
-        col1: str,
+        col1: ColumnReference,
         op: str,
-        col2: Union[str, Expression, "AnyQuery"],
+        col2: Union[ColumnReference, "AnyQuery"],
     ) -> None:
         # Late import to avoid circular dependency
         from ..builder import QueryBuilder
@@ -112,7 +117,7 @@ class OnClauseBuilder:
         # The operator arrives as free text and lands between two quoted
         # identifiers, so it goes through the same check where() applies.
         op = self._compiler.validate_operator(op)
-        formatted_col1 = self._compiler.quote_fully_qualified_identifier(col1)
+        formatted_col1 = self._compiler.quote_column_reference(col1)
         condition: Renderable
         if isinstance(col2, QueryBuilder):
             sub_query = col2
@@ -124,7 +129,7 @@ class OnClauseBuilder:
         elif isinstance(col2, Expression):
             condition = f"{formatted_col1} {op} {col2}"
         else:
-            formatted_col2 = self._compiler.quote_fully_qualified_identifier(col2)
+            formatted_col2 = self._compiler.quote_column_reference(col2)
             condition = f"{formatted_col1} {op} {formatted_col2}"
         self._conditions.append((conjunction, condition))
 

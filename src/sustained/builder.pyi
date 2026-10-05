@@ -324,7 +324,12 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     # Join methods, raw form: an ON condition, a lambda, or a USING list.
     @overload
     def join(
-        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
+        self,
+        table: str,
+        col1: ColumnReference,
+        op: str,
+        col2: Union[ColumnReference, AnyQuery],
+        /,
     ) -> QueryBuilder[TModel]: ...
     @overload
     def join(self, table: str, on: OnLambda, /) -> QueryBuilder[TModel]: ...
@@ -332,7 +337,12 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     def join(self, table: str, /, *, using: List[str]) -> QueryBuilder[TModel]: ...
     @overload
     def innerJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
+        self,
+        table: str,
+        col1: ColumnReference,
+        op: str,
+        col2: Union[ColumnReference, AnyQuery],
+        /,
     ) -> QueryBuilder[TModel]: ...
     @overload
     def innerJoin(self, table: str, on: OnLambda, /) -> QueryBuilder[TModel]: ...
@@ -340,7 +350,12 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     def innerJoin(self, table: str, /, *, using: List[str]) -> QueryBuilder[TModel]: ...
     @overload
     def leftJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
+        self,
+        table: str,
+        col1: ColumnReference,
+        op: str,
+        col2: Union[ColumnReference, AnyQuery],
+        /,
     ) -> QueryBuilder[TModel]: ...
     @overload
     def leftJoin(self, table: str, on: OnLambda, /) -> QueryBuilder[TModel]: ...
@@ -348,7 +363,12 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     def leftJoin(self, table: str, /, *, using: List[str]) -> QueryBuilder[TModel]: ...
     @overload
     def leftOuterJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
+        self,
+        table: str,
+        col1: ColumnReference,
+        op: str,
+        col2: Union[ColumnReference, AnyQuery],
+        /,
     ) -> QueryBuilder[TModel]: ...
     @overload
     def leftOuterJoin(self, table: str, on: OnLambda, /) -> QueryBuilder[TModel]: ...
@@ -358,7 +378,12 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     ) -> QueryBuilder[TModel]: ...
     @overload
     def rightJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
+        self,
+        table: str,
+        col1: ColumnReference,
+        op: str,
+        col2: Union[ColumnReference, AnyQuery],
+        /,
     ) -> QueryBuilder[TModel]: ...
     @overload
     def rightJoin(self, table: str, on: OnLambda, /) -> QueryBuilder[TModel]: ...
@@ -366,7 +391,12 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     def rightJoin(self, table: str, /, *, using: List[str]) -> QueryBuilder[TModel]: ...
     @overload
     def rightOuterJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
+        self,
+        table: str,
+        col1: ColumnReference,
+        op: str,
+        col2: Union[ColumnReference, AnyQuery],
+        /,
     ) -> QueryBuilder[TModel]: ...
     @overload
     def rightOuterJoin(self, table: str, on: OnLambda, /) -> QueryBuilder[TModel]: ...
@@ -376,7 +406,12 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     ) -> QueryBuilder[TModel]: ...
     @overload
     def fullJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
+        self,
+        table: str,
+        col1: ColumnReference,
+        op: str,
+        col2: Union[ColumnReference, AnyQuery],
+        /,
     ) -> QueryBuilder[TModel]: ...
     @overload
     def fullJoin(self, table: str, on: OnLambda, /) -> QueryBuilder[TModel]: ...
@@ -384,7 +419,12 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     def fullJoin(self, table: str, /, *, using: List[str]) -> QueryBuilder[TModel]: ...
     @overload
     def fullOuterJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
+        self,
+        table: str,
+        col1: ColumnReference,
+        op: str,
+        col2: Union[ColumnReference, AnyQuery],
+        /,
     ) -> QueryBuilder[TModel]: ...
     @overload
     def fullOuterJoin(self, table: str, on: OnLambda, /) -> QueryBuilder[TModel]: ...
@@ -394,7 +434,12 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
     ) -> QueryBuilder[TModel]: ...
     @overload
     def crossJoin(
-        self, table: str, col1: str, op: str, col2: Union[str, AnyQuery], /
+        self,
+        table: str,
+        col1: ColumnReference,
+        op: str,
+        col2: Union[ColumnReference, AnyQuery],
+        /,
     ) -> QueryBuilder[TModel]: ...
     @overload
     def crossJoin(self, table: str, on: OnLambda, /) -> QueryBuilder[TModel]: ...
