@@ -171,22 +171,38 @@ def _information_schema_plan(
     spelled_tables: Dict[str, str] = {}
     table_schemas: Dict[str, str] = {}
 
+    def column_fields(with_comment: bool) -> List[Tuple[str, str]]:
+        """The (key, SQL) pairs of the column read's SELECT list, in order."""
+        fields = [
+            ("table", "c.table_name"),
+            ("name", "c.column_name"),
+            ("type", f"c.{catalog.type_column}"),
+            ("nullable", "c.is_nullable"),
+            ("default", "c.column_default"),
+        ]
+        if with_comment:
+            fields.append(("comment", f"c.{catalog.comment_column}"))
+        fields.append(("schema", "c.table_schema"))
+        if catalog.reads_default_sql:
+            fields += [("extra", "c.extra"), ("version", "VERSION()")]
+        if catalog.reads_collation:
+            fields.append(("collation", "c.collation_name"))
+        if catalog.reads_type_params:
+            fields += [
+                ("length", "c.character_maximum_length"),
+                ("precision", "c.numeric_precision"),
+                ("scale", "c.numeric_scale"),
+            ]
+        return fields
+
     def columns_query(with_comment: bool) -> str:
         # The join to information_schema.tables keeps views out. A view's
         # columns would read as a table the models do not declare, so one
         # view in the database is enough to make every plan report drift,
         # and allow_drops would emit a DROP TABLE the engine refuses.
-        comment = f", c.{catalog.comment_column}" if with_comment else ""
-        extra = ", c.extra, VERSION()" if catalog.reads_default_sql else ""
-        if catalog.reads_collation:
-            extra += ", c.collation_name"
-        if catalog.reads_type_params:
-            extra += (
-                ", c.character_maximum_length, c.numeric_precision, " "c.numeric_scale"
-            )
+        select = ", ".join(sql for _, sql in column_fields(with_comment))
         return (
-            f"SELECT c.table_name, c.column_name, c.{catalog.type_column}, "
-            f"c.is_nullable, c.column_default{comment}, c.table_schema{extra} "
+            f"SELECT {select} "
             "FROM information_schema.columns c "
             "JOIN information_schema.tables t "
             "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
@@ -211,62 +227,50 @@ def _information_schema_plan(
     # The schema each table came from, so two tables of one name in two
     # schemas are caught instead of merged.
     schema_of_table: Dict[str, str] = {}
-    schema_index = 6 if comments_read else 5
-    for row in column_rows:
-        table, name, data_type, is_nullable, default = row[:5]
+    # A row shorter than the SELECT list reads its missing columns as None.
+    keys = [key for key, _ in column_fields(comments_read)]
+    for values in column_rows:
+        row: Dict[str, RowValue] = dict(zip(keys, values))
+        table, name, default = row["table"], row["name"], row["default"]
         # MySQL reports an uncommented column as '', not NULL.
-        raw_comment = row[5] if comments_read and len(row) > 5 else None
+        raw_comment = row.get("comment")
         comment = str(raw_comment) if raw_comment not in (None, "") else None
-        if len(row) > schema_index and row[schema_index] is not None:
+        schema = row.get("schema")
+        if schema is not None:
             if scoped_read:
-                _one_schema_per_table(
-                    schema_of_table, str(table).lower(), str(row[schema_index])
-                )
-            declared_schema = _declared_schema(schemas, row[schema_index])
+                _one_schema_per_table(schema_of_table, str(table).lower(), str(schema))
+            declared_schema = _declared_schema(schemas, schema)
             if declared_schema is not None:
                 table_schemas[str(table).lower()] = declared_schema
-        raw_type = str(data_type) if data_type else ""
+        raw_type = str(row["type"]) if row["type"] else ""
         if catalog.reads_type_params:
-            at = (
-                schema_index
-                + 1
-                + (2 if catalog.reads_default_sql else 0)
-                + (1 if catalog.reads_collation else 0)
+            raw_type = _sized_type(
+                raw_type, row.get("length"), row.get("precision"), row.get("scale")
             )
-            length, precision, scale = (
-                row[i] if len(row) > i else None for i in range(at, at + 3)
-            )
-            raw_type = _sized_type(raw_type, length, precision, scale)
         default_sql = None
-        # EXTRA and VERSION() follow the schema on MySQL alone; on SQL
-        # Server the columns after the schema are the collation and the
-        # type parameters.
-        mysql_row = catalog.reads_default_sql and len(row) > schema_index + 2
-        extra = str(row[schema_index + 1] or "") if mysql_row else ""
+        # Only MySQL reads EXTRA and VERSION().
+        mysql_row = "version" in row
+        extra = str(row["extra"] or "") if mysql_row else ""
         # MariaDB reports its defaults as SQL already, quotes included.
         if (
             mysql_row
             and default is not None
-            and "MARIADB" not in str(row[schema_index + 2]).upper()
+            and "MARIADB" not in str(row["version"]).upper()
         ):
             default_sql = mysql_default_sql(str(default), extra, raw_type)
-        collation = (
-            _row_text(row, schema_index + (3 if catalog.reads_default_sql else 1))
-            if catalog.reads_collation
-            else None
-        )
+        collation = row.get("collation")
         on_update = _MYSQL_ON_UPDATE_RE.search(extra)
         spelled_tables.setdefault(str(table).lower(), str(table))
         columns_by_table.setdefault(str(table).lower(), {})[str(name).lower()] = (
             IntrospectedColumn(
                 raw_type=raw_type,
-                nullable=str(is_nullable).upper() == "YES",
+                nullable=str(row["nullable"]).upper() == "YES",
                 primary_key=False,
                 default=default,
                 comment=comment,
                 default_sql=default_sql,
                 autoincrement="AUTO_INCREMENT" in extra.upper(),
-                collation=collation,
+                collation=None if collation is None else str(collation),
                 name=str(name),
                 on_update=None if on_update is None else on_update.group(1),
             )
