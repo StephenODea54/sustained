@@ -53,7 +53,7 @@ from sustained.migrations.core import bookkeeping, rehearsing, runs
 from sustained.migrations.core.base import MigratorBase
 from sustained.migrations.core.requests import (
     Autocommit,
-    BeginPinned,
+    CallerAutocommit,
     Commit,
     Core,
     DiffSource,
@@ -61,12 +61,11 @@ from sustained.migrations.core.requests import (
     ExecuteMany,
     Fetch,
     Fire,
+    InTransaction,
     PinnedTransaction,
     ReadCatalog,
     ReadContext,
     ReadSchema,
-    RefuseOpenTransaction,
-    RefuseRehearsal,
     Request,
     Rollback,
     Session,
@@ -91,6 +90,8 @@ if TYPE_CHECKING:
 
 class AsyncMigrator(MigratorBase):
     """Applies and reverts an ordered list of migrations on an adapter."""
+
+    _block = "async_transaction()"
 
     def __init__(
         self,
@@ -190,12 +191,10 @@ class AsyncMigrator(MigratorBase):
                 return SchemaRead().connection(), None
             snapshot, read = await self._read_schema(request.schemas)
             return read.connection(), snapshot
-        if isinstance(request, RefuseOpenTransaction):
-            self._refuse_open_transaction(request.verb)
-            return None
-        if isinstance(request, RefuseRehearsal):
-            self._refuse_rehearsal()
-            return None
+        if isinstance(request, InTransaction):
+            return in_async_transaction(adapter)
+        if isinstance(request, CallerAutocommit):
+            return adapter.caller_autocommit()
         if isinstance(request, Transaction):
             async with async_transaction(adapter, self._dialect):
                 return await self._drive(request.body)
@@ -208,11 +207,6 @@ class AsyncMigrator(MigratorBase):
         if isinstance(request, PinnedTransaction):
             async with pinned_async_transaction(adapter):
                 return await self._drive(request.body)
-        if isinstance(request, BeginPinned):
-            begin = self._compiler.begin_transaction_sql()
-            if begin is not None:
-                await adapter.execute(begin, ())
-            return None
         raise TypeError(f"Unknown migrator request: {request!r}")
 
     async def _read(self, request: Union[ReadSchema, ReadContext, ReadCatalog]) -> Any:
@@ -242,34 +236,6 @@ class AsyncMigrator(MigratorBase):
     ) -> Tuple[List[str], List[Sequence[RowValue]]]:
         """Runs one parameterized query, adapted for the dialect."""
         return await self._adapter.fetch(*self._compiler.prepare_execution(sql, params))
-
-    def _refuse_open_transaction(self, verb: str) -> None:
-        """
-        Raises when an async_transaction() block is open on the adapter.
-        The run commits its own work as it goes, and that commit would
-        take the caller's uncommitted work with it.
-        """
-        if in_async_transaction(self._adapter):
-            raise ValueError(
-                f"{verb} cannot run inside an open async_transaction() "
-                "block: it commits as it goes, and the commit would take "
-                "the caller's work with it."
-            )
-
-    def _refuse_rehearsal(self) -> None:
-        """Raises when a rehearsal's rollback could not take its work back."""
-        connection = getattr(self._adapter, "_connection", None)
-        if getattr(connection, "autocommit", False) is True:
-            raise ValueError(
-                "rehearse cannot run on a connection in autocommit mode: "
-                "nothing would roll back. Open the connection without "
-                "autocommit, or point rehearse at a scratch database."
-            )
-        if in_async_transaction(self._adapter):
-            raise ValueError(
-                "rehearse cannot run inside an open async_transaction() "
-                "block: its rollback would take the caller's work back too."
-            )
 
     async def _read_schema(
         self, schemas: Sequence[str] = ()

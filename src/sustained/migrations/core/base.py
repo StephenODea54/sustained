@@ -5,7 +5,7 @@ The state both migrators hold, which the core's generators read and set.
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, ClassVar, List, Optional, Sequence, Tuple
 
 from sustained.dialects import Dialects
 from sustained.migrations.migration import Callbacks, Migration, checked_unique_ids
@@ -29,6 +29,10 @@ class MigratorBase:
     needs it: a caller that swaps the compiler or the dialect on a live
     migrator is seen by the next run.
     """
+
+    # The transaction context manager a caller opens around this
+    # migrator, as the core's refusals name it.
+    _block: ClassVar[str] = "transaction()"
 
     def __init__(
         self,

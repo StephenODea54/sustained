@@ -213,7 +213,7 @@ class TestCursorScope(unittest.TestCase):
 
     def test_a_pinned_block_closes_its_cursor_at_the_end(self):
         conn = RefusingConnection()
-        with pinned_transaction(conn, Dialects.DUCKDB):
+        with pinned_transaction(conn):
             self.assertEqual(conn.closed_cursors, 0)
         self.assertEqual(conn.closed_cursors, 1)
 
@@ -226,28 +226,28 @@ class TestPinnedTransaction(unittest.TestCase):
 
     def test_statements_inside_the_block_share_its_cursor(self):
         conn = RefusingConnection()
-        with pinned_transaction(conn, Dialects.DUCKDB) as cursor:
+        with pinned_transaction(conn) as cursor:
             self.assertTrue(in_transaction(conn))
             with cursor_scope(conn) as inner:
                 self.assertIs(cursor, inner)
         self.assertFalse(in_transaction(conn))
         with cursor_scope(conn) as outer:
             self.assertIsNot(cursor, outer)
-        self.assertEqual(conn.statements, ["BEGIN"])
+        self.assertEqual(conn.statements, [])
 
     def test_the_block_ends_nothing_by_itself(self):
         conn = RefusingConnection()
         with self.assertRaises(RuntimeError):
-            with pinned_transaction(conn, Dialects.DUCKDB):
+            with pinned_transaction(conn):
                 raise RuntimeError("boom")
-        self.assertEqual(conn.statements, ["BEGIN"])
+        self.assertEqual(conn.statements, [])
         self.assertFalse(in_transaction(conn))
 
     def test_a_second_block_on_the_same_connection_is_refused(self):
         conn = RefusingConnection()
-        with pinned_transaction(conn, Dialects.DUCKDB):
+        with pinned_transaction(conn):
             with self.assertRaises(ValueError):
-                with pinned_transaction(conn, Dialects.DUCKDB):
+                with pinned_transaction(conn):
                     pass
 
 

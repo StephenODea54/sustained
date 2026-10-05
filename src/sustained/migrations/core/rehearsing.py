@@ -28,14 +28,13 @@ from sustained.dialects import Dialects
 from sustained.migrations.core import bookkeeping, runs
 from sustained.migrations.core.base import MigratorBase
 from sustained.migrations.core.requests import (
-    BeginPinned,
     Core,
     Execute,
     Fetch,
     PinnedTransaction,
     ReadSchema,
-    RefuseRehearsal,
     Session,
+    refuse_rehearsal,
     rollback_quietly,
     run_in,
 )
@@ -205,7 +204,7 @@ def rehearse(
         _check_rehearsable(m._dialect)
     if trace:
         check_traceable(m)
-    yield RefuseRehearsal()
+    yield from refuse_rehearsal(m._block)
 
     def locked() -> Core[Rehearsal]:
         yield from bookkeeping.validate(m)
@@ -299,7 +298,9 @@ def _rehearse_pinned(
     m._rehearsing = True
     restore: Optional[List[str]] = None
     try:
-        yield BeginPinned()
+        begin = m._compiler.begin_transaction_sql()
+        if begin is not None:
+            yield Execute(begin, pinned=True)
         restore = yield from set_lock_timeout(m, lock_timeout)
         tracer: Optional[Tracer] = None
         if trace:

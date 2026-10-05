@@ -26,6 +26,7 @@ from sustained.dialects import Dialects
 from sustained.execution import (
     _commit_if_supported,
     cursor_scope,
+    driver_controls,
     enter_autocommit,
     in_transaction,
     pinned_transaction,
@@ -35,7 +36,7 @@ from sustained.migrations.core import bookkeeping, rehearsing, runs
 from sustained.migrations.core.base import MigratorBase
 from sustained.migrations.core.requests import (
     Autocommit,
-    BeginPinned,
+    CallerAutocommit,
     Commit,
     Core,
     DiffSource,
@@ -43,12 +44,11 @@ from sustained.migrations.core.requests import (
     ExecuteMany,
     Fetch,
     Fire,
+    InTransaction,
     PinnedTransaction,
     ReadCatalog,
     ReadContext,
     ReadSchema,
-    RefuseOpenTransaction,
-    RefuseRehearsal,
     Request,
     Rollback,
     Session,
@@ -200,12 +200,10 @@ class Migrator(MigratorBase):
             # The diff reads the connection itself, and can ask whether a
             # table holds rows.
             return connection, None
-        if isinstance(request, RefuseOpenTransaction):
-            self._refuse_open_transaction(request.verb)
-            return None
-        if isinstance(request, RefuseRehearsal):
-            self._refuse_rehearsal()
-            return None
+        if isinstance(request, InTransaction):
+            return in_transaction(connection)
+        if isinstance(request, CallerAutocommit):
+            return not driver_controls(connection)
         if isinstance(request, Transaction):
             with transaction(connection, self._dialect):
                 return self._drive(request.body)
@@ -220,11 +218,8 @@ class Migrator(MigratorBase):
         if isinstance(request, Session):
             return self._drive(request.body)
         if isinstance(request, PinnedTransaction):
-            with pinned_transaction(connection, self._dialect):
+            with pinned_transaction(connection):
                 return self._drive(request.body)
-        if isinstance(request, BeginPinned):
-            # pinned_transaction() sent the BEGIN on the way in.
-            return None
         raise TypeError(f"Unknown migrator request: {request!r}")
 
     def _read(self, request: Union[ReadSchema, ReadContext, ReadCatalog]) -> Any:
@@ -272,33 +267,6 @@ class Migrator(MigratorBase):
         """
         with cursor_scope(self._connection) as cursor:
             self._execute(cursor, sql, params)
-
-    def _refuse_open_transaction(self, verb: str) -> None:
-        """
-        Raises when a transaction() block is open on the connection. The
-        run commits its own work as it goes, and that commit would take
-        the caller's uncommitted work with it.
-        """
-        if in_transaction(self._connection):
-            raise ValueError(
-                f"{verb} cannot run inside an open transaction() block: "
-                "it commits as it goes, and the commit would take the "
-                "caller's work with it."
-            )
-
-    def _refuse_rehearsal(self) -> None:
-        """Raises when a rehearsal's rollback could not take its work back."""
-        if getattr(self._connection, "autocommit", False) is True:
-            raise ValueError(
-                "rehearse cannot run on a connection in autocommit mode: "
-                "nothing would roll back. Open the connection without "
-                "autocommit, or point rehearse at a scratch database."
-            )
-        if in_transaction(self._connection):
-            raise ValueError(
-                "rehearse cannot run inside an open transaction() block: "
-                "its rollback would take the caller's work back too."
-            )
 
     def record_rehearsal(self, key: str, outcome: str = REHEARSAL_PASSED) -> None:
         """

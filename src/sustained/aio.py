@@ -229,6 +229,15 @@ class AsyncAdapter:
         """
         return False
 
+    def caller_autocommit(self) -> bool:
+        """
+        Reports whether the caller put the driver's connection in
+        autocommit, so rollback() takes nothing back. The base returns
+        False: an adapter that runs in autocommit of its own still takes
+        a rolled-back BEGIN block back.
+        """
+        return False
+
     async def begin_where_ddl_autocommits(self) -> None:
         """
         Sends the BEGIN a driver with transaction control still needs.
@@ -393,6 +402,9 @@ class DbApiAsyncAdapter(AsyncAdapter):
         from sustained.execution import driver_controls
 
         return driver_controls(self._connection)
+
+    def caller_autocommit(self) -> bool:
+        return not self.driver_transaction_control()
 
     async def begin_where_ddl_autocommits(self) -> None:
         from sustained.execution import needs_explicit_begin

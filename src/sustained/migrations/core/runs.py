@@ -50,9 +50,9 @@ from sustained.migrations.core.requests import (
     Fire,
     ReadCatalog,
     ReadContext,
-    RefuseOpenTransaction,
     T,
     Transaction,
+    refuse_open_transaction,
     run_in,
 )
 from sustained.migrations.migration import (
@@ -171,7 +171,7 @@ def up(
     unrehearsed: bool,
     reads: RunReads = RunReads(),
 ) -> Core[List[str]]:
-    yield RefuseOpenTransaction("up")
+    yield from refuse_open_transaction(m._block, "up")
     callbacks = m._callbacks
     if callbacks.before_migrate is not None:
         yield Fire(callbacks.before_migrate)
@@ -555,7 +555,7 @@ def applied_versioned(
 
 
 def down_to(m: MigratorBase, target: str, allow_changed: bool) -> Core[List[str]]:
-    yield RefuseOpenTransaction("down_to")
+    yield from refuse_open_transaction(m._block, "down_to")
     if any(x.id == target for x in m._repeatables()):
         raise ValueError(
             f"Migration '{target}' is repeatable, so it is not a down_to() target."
@@ -576,7 +576,7 @@ def down(
 ) -> Core[List[str]]:
     if target is None:
         _checked_steps(steps)
-    yield RefuseOpenTransaction("down")
+    yield from refuse_open_transaction(m._block, "down")
     try:
         return (yield from run_down(m, steps, allow_changed, target))
     except Exception as error:

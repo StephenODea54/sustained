@@ -252,12 +252,13 @@ class TestFailedBeginClosesItsCursor(unittest.TestCase):
         self.assertTrue(connection.cursors[0].closed)
 
     def test_pinned_transaction_closes_the_cursor_when_begin_fails(self):
-        from sustained.execution import pinned_transaction
+        from sustained.execution import cursor_scope, pinned_transaction
 
         connection = _RefusingBeginConnection()
         with self.assertRaises(RuntimeError):
-            with pinned_transaction(connection, Dialects.DEFAULT):
-                pass  # pragma: no cover - the block never opens
+            with pinned_transaction(connection):
+                with cursor_scope(connection) as cursor:
+                    cursor.execute("BEGIN")
         self.assertTrue(connection.cursors[0].closed)
 
 

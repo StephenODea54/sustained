@@ -23,15 +23,17 @@ Callbacks: Fire calls one of the migrator's callbacks, or a callable
 migration step, with the connection or adapter in front of its
 arguments, and awaits what it returns on the async driver.
 
-Guards: RefuseOpenTransaction and RefuseRehearsal raise when the caller
-holds state only the driver can see, such as an open transaction() block.
+Caller state: InTransaction and CallerAutocommit report what only the
+driver can see, an open transaction block or a connection the caller put
+in autocommit. refuse_open_transaction() and refuse_rehearsal() raise on
+the answers.
 
 Scopes: Transaction, Autocommit, Session and PinnedTransaction carry a
 body, a core generator of their own. The driver opens the block, runs the
 body to its end inside it, and sends back what the body returned. An
 error the body raises leaves the block first, so the block rolls back or
 restores what it opened, and is then thrown into the generator that
-yielded the scope. BeginPinned belongs to PinnedTransaction.
+yielded the scope.
 """
 
 from __future__ import annotations
@@ -176,21 +178,17 @@ class ReadCatalog(NamedTuple):
     plan: Generator[str, Any, Any]
 
 
-class RefuseOpenTransaction(NamedTuple):
+class InTransaction(NamedTuple):
     """
-    Raises when a transaction block is open on the connection: the run
-    named by `verb` commits as it goes, and would take the caller's
-    uncommitted work with it.
+    Answered with True when the caller has a transaction block open on
+    the connection or the adapter.
     """
 
-    verb: str
 
-
-class RefuseRehearsal(NamedTuple):
+class CallerAutocommit(NamedTuple):
     """
-    Raises when a rehearsal's rollback could not take its work back: on a
-    connection in autocommit, or inside an open transaction block, whose
-    work the rollback would take back too.
+    Answered with True when the caller put the connection in autocommit,
+    so a rollback takes nothing back.
     """
 
 
@@ -228,18 +226,11 @@ class PinnedTransaction(NamedTuple):
     Runs the body inside a transaction the body ends itself, as a
     rehearsal does: registered, so a statement or callable step inside it
     joins it and a nested block takes a savepoint, but never committed or
-    rolled back by the driver. The body sends BeginPinned first.
+    rolled back by the driver. The body opens it with the dialect's BEGIN
+    as a pinned Execute.
     """
 
     body: "Core[Any]"
-
-
-class BeginPinned(NamedTuple):
-    """
-    Opens the pinned transaction in SQL where the driver has not already.
-    pinned_transaction() sends its BEGIN on entry, so the blocking driver
-    does nothing here; the async driver sends the dialect's BEGIN.
-    """
 
 
 Request = Union[
@@ -254,13 +245,12 @@ Request = Union[
     DiffSource,
     ReadContext,
     ReadCatalog,
-    RefuseOpenTransaction,
-    RefuseRehearsal,
+    InTransaction,
+    CallerAutocommit,
     Transaction,
     Autocommit,
     Session,
     PinnedTransaction,
-    BeginPinned,
 ]
 
 Core = Generator[Request, Any, T]
@@ -284,3 +274,36 @@ def rollback_quietly() -> Core[None]:
         yield Rollback()
     except Exception:
         pass
+
+
+def refuse_open_transaction(block: str, verb: str) -> Core[None]:
+    """
+    Raises when a transaction block is open on the connection. The run
+    named by `verb` commits as it goes, and that commit would take the
+    caller's uncommitted work with it. `block` names the context manager
+    in the message.
+    """
+    if (yield InTransaction()):
+        raise ValueError(
+            f"{verb} cannot run inside an open {block} block: it commits as "
+            "it goes, and the commit would take the caller's work with it."
+        )
+
+
+def refuse_rehearsal(block: str) -> Core[None]:
+    """
+    Raises when a rehearsal's rollback could not take its work back: on a
+    connection in autocommit, or inside an open transaction block, whose
+    work the rollback would take back too.
+    """
+    if (yield CallerAutocommit()):
+        raise ValueError(
+            "rehearse cannot run on a connection in autocommit mode: "
+            "nothing would roll back. Open the connection without "
+            "autocommit, or point rehearse at a scratch database."
+        )
+    if (yield InTransaction()):
+        raise ValueError(
+            f"rehearse cannot run inside an open {block} block: its "
+            "rollback would take the caller's work back too."
+        )

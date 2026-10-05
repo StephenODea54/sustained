@@ -32,9 +32,9 @@ from sustained.migrations.core.requests import (
     ExecuteMany,
     Fetch,
     ReadContext,
-    RefuseOpenTransaction,
     T,
     TakeLock,
+    refuse_open_transaction,
     rollback_quietly,
 )
 from sustained.migrations.migration import (
@@ -290,7 +290,7 @@ def validate(m: MigratorBase, raise_on_problems: bool = True) -> Core[List[str]]
 
 
 def repair(m: MigratorBase) -> Core[List[str]]:
-    yield RefuseOpenTransaction("repair")
+    yield from refuse_open_transaction(m._block, "repair")
     # The lock keeps a concurrent run from writing a failed row or a
     # checksum between the read below and the writes after it.
     return (yield from lock_scope(m, _repair_rows(m)))
@@ -351,7 +351,7 @@ def versioned_through(m: MigratorBase, target: str) -> List[Migration]:
 def baseline(m: MigratorBase, target: str) -> Core[List[str]]:
     from sustained.exceptions import MigrationError
 
-    yield RefuseOpenTransaction("baseline")
+    yield from refuse_open_transaction(m._block, "baseline")
     through = versioned_through(m, target)
 
     def locked() -> Core[List[str]]:
@@ -567,7 +567,7 @@ def record_rehearsal(
             f"{REHEARSAL_PASSED!r}, {REHEARSAL_FAILED!r}, or "
             f"{REHEARSAL_OVERRIDE!r}."
         )
-    yield RefuseOpenTransaction("record_rehearsal")
+    yield from refuse_open_transaction(m._block, "record_rehearsal")
     # up() and rehearse() write their rows from inside their own lock and
     # call record_rehearsals() directly, so this lock is never nested.
     yield from lock_scope(m, record_rehearsals(m, [key], outcome))
@@ -602,7 +602,7 @@ def record_scratch_rehearsal(
     )
     if not keys:
         return None
-    yield RefuseOpenTransaction("record_scratch_rehearsal")
+    yield from refuse_open_transaction(m._block, "record_scratch_rehearsal")
     yield from lock_scope(m, record_rehearsals(m, keys))
     return keys[0]
 
