@@ -31,12 +31,17 @@ if TYPE_CHECKING:
     from sustained.dialects import Dialects
     from sustained.rendering import RenderContext
     from sustained.schema import ColumnDef, ColumnState, IndexColumn, TableOptions
-    from sustained.types import CaseResult
+    from sustained.types import CaseResult, Selectable
 
 
 # A plain identifier path such as "users", "users.id", or "db.dbo.users.id".
 _IDENTIFIER_PATH_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)*$"
+)
+
+# A select list entry with an alias, such as "name AS label".
+_SELECT_ALIAS_RE = re.compile(
+    r"^(?P<column>.+?)\s+AS\s+(?P<alias>[A-Za-z_][A-Za-z0-9_$]*)$", re.IGNORECASE
 )
 
 # One plain identifier such as "users".
@@ -1614,20 +1619,66 @@ class Compiler:
         """
         if isinstance(value, Literal):
             return ctx.value(value.value)
-        if isinstance(
-            value,
-            (
-                Func,
-                AggregateExpression,
-                WindowExpression,
-                CaseExpression,
-                Subquery,
-                Column,
-                ColumnExpr,
-            ),
-        ):
-            return self._format_arg(value, ctx)
-        return ctx.value(value)
+        nested = self._compile_nested(value, ctx)
+        return ctx.value(value) if nested is None else nested
+
+    def compile_select_item(
+        self, item: "Selectable", ctx: 'Optional["RenderContext"]' = None
+    ) -> str:
+        """
+        Renders one entry of the select list, with its alias where the
+        expression has one. A string is a column reference, with an
+        optional "col AS alias" suffix. A subquery renders through the
+        given context, or inlines its values with no context.
+        """
+        if isinstance(item, str):
+            return self._compile_select_string(item)
+        if isinstance(item, Func):
+            return self.compile_function(item, ctx)
+        if isinstance(item, AggregateExpression):
+            return self.compile_aggregate(item)
+        if isinstance(item, WindowExpression):
+            return self.compile_window(item, ctx)
+        if isinstance(item, CaseExpression):
+            return self.compile_case(item)
+        if isinstance(item, Subquery):
+            return str(item) if ctx is None else item.render(ctx)
+        return self._compile_nested(item, ctx) or str(item)
+
+    def _compile_select_string(self, column: str) -> str:
+        """
+        Quotes a string select entry, supporting an optional "col AS alias"
+        suffix so aliased selections quote correctly in every dialect.
+        """
+        alias_match = _SELECT_ALIAS_RE.match(column)
+        if alias_match:
+            quoted = self.quote_column_reference(alias_match.group("column").strip())
+            return f"{quoted} AS {self.quote_alias(alias_match.group('alias'))}"
+        return self.quote_column_reference(column)
+
+    def _compile_nested(
+        self, value: object, ctx: 'Optional["RenderContext"]'
+    ) -> Optional[str]:
+        """
+        Renders an expression object where it sits inside another
+        expression, without the alias, which belongs to the select list.
+        Returns None for a value that is not an expression object.
+        """
+        if isinstance(value, Func):
+            return self.compile_function_call(value, ctx)
+        if isinstance(value, AggregateExpression):
+            return self.compile_aggregate_call(value)
+        if isinstance(value, WindowExpression):
+            return self.compile_window_call(value, ctx)
+        if isinstance(value, Subquery):
+            return value.render_operand(ctx)
+        if isinstance(value, CaseExpression):
+            return self.compile_case_expr(value)
+        if isinstance(value, (Column, Expression)):
+            return str(value)
+        if isinstance(value, ColumnExpr):
+            return self.quote_column_reference(value.name)
+        return None
 
     def _format_arg(
         self, arg: SqlValue, ctx: 'Optional["RenderContext"]' = None
@@ -1641,28 +1692,11 @@ class Compiler:
         through the given context, so its values become placeholders and
         join the statement's parameter list. With no context they inline.
         """
-        if isinstance(arg, Func):
-            # A nested call keeps this dialect's spelling and drops the
-            # alias, which belongs to the select list.
-            return self.compile_function_call(arg, ctx)
         if isinstance(arg, Literal):
             return self.format_value(arg.value)
-        if isinstance(arg, AggregateExpression):
-            return self.compile_aggregate_call(arg)
-        if isinstance(arg, WindowExpression):
-            # A nested window keeps this dialect's quoting and drops the
-            # alias, which belongs to the select list.
-            return self.compile_window_call(arg, ctx)
-        if isinstance(arg, Subquery):
-            return arg.render_operand(ctx)
-        if isinstance(arg, CaseExpression):
-            # A nested CASE keeps this dialect's quoting and drops the
-            # alias, which belongs to the select list.
-            return self.compile_case_expr(arg)
-        if isinstance(arg, (Column, Expression)):
-            return str(arg)
-        if isinstance(arg, ColumnExpr):
-            return self.quote_column_reference(arg.name)
+        nested = self._compile_nested(arg, ctx)
+        if nested is not None:
+            return nested
         if isinstance(arg, str):
             if arg == "*" or _IDENTIFIER_PATH_RE.match(arg):
                 return self.quote_column_reference(arg)
