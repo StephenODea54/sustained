@@ -19,6 +19,7 @@ from sustained.introspect import IntrospectedColumn, IntrospectedTable, Snapshot
 from sustained.schema import (
     bare_table_name,
     build_create_table_sql,
+    catalog_index,
     create_index_sql,
     enum_check_name,
     stated_fk_action,
@@ -366,7 +367,8 @@ def _undeclared_index_sql(
     statement in sqlite_master comes back as SQLite stored it, which keeps
     an expression index and the WHERE clause of a partial index. An index
     the read reports without a stored statement is rendered from its
-    columns. SQLite's automatic indexes are skipped: the column
+    columns, with the key part directions and predicate the read
+    reports. SQLite's automatic indexes are skipped: the column
     constraints that made them recreate them.
     """
     declared_indexes = {i.name.lower() for i in model.indexes or []}
@@ -376,9 +378,7 @@ def _undeclared_index_sql(
         if name not in declared_indexes
     ]
     steps.extend(
-        compiler.compile_create_index(
-            name, table_sql, list(index.columns), index.unique
-        )
+        create_index_sql(compiler, table_sql, catalog_index(name, index.columns, index))
         for name, index in actual_table.indexes.items()
         if name not in declared_indexes
         and name not in actual_table.index_sql

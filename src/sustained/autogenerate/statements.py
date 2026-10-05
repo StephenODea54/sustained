@@ -34,6 +34,8 @@ from sustained.schema import (
     ColumnState,
     ForeignKey,
     bare_table_name,
+    catalog_index,
+    create_index_statement,
     create_table_statements,
     dotted_name,
     enum_check_expression,
@@ -414,13 +416,8 @@ def _lift_statements(
             intent_table,
             name=name,
         ),
-        with_intent(
-            compiler.compile_create_index(name, table_sql, columns, index.unique),
-            "create_index",
-            intent_table,
-            name=name,
-            columns=tuple(columns),
-            unique=index.unique,
+        create_index_statement(
+            compiler, table_sql, intent_table, catalog_index(name, columns, index)
         ),
     )
 

@@ -52,6 +52,7 @@ from sustained.schema import (
     ColumnState,
     Index,
     bare_table_name,
+    catalog_index,
     create_index_sql,
     create_index_statement,
 )
@@ -552,21 +553,16 @@ def _index_steps(state: _Generation) -> None:
         # An invalid index is rebuilt, and the down step leaves the
         # valid one in its place: the invalid index did nothing.
         if actual_index.valid:
+            restored = catalog_index(index.name, actual_columns, actual_index)
             restore: List[str]
             if state.online:
                 restore = _replaced_online(
-                    state,
-                    model,
-                    str(drop),
-                    Index(index.name, *actual_columns, unique=actual_index.unique),
-                    intent=False,
+                    state, model, str(drop), restored, intent=False
                 )
             else:
                 restore = [
                     state.compiler.compile_drop_index(index.name, table_sql),
-                    state.compiler.compile_create_index(
-                        index.name, table_sql, actual_columns, actual_index.unique
-                    ),
+                    create_index_sql(state.compiler, table_sql, restored),
                 ]
             down_steps[0:0] = restore
         if index.unique:
@@ -900,24 +896,18 @@ def _drop_steps(state: _Generation) -> None:
                 intent_table,
                 name=name,
             )
-            columns = _spelled_columns(actual_table, actual_index)
+            restored = catalog_index(
+                name, _spelled_columns(actual_table, actual_index), actual_index
+            )
             if not state.online:
                 up_steps.append(drop)
                 down_steps.insert(
-                    0,
-                    state.compiler.compile_create_index(
-                        name, table_sql, columns, actual_index.unique
-                    ),
+                    0, create_index_sql(state.compiler, table_sql, restored)
                 )
                 continue
             model = state.models_by_table[table.lower()]
             up_steps.append(_dropped_online(state, model, drop))
-            down_steps[0:0] = _built_online(
-                state,
-                model,
-                Index(name, *columns, unique=actual_index.unique),
-                intent=False,
-            )
+            down_steps[0:0] = _built_online(state, model, restored, intent=False)
         for table, name in state.diff.extra_columns:
             if table.lower() in state.rebuild_tables:
                 continue

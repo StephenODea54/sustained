@@ -29,6 +29,7 @@ from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
+    from sustained.introspect import IntrospectedIndex
 
 
 class ColumnState(NamedTuple):
@@ -587,6 +588,25 @@ def create_index_sql(compiler: "Compiler", table_sql: str, index: Index) -> str:
     return compiler.compile_create_index(
         index.name, table_sql, list(index.key_parts), index.unique, index.where
     )
+
+
+def catalog_index(
+    name: str, columns: Sequence[str], index: "IntrospectedIndex"
+) -> Index:
+    """
+    The declared form of an index the catalog reports, so a down step
+    builds it again as the database had it. `columns` spells the key
+    columns. The direction and prefix length of each key part and the
+    predicate come from the read where it reports them (`details`), and
+    a read without them gives plain key parts over every row.
+    """
+    if not index.details:
+        return Index(name, *columns, unique=index.unique)
+    parts = [
+        IndexColumn(column, desc, prefix)
+        for column, desc, prefix in zip(columns, index.descending, index.prefix_lengths)
+    ]
+    return Index(name, *parts, unique=index.unique, where=index.where)
 
 
 def create_index_statement(
