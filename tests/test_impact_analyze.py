@@ -1037,6 +1037,49 @@ class WindowTestCase(unittest.TestCase):
         self.assertEqual(finding.rule, "window.lock_order")
         self.assertIn("a, b", finding.message)
 
+    def test_a_renamed_table_is_one_window(self):
+        for last in ("DROP INDEX ix", "ALTER TABLE u ADD COLUMN b int"):
+            report = analyze(
+                [
+                    m("CREATE INDEX ix ON t (a)"),
+                    m("ALTER TABLE t RENAME TO u"),
+                    m(last),
+                ],
+                PG,
+            )
+            (migration,) = report.migrations
+            (window,) = migration.windows
+            self.assertEqual((window.table, window.taken_by), ("u", 2))
+            self.assertEqual(migration.findings, ())
+
+    def test_a_rename_keeps_the_schema(self):
+        report = analyze(
+            [
+                m("ALTER TABLE app.t ADD COLUMN b int"),
+                m("ALTER TABLE app.t RENAME TO u"),
+                m("UPDATE app.u SET b = 1"),
+            ],
+            PG,
+        )
+        (migration,) = report.migrations
+        (window,) = migration.windows
+        self.assertEqual(window.table, "app.u")
+        (finding,) = migration.findings
+        self.assertIn(
+            "app.u stays blocked for reads_and_writes from statement 1", finding.message
+        )
+
+    def test_a_rename_names_no_window_without_a_later_lock(self):
+        report = analyze(
+            [
+                m("ALTER TABLE t RENAME TO u", transactional=False),
+                m("ALTER TABLE u ADD COLUMN b int", transactional=False),
+            ],
+            PG,
+        )
+        tables = [w.table for w in report.migrations[0].windows]
+        self.assertEqual(tables, ["t", "u"])
+
     def test_an_unknown_statement_counts_as_unknown_work(self):
         report = analyze(
             [

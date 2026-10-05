@@ -203,7 +203,7 @@ report = analyze(statements, Dialects.POSTGRES, context)
 Inside a transaction, PostgreSQL keeps every lock until the commit. A brief `ACCESS EXCLUSIVE` from the first statement, followed by a backfill in the second, keeps the table unreadable for the whole backfill. The report reads each migration's statements together:
 
 - `locks` lists every lock that blocks something, with the position of the statement that took it
-- `windows` gives, for each table blocked for writes or more, the heaviest work that runs while the lock is held
+- `windows` gives, for each table blocked for writes or more, the heaviest work that runs while the lock is held. A table that the migration renames is one window under both names, and the window takes the last name that a lock on the table uses.
 - a `window.held` finding names a table that stays blocked across heavier work from a later statement, with each level the table is blocked for and the first statement to block it that far
 - a `window.lock_order` finding names a migration that blocks reads and writes on more than one table at once, which can deadlock against application transactions that lock the same tables in another order
 

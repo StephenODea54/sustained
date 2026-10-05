@@ -43,6 +43,7 @@ from sustained.impact.model import (
     Finding,
     Hold,
     Lock,
+    ParsedStatement,
     Severity,
     StatementImpact,
     Window,
@@ -158,19 +159,28 @@ def _windows(
     Each blocked table's window, with the levels it reaches: each level
     the table is blocked for, weakest first, with the position of the
     first statement that blocks it that far. With `database`, every
-    table's lock falls in the one window of that name.
+    table's lock falls in the one window of that name. A table renamed
+    inside the scope is one window, named by the last name a lock on it
+    uses.
     """
     levels: Dict[str, List[Tuple[Blocks, int]]] = {}
     names: Dict[str, str] = {}
+    # Each new name of a table renamed in the scope, in lower case, to
+    # the key of the table's window.
+    keys: Dict[str, str] = {}
     for index in scope:
         for table in statements[index].tables:
             if table.blocks < Blocks.WRITES:
                 continue
-            key = database or table.table.lower()
-            names.setdefault(key, database or table.table)
+            lowered = table.table.lower()
+            key = database or keys.get(lowered, lowered)
+            if key not in names or lowered in keys:
+                names[key] = database or table.table
             reached = levels.setdefault(key, [])
             if not reached or table.blocks > reached[-1][0]:
                 reached.append((table.blocks, index + 1))
+        for old, new in _renames(statements[index].parsed):
+            keys[new.lower()] = keys.pop(old.lower(), old.lower())
     windows = []
     for key, reached in levels.items():
         kept = range(reached[0][1] - 1, scope.stop)
@@ -179,6 +189,29 @@ def _windows(
         window = Window(names[key], blocked, taken_by, works[during], during + 1)
         windows.append((window, tuple(reached)))
     return windows
+
+
+def _renames(parsed: Optional[ParsedStatement]) -> List[Tuple[str, str]]:
+    """
+    The old and new name of each table the statement renames. A new
+    name without a schema keeps the old name's schema, as in `RunState`.
+    """
+    if parsed is None:
+        return []
+    pairs = [(str(old), str(new)) for old, new in parsed.items("renames")]
+    if parsed.kind == "alter_table" and parsed.table:
+        pairs.extend(
+            (parsed.table, str(action.options["new"]))
+            for action in parsed.actions
+            if action.kind == "rename_to"
+        )
+    return [
+        (
+            old,
+            f"{old.rsplit('.', 1)[0]}.{new}" if "." in old and "." not in new else new,
+        )
+        for old, new in pairs
+    ]
 
 
 def _end(scope: range, count: int) -> str:
