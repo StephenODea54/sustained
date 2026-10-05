@@ -50,6 +50,11 @@ def depths(tokens: Sequence[Token], start: int = 0) -> Iterator[Tuple[int, Token
             depth += 1
 
 
+def named(dialect: Optional["Dialects"], *names: str) -> bool:
+    """Whether the dialect is one of `names`, such as "MSSQL"."""
+    return dialect is not None and dialect.name in names
+
+
 def closing(tokens: Sequence[Token], start: int) -> int:
     """
     The index of the bracket that closes the one at `start`, or the
@@ -487,18 +492,21 @@ class Cursor:
         if not self.at_end():
             raise Unrecognized(f"unread text {self.where()}")
 
+    def dialect_named(self, *names: str) -> bool:
+        return named(self.dialect, *names)
+
     @property
     def mssql(self) -> bool:
-        return self.dialect is not None and self.dialect.name == "MSSQL"
+        return named(self.dialect, "MSSQL")
 
     @property
     def postgres(self) -> bool:
-        return self.dialect is not None and self.dialect.name == "POSTGRES"
+        return named(self.dialect, "POSTGRES")
 
     @property
     def sqlite(self) -> bool:
         """Whether the dialect is DEFAULT, which SQLite connections use."""
-        return self.dialect is not None and self.dialect.name == "DEFAULT"
+        return named(self.dialect, "DEFAULT")
 
     @staticmethod
     def split_top(tokens: Sequence[Token]) -> List[List[Token]]:

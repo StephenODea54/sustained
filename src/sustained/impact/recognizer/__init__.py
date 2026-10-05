@@ -90,7 +90,7 @@ from sustained.impact.model import UNKNOWN_KIND, ParsedStatement
 from sustained.impact.recognizer import session
 from sustained.impact.recognizer.alter import AlterTable
 from sustained.impact.recognizer.create_drop import CREATE_TABLE_DEFAULTS, CreateDrop
-from sustained.impact.recognizer.cursor import Unrecognized, depths, frozen
+from sustained.impact.recognizer.cursor import Unrecognized, depths, frozen, named
 from sustained.impact.recognizer.definitions import COLUMN_DEFAULTS
 from sustained.impact.recognizer.statements import Statements
 from sustained.impact.recognizer.volatility import VOLATILITIES, classify_default
@@ -297,10 +297,6 @@ def _routine_word(tokens: Sequence[Token]) -> int:
     return -1
 
 
-def _named(dialect: Optional["Dialects"], *names: str) -> bool:
-    return dialect is not None and dialect.name in names
-
-
 def _depth_zero(tokens: Sequence[Token], start: int) -> List[bool]:
     """For each token from `start`, whether it is outside every bracket."""
     return [depth == 0 for _, _, depth in depths(tokens, start)]
@@ -393,13 +389,13 @@ def _semicolons_in_body(tokens: Sequence[Token], dialect: Optional["Dialects"]) 
     semicolons = [i for i, t in enumerate(tokens) if t.is_punct(";")]
     if not semicolons:
         return True
-    if _named(dialect, "MSSQL"):
+    if named(dialect, "MSSQL"):
         outside = _depth_zero(tokens, kind + 1)
         for index in range(kind + 1, len(tokens)):
             if tokens[index].is_word("AS") and outside[index - kind - 1]:
                 return semicolons[0] > index
         return False
-    if _named(dialect, "POSTGRES", "DUCKDB"):
+    if named(dialect, "POSTGRES", "DUCKDB"):
         outside = _depth_zero(tokens, kind + 1)
         for index in range(kind + 1, semicolons[0]):
             if (
@@ -475,7 +471,7 @@ def recognize(sql: str, dialect: Optional["Dialects"] = None) -> ParsedStatement
     tokens = tokenize(sql, dialect)
     if tokens and tokens[-1].kind == ERROR:
         return unknown("the statement has a quote or comment that never closes")
-    if _named(dialect, "MSSQL"):
+    if named(dialect, "MSSQL"):
         batches = _batches(sql, tokens)
         if len(batches) > 1:
             return unknown("the text contains more than one batch")

@@ -222,9 +222,6 @@ class Statements(Cursor):
             table = self.resolve_alias(table, tail)
         return self.write_statement("delete", table, tail, limited)
 
-    def dialect_named(self, *names: str) -> bool:
-        return self.dialect is not None and self.dialect.name in names
-
     def insert(self) -> ParsedStatement:
         self.accept("IGNORE")
         self.accept("INTO")
@@ -464,7 +461,7 @@ class Statements(Cursor):
             self.accept("TO")
         # A MySQL SET separates assignments with commas; a Postgres value
         # may be a list, so a list stays one value there.
-        if self.dialect is not None and self.dialect.name == "MYSQL":
+        if self.dialect_named("MYSQL"):
             tokens = self.expression(frozenset())
         else:
             tokens = self.rest()
