@@ -41,11 +41,11 @@ from sustained.impact.tokens import (
     lex,
     scan_readings,
 )
-from sustained.migrations import Migration, run_statements
 
 if TYPE_CHECKING:
     from sustained.compilers.base import Compiler
     from sustained.dialects import Dialects
+    from sustained.migrations import Migration
 
 # The scan reads a statement with the lexer the impact recognizer uses,
 # so the two read literals and comments alike. `scan_readings()` names
@@ -355,7 +355,7 @@ class PendingSummary(NamedTuple):
 
 
 def summarize(
-    migration: Migration, state: str, compiler: Optional["Compiler"] = None
+    migration: "Migration", state: str, compiler: Optional["Compiler"] = None
 ) -> PendingSummary:
     """
     Reduces one migration to its id, its state ('pending' or, for a
@@ -363,6 +363,10 @@ def summarize(
     step would run, and the ones that remove data. Ddl steps render for
     the given compiler's dialect, or ANSI when none is given.
     """
+    # Modules in sustained.migrations import this one. A top-level import
+    # of sustained.migrations here would form an import cycle.
+    from sustained.migrations import run_statements
+
     if callable(migration.up):
         return PendingSummary(migration.id, state, migration.repeatable, None, [])
     statements: List[str] = [*run_statements([migration], compiler)]
