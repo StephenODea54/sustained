@@ -27,7 +27,6 @@ from sustained.impact.recognizer.volatility import (
 from sustained.impact.tokens import (
     IDENT,
     NUMBER,
-    PUNCT,
     WORD,
     Token,
 )
@@ -39,13 +38,7 @@ def not_null_column(tokens: Sequence[Token]) -> Optional[str]:
     tests, with any parentheses around it, or None for another
     expression.
     """
-    while (
-        len(tokens) > 2
-        and tokens[0].kind == PUNCT
-        and tokens[0].text == "("
-        and tokens[-1].kind == PUNCT
-        and tokens[-1].text == ")"
-    ):
+    while len(tokens) > 2 and tokens[0].is_punct("(") and tokens[-1].is_punct(")"):
         tokens = tokens[1:-1]
     if len(tokens) != 4 or tokens[0].name is None:
         return None
@@ -177,9 +170,9 @@ class Definitions(Cursor):
         self.name()
         while not self.at_end():
             token = self.tokens[self.pos]
-            if token.kind == PUNCT and token.text == "(":
+            if token.is_punct("("):
                 self.group()
-            elif token.kind == PUNCT and token.text in "[]":
+            elif token.is_punct("[", "]"):
                 self.pos += 1
             elif token.kind == NUMBER and self.tokens[self.pos - 1].text == "[":
                 self.pos += 1

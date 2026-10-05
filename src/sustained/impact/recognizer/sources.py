@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-from sustained.impact.tokens import PUNCT, Token
+from sustained.impact.tokens import Token
 
 # The words that may open a FROM item before its name.
 _ITEM_PREFIXES = ("ONLY", "LATERAL")
@@ -33,26 +33,22 @@ _LIST_ENDS = (
 )
 
 
-def _is(token: Token, char: str) -> bool:
-    return token.kind == PUNCT and token.text == char
-
-
 def _cte_names(tokens: Sequence[Token]) -> Set[str]:
     """The lower case names the query's WITH clauses define."""
     names: Set[str] = set()
     for index, token in enumerate(tokens):
         if not token.is_word("AS") or index + 1 >= len(tokens):
             continue
-        if not _is(tokens[index + 1], "("):
+        if not tokens[index + 1].is_punct("("):
             continue
         at = index - 1
-        if at >= 0 and _is(tokens[at], ")"):
+        if at >= 0 and tokens[at].is_punct(")"):
             # `name (columns) AS (...)`: step back over the column list.
             depth = 0
             while at >= 0:
-                if _is(tokens[at], ")"):
+                if tokens[at].is_punct(")"):
                     depth += 1
-                elif _is(tokens[at], "("):
+                elif tokens[at].is_punct("("):
                     depth -= 1
                     if depth == 0:
                         break
@@ -74,7 +70,7 @@ def _item(tokens: Sequence[Token], at: int) -> Tuple[Optional[str], int, bool]:
         at += 1
     if at >= len(tokens):
         return None, at, False
-    if _is(tokens[at], "("):
+    if tokens[at].is_punct("("):
         inner = tokens[at + 1] if at + 1 < len(tokens) else None
         query = inner is not None and inner.is_word("SELECT", "WITH", "TABLE")
         return None, at + 1, query
@@ -84,11 +80,11 @@ def _item(tokens: Sequence[Token], at: int) -> Tuple[Optional[str], int, bool]:
     while at < len(tokens) and tokens[at].name is not None:
         parts.append(tokens[at].name or "")
         at += 1
-        if at < len(tokens) and _is(tokens[at], "."):
+        if at < len(tokens) and tokens[at].is_punct("."):
             at += 1
             continue
         break
-    if at < len(tokens) and _is(tokens[at], "("):
+    if at < len(tokens) and tokens[at].is_punct("("):
         return None, at, False
     return ".".join(parts), at, True
 
@@ -124,10 +120,10 @@ def tables_read(tokens: Sequence[Token]) -> Optional[Tuple[str, ...]]:
                     found.append(name)
                 index = after
                 continue
-        if _is(token, "("):
+        if token.is_punct("("):
             inner = tokens[index + 1] if index + 1 < len(tokens) else None
             queries.append(inner is not None and inner.is_word(*_QUERY_OPENERS))
-        elif _is(token, ")"):
+        elif token.is_punct(")"):
             listing.pop(len(queries) - 1, None)
             if len(queries) > 1:
                 queries.pop()
@@ -136,7 +132,7 @@ def tables_read(tokens: Sequence[Token]) -> Optional[Tuple[str, ...]]:
         elif token.is_word("FROM", "JOIN"):
             listing[len(queries) - 1] = True
             expect = True
-        elif _is(token, ",") and listing.get(len(queries) - 1):
+        elif token.is_punct(",") and listing.get(len(queries) - 1):
             expect = True
         elif token.is_word(*_LIST_ENDS):
             listing[len(queries) - 1] = False

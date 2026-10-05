@@ -25,7 +25,6 @@ from sustained.impact.tokens import (
     IDENT,
     NUMBER,
     PARAM,
-    PUNCT,
     WORD,
     Token,
 )
@@ -126,14 +125,11 @@ class Statements(Cursor):
         """Whether a comma or a JOIN outside parentheses names another table."""
         depth = 0
         for token in tokens:
-            if token.kind == PUNCT and token.text == "(":
+            if token.is_punct("("):
                 depth += 1
-            elif token.kind == PUNCT and token.text == ")":
+            elif token.is_punct(")"):
                 depth -= 1
-            elif depth == 0 and (
-                (token.kind == PUNCT and token.text == ",")
-                or token.is_word(*_JOIN_WORDS)
-            ):
+            elif depth == 0 and ((token.is_punct(",")) or token.is_word(*_JOIN_WORDS)):
                 return True
         return False
 
@@ -164,7 +160,7 @@ class Statements(Cursor):
         while index < len(tokens):
             token = tokens[index]
             index += 1
-            if token.kind == PUNCT and token.text in "()":
+            if token.is_punct("(", ")"):
                 depth += 1 if token.text == "(" else -1
                 continue
             if depth:
@@ -174,10 +170,7 @@ class Statements(Cursor):
                 continue
             if token.is_word("FROM", "USING"):
                 opened = True
-            elif not (
-                opened
-                and (token.is_word("JOIN") or token.kind == PUNCT and token.text == ",")
-            ):
+            elif not (opened and (token.is_word("JOIN") or token.is_punct(","))):
                 continue
             table, index = self.table_ref(tokens, index)
             alias, index = self.table_alias(tokens, index)
@@ -191,10 +184,10 @@ class Statements(Cursor):
         self, tokens: Sequence[Token], index: int
     ) -> Tuple[Optional[str], int]:
         """The dotted table name at `index`, or None for a derived table."""
-        if index < len(tokens) and tokens[index].text == "(":
+        if index < len(tokens) and tokens[index].is_punct("("):
             depth = 0
             while index < len(tokens):
-                if tokens[index].kind == PUNCT and tokens[index].text in "()":
+                if tokens[index].is_punct("(", ")"):
                     depth += 1 if tokens[index].text == "(" else -1
                 index += 1
                 if depth == 0:
@@ -204,7 +197,7 @@ class Statements(Cursor):
         while index < len(tokens) and tokens[index].name is not None:
             parts.append(tokens[index].name or "")
             index += 1
-            if not (index < len(tokens) and tokens[index].text == "."):
+            if not (index < len(tokens) and tokens[index].is_punct(".")):
                 break
             index += 1
         return (".".join(parts) if parts else None), index
@@ -289,11 +282,11 @@ class Statements(Cursor):
         rows = 0
         depth = 0
         for token in tokens:
-            if token.kind == PUNCT and token.text == "(":
+            if token.is_punct("("):
                 if depth == 0:
                     rows += 1
                 depth += 1
-            elif token.kind == PUNCT and token.text == ")":
+            elif token.is_punct(")"):
                 depth -= 1
             elif depth == 0 and token.kind == WORD:
                 break

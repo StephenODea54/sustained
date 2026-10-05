@@ -97,6 +97,10 @@ class Token(NamedTuple):
         """Whether this is a bare word, and when words are given, one of them."""
         return self.kind == WORD and (not words or self.value in words)
 
+    def is_punct(self, *chars: str) -> bool:
+        """Whether this is punctuation, and when chars are given, one of them."""
+        return self.kind == PUNCT and (not chars or self.text in chars)
+
     @property
     def name(self) -> Optional[str]:
         """The identifier this token names, bare or quoted, or None."""

@@ -21,7 +21,6 @@ from sustained.impact.recognizer.cursor import (
 )
 from sustained.impact.recognizer.sources import tables_read
 from sustained.impact.tokens import (
-    PUNCT,
     Token,
 )
 
@@ -177,7 +176,7 @@ class CreateDrop(Cursor):
             while at < len(tokens) and tokens[at].name is not None:
                 parts.append(tokens[at].name or "")
                 at += 1
-                if not (at < len(tokens) and tokens[at].text == "."):
+                if not (at < len(tokens) and tokens[at].is_punct(".")):
                     break
                 at += 1
             if parts:
@@ -190,7 +189,7 @@ class CreateDrop(Cursor):
         tokens = self.body()
         depth = 0
         for index, token in enumerate(tokens):
-            if token.kind == PUNCT and token.text in "()":
+            if token.is_punct("(", ")"):
                 depth += 1 if token.text == "(" else -1
             elif depth == 0 and token.is_word("ON"):
                 sub = Cursor(self.sql, list(tokens[index + 1 :]), self.dialect)

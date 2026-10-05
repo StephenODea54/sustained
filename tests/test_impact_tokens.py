@@ -140,6 +140,14 @@ class TokenizeTestCase(unittest.TestCase):
         self.assertEqual(ident.name, "Col")
         self.assertIsNone(number.name)
 
+    def test_is_punct(self):
+        paren, quoted, word = tokenize('( "(" x')
+        self.assertTrue(paren.is_punct())
+        self.assertTrue(paren.is_punct("(", "["))
+        self.assertFalse(paren.is_punct(")"))
+        self.assertFalse(quoted.is_punct("(", '"("'))
+        self.assertFalse(word.is_punct())
+
 
 class LexTestCase(unittest.TestCase):
     def test_the_scan_reading_takes_dollar_quotes_with_and_without_a_tag(self):

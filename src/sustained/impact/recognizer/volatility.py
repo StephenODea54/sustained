@@ -13,7 +13,6 @@ from typing import (
 
 from sustained.impact.tokens import (
     IDENT,
-    PUNCT,
     WORD,
     Token,
 )
@@ -138,11 +137,7 @@ def classify_default(tokens: Sequence[Token]) -> Tuple[str, Optional[str], bool]
         start = _name_start(tokens, index)
         if start > 0 and tokens[start - 1].text == "::":
             continue
-        is_call = (
-            index + 1 < len(tokens)
-            and tokens[index + 1].text == "("
-            and tokens[index + 1].kind == PUNCT
-        )
+        is_call = index + 1 < len(tokens) and tokens[index + 1].is_punct("(")
         if not is_call:
             if token.kind == WORD and start == index:
                 stable = stable or token.value in _STABLE_WORDS
@@ -170,8 +165,7 @@ def _name_start(tokens: Sequence[Token], index: int) -> int:
     start = index
     while (
         start >= 2
-        and tokens[start - 1].kind == PUNCT
-        and tokens[start - 1].text == "."
+        and tokens[start - 1].is_punct(".")
         and tokens[start - 2].kind in (WORD, IDENT)
     ):
         start -= 2

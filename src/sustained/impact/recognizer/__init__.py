@@ -98,7 +98,6 @@ from sustained.impact.tokens import (
     IDENT,
     NUMBER,
     OP,
-    PUNCT,
     STRING,
     WORD,
     Token,
@@ -256,10 +255,6 @@ _BODY_STATEMENT_STARTS = frozenset({"BEGIN", "THEN", "ELSE", "DO", "LOOP", "REPE
 _END_OF_OTHER = frozenset({"IF", "LOOP", "WHILE", "REPEAT", "FOR"})
 
 
-def _is_semicolon(token: Token) -> bool:
-    return token.kind == PUNCT and token.text == ";"
-
-
 def _routine_word(tokens: Sequence[Token]) -> int:
     """
     The index of the TRIGGER, FUNCTION, or PROCEDURE word a CREATE
@@ -280,8 +275,8 @@ def _routine_word(tokens: Sequence[Token]) -> int:
         index += 2
         if tokens[index].is_word("CURRENT_USER"):
             index += 1
-            if index + 1 < len(tokens) and tokens[index].text == "(":
-                if tokens[index + 1].text != ")":
+            if index + 1 < len(tokens) and tokens[index].is_punct("("):
+                if not tokens[index + 1].is_punct(")"):
                     return -1
                 index += 2
         else:
@@ -310,10 +305,10 @@ def _depth_zero(tokens: Sequence[Token], start: int) -> List[bool]:
     depth = 0
     outside = []
     for token in tokens[start:]:
-        if token.kind == PUNCT and token.text == ")":
+        if token.is_punct(")"):
             depth -= 1
         outside.append(depth == 0)
-        if token.kind == PUNCT and token.text == "(":
+        if token.is_punct("("):
             depth += 1
     return outside
 
@@ -328,12 +323,12 @@ def _body_opener(tokens: Sequence[Token], kind: int) -> int:
     outside = _depth_zero(tokens, kind + 1)
     for index in range(kind + 1, len(tokens)):
         token = tokens[index]
-        if _is_semicolon(token):
+        if token.is_punct(";"):
             return -1
         if not (token.is_word("BEGIN") and outside[index - kind - 1]):
             continue
         before = tokens[index - 1]
-        if before.kind == OP or (before.kind == PUNCT and before.text != ")"):
+        if before.kind == OP or (before.is_punct() and not before.is_punct(")")):
             continue
         if before.kind == WORD and before.value in _NOT_BEFORE_BODY:
             continue
@@ -367,9 +362,7 @@ def _block_ends_last(tokens: Sequence[Token], opener: int, compound: bool) -> bo
                 and tokens[index - 2].kind in (WORD, IDENT)
             )
             starts = (
-                _is_semicolon(before)
-                or label
-                or before.is_word(*_BODY_STATEMENT_STARTS)
+                before.is_punct(";") or label or before.is_word(*_BODY_STATEMENT_STARTS)
             )
             if not starts:
                 return False
@@ -404,7 +397,7 @@ def _semicolons_in_body(tokens: Sequence[Token], dialect: Optional["Dialects"]) 
     kind = _routine_word(tokens)
     if kind < 0:
         return False
-    semicolons = [i for i, t in enumerate(tokens) if _is_semicolon(t)]
+    semicolons = [i for i, t in enumerate(tokens) if t.is_punct(";")]
     if not semicolons:
         return True
     if _named(dialect, "MSSQL"):
@@ -472,7 +465,7 @@ def _batches(sql: str, tokens: List[Token]) -> List[List[Token]]:
                 continue
         batches[-1].append(tokens[index])
         index += 1
-    return [b for b in batches if any(not _is_semicolon(t) for t in b)]
+    return [b for b in batches if any(not t.is_punct(";") for t in b)]
 
 
 def recognize(sql: str, dialect: Optional["Dialects"] = None) -> ParsedStatement:
@@ -494,11 +487,11 @@ def recognize(sql: str, dialect: Optional["Dialects"] = None) -> ParsedStatement
         if len(batches) > 1:
             return unknown("the text contains more than one batch")
         tokens = batches[0] if batches else []
-    while tokens and tokens[-1].kind == PUNCT and tokens[-1].text == ";":
+    while tokens and tokens[-1].is_punct(";"):
         tokens.pop()
     if not tokens:
         return unknown("the statement is empty")
-    if any(_is_semicolon(t) for t in tokens) and not _semicolons_in_body(
+    if any(t.is_punct(";") for t in tokens) and not _semicolons_in_body(
         tokens, dialect
     ):
         return unknown("the text contains more than one statement")

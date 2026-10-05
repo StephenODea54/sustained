@@ -20,7 +20,6 @@ from sustained.impact.tokens import (
     IDENT,
     NUMBER,
     OP,
-    PUNCT,
     STRING,
     WORD,
     Token,
@@ -226,7 +225,7 @@ class Cursor:
 
     def is_punct(self, char: str) -> bool:
         token = self.peek()
-        return token is not None and token.kind == PUNCT and token.text == char
+        return token is not None and token.is_punct(char)
 
     def accept_punct(self, char: str) -> bool:
         if self.is_punct(char):
@@ -287,9 +286,9 @@ class Cursor:
         depth = 1
         while depth:
             token = self.next()
-            if token.kind == PUNCT and token.text == "(":
+            if token.is_punct("("):
                 depth += 1
-            elif token.kind == PUNCT and token.text == ")":
+            elif token.is_punct(")"):
                 depth -= 1
         return self.tokens[start : self.pos - 1]
 
@@ -312,9 +311,9 @@ class Cursor:
         depth = 0
         while not self.at_end():
             token = self.tokens[self.pos]
-            if token.kind == PUNCT and token.text == "(":
+            if token.is_punct("("):
                 depth += 1
-            elif token.kind == PUNCT and token.text == ")":
+            elif token.is_punct(")"):
                 depth -= 1
             elif depth == 0 and self.starts_statement(self.pos):
                 break
@@ -353,12 +352,12 @@ class Cursor:
         if index >= len(tokens) or tokens[index].name is None:
             return False
         index += 1
-        if index < len(tokens) and tokens[index].text == "(":
+        if index < len(tokens) and tokens[index].is_punct("("):
             depth = 0
             while index < len(tokens):
-                if tokens[index].kind == PUNCT and tokens[index].text == "(":
+                if tokens[index].is_punct("("):
                     depth += 1
-                elif tokens[index].kind == PUNCT and tokens[index].text == ")":
+                elif tokens[index].is_punct(")"):
                     depth -= 1
                     if depth == 0:
                         break
@@ -367,7 +366,7 @@ class Cursor:
         return (
             index + 1 < len(tokens)
             and tokens[index].is_word("AS")
-            and tokens[index + 1].text == "("
+            and tokens[index + 1].is_punct("(")
         )
 
     def item(self) -> List[Token]:
@@ -378,13 +377,13 @@ class Cursor:
             token = self.tokens[self.pos]
             if depth == 0 and self.starts_statement(self.pos):
                 break
-            if token.kind == PUNCT and token.text in "([":
+            if token.is_punct("(", "["):
                 depth += 1
-            elif token.kind == PUNCT and token.text in ")]":
+            elif token.is_punct(")", "]"):
                 if depth == 0:
                     break
                 depth -= 1
-            elif depth == 0 and token.kind == PUNCT and token.text == ",":
+            elif depth == 0 and token.is_punct(","):
                 break
             self.pos += 1
         return self.tokens[start : self.pos]
@@ -399,20 +398,20 @@ class Cursor:
         depth = 0
         while not self.at_end():
             token = self.tokens[self.pos]
-            if token.kind == PUNCT and token.text in "([":
+            if token.is_punct("(", "["):
                 depth += 1
-            elif token.kind == PUNCT and token.text in ")]":
+            elif token.is_punct(")", "]"):
                 if depth == 0:
                     break
                 depth -= 1
             elif depth == 0 and self.pos > start:
-                if token.kind == PUNCT and token.text == ",":
+                if token.is_punct(","):
                     break
                 if token.kind == WORD and token.value in end_words:
                     break
                 if self.starts_statement(self.pos):
                     break
-            elif depth == 0 and token.kind == PUNCT and token.text == ",":
+            elif depth == 0 and token.is_punct(","):
                 break
             self.pos += 1
         if self.pos == start:
@@ -428,9 +427,9 @@ class Cursor:
         depth = 0
         while not self.at_end():
             token = self.tokens[self.pos]
-            if token.kind == PUNCT and token.text == "(":
+            if token.is_punct("("):
                 depth += 1
-            elif token.kind == PUNCT and token.text == ")":
+            elif token.is_punct(")"):
                 depth -= 1
             elif depth == 0 and token.kind == WORD and token.value in words:
                 break
@@ -466,9 +465,9 @@ class Cursor:
         """Whether any of `words` appears outside parentheses in `tokens`."""
         depth = 0
         for token in tokens:
-            if token.kind == PUNCT and token.text == "(":
+            if token.is_punct("("):
                 depth += 1
-            elif token.kind == PUNCT and token.text == ")":
+            elif token.is_punct(")"):
                 depth -= 1
             elif depth == 0 and token.is_word(*words):
                 return True
@@ -516,11 +515,11 @@ class Cursor:
         items: List[List[Token]] = [[]]
         depth = 0
         for token in tokens:
-            if token.kind == PUNCT and token.text == "(":
+            if token.is_punct("("):
                 depth += 1
-            elif token.kind == PUNCT and token.text == ")":
+            elif token.is_punct(")"):
                 depth -= 1
-            elif depth == 0 and token.kind == PUNCT and token.text == ",":
+            elif depth == 0 and token.is_punct(","):
                 items.append([])
                 continue
             items[-1].append(token)
