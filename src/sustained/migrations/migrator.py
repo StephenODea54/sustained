@@ -63,6 +63,7 @@ from sustained.migrations.migration import (
     PreflightCheck,
     _run_step,
 )
+from sustained.migrations.planning import DiffOptions
 from sustained.migrations.rehearsal import REHEARSAL_PASSED, Rehearsal
 from sustained.migrations.tracking import _lock_row
 from sustained.types import Connection, Cursor, SqlValue
@@ -548,12 +549,14 @@ class Migrator(MigratorBase):
                 validate=validate,
                 allow_out_of_order=allow_out_of_order,
                 models=models,
-                allow_drops=allow_drops,
-                ignore_changed_columns=ignore_changed_columns,
-                migration_id=migration_id,
-                renames=renames,
-                table_renames=table_renames,
-                type_casts=type_casts,
+                diff=DiffOptions(
+                    allow_drops,
+                    ignore_changed_columns,
+                    migration_id,
+                    renames,
+                    table_renames,
+                    type_casts,
+                ),
                 unrehearsed=unrehearsed,
                 reads=runs.RunReads(
                     assert_algorithm,
@@ -678,12 +681,14 @@ class Migrator(MigratorBase):
                 self,
                 scratch=scratch,
                 models=models,
-                allow_drops=allow_drops,
-                ignore_changed_columns=ignore_changed_columns,
-                migration_id=migration_id,
-                renames=renames,
-                table_renames=table_renames,
-                type_casts=type_casts,
+                diff=DiffOptions(
+                    allow_drops,
+                    ignore_changed_columns,
+                    migration_id,
+                    renames,
+                    table_renames,
+                    type_casts,
+                ),
                 trace=trace,
                 assert_algorithm=assert_algorithm,
                 online=online,
@@ -790,12 +795,14 @@ class Migrator(MigratorBase):
             runs.plan(
                 self,
                 models,
-                allow_drops=allow_drops,
-                ignore_changed_columns=ignore_changed_columns,
-                migration_id=migration_id,
-                renames=renames,
-                table_renames=table_renames,
-                type_casts=type_casts,
+                diff=DiffOptions(
+                    allow_drops,
+                    ignore_changed_columns,
+                    migration_id,
+                    renames,
+                    table_renames,
+                    type_casts,
+                ),
                 ignore_undeclared=ignore_undeclared,
                 snapshot=snapshot,
                 assert_algorithm=assert_algorithm,
@@ -841,12 +848,14 @@ class Migrator(MigratorBase):
             runs.plan_migrations(
                 self,
                 models,
-                allow_drops=allow_drops,
-                ignore_changed_columns=ignore_changed_columns,
-                migration_id=migration_id,
-                renames=renames,
-                table_renames=table_renames,
-                type_casts=type_casts,
+                diff=DiffOptions(
+                    allow_drops,
+                    ignore_changed_columns,
+                    migration_id,
+                    renames,
+                    table_renames,
+                    type_casts,
+                ),
                 ignore_undeclared=ignore_undeclared,
                 snapshot=snapshot,
                 assert_algorithm=assert_algorithm,
@@ -918,7 +927,7 @@ class Migrator(MigratorBase):
                 live,
                 older_than,
                 online=online,
-                diff=runs.DiffOptions(
+                diff=DiffOptions(
                     allow_drops,
                     ignore_changed_columns,
                     migration_id,
@@ -963,7 +972,7 @@ class Migrator(MigratorBase):
                 older_than,
                 exact_counts,
                 online,
-                diff=runs.DiffOptions(
+                diff=DiffOptions(
                     allow_drops,
                     ignore_changed_columns,
                     migration_id,

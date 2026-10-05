@@ -77,6 +77,7 @@ from sustained.migrations.core.requests import (
     TakeLock,
     Transaction,
 )
+from sustained.migrations.planning import DiffOptions
 from sustained.types import RowValue, SqlValue
 
 if TYPE_CHECKING:
@@ -552,12 +553,14 @@ class AsyncMigrator(MigratorBase):
                 validate=validate,
                 allow_out_of_order=allow_out_of_order,
                 models=models,
-                allow_drops=allow_drops,
-                ignore_changed_columns=ignore_changed_columns,
-                migration_id=migration_id,
-                renames=renames,
-                table_renames=table_renames,
-                type_casts=type_casts,
+                diff=DiffOptions(
+                    allow_drops,
+                    ignore_changed_columns,
+                    migration_id,
+                    renames,
+                    table_renames,
+                    type_casts,
+                ),
                 unrehearsed=unrehearsed,
                 reads=runs.RunReads(
                     assert_algorithm,
@@ -630,12 +633,14 @@ class AsyncMigrator(MigratorBase):
                 self,
                 scratch=scratch,
                 models=models,
-                allow_drops=allow_drops,
-                ignore_changed_columns=ignore_changed_columns,
-                migration_id=migration_id,
-                renames=renames,
-                table_renames=table_renames,
-                type_casts=type_casts,
+                diff=DiffOptions(
+                    allow_drops,
+                    ignore_changed_columns,
+                    migration_id,
+                    renames,
+                    table_renames,
+                    type_casts,
+                ),
                 trace=trace,
                 assert_algorithm=assert_algorithm,
                 online=online,
@@ -686,12 +691,14 @@ class AsyncMigrator(MigratorBase):
             runs.plan(
                 self,
                 models,
-                allow_drops=allow_drops,
-                ignore_changed_columns=ignore_changed_columns,
-                migration_id=migration_id,
-                renames=renames,
-                table_renames=table_renames,
-                type_casts=type_casts,
+                diff=DiffOptions(
+                    allow_drops,
+                    ignore_changed_columns,
+                    migration_id,
+                    renames,
+                    table_renames,
+                    type_casts,
+                ),
                 ignore_undeclared=ignore_undeclared,
                 snapshot=snapshot,
                 assert_algorithm=assert_algorithm,
@@ -762,12 +769,14 @@ class AsyncMigrator(MigratorBase):
             runs.plan_migrations(
                 self,
                 models,
-                allow_drops=allow_drops,
-                ignore_changed_columns=ignore_changed_columns,
-                migration_id=migration_id,
-                renames=renames,
-                table_renames=table_renames,
-                type_casts=type_casts,
+                diff=DiffOptions(
+                    allow_drops,
+                    ignore_changed_columns,
+                    migration_id,
+                    renames,
+                    table_renames,
+                    type_casts,
+                ),
                 ignore_undeclared=ignore_undeclared,
                 snapshot=snapshot,
                 assert_algorithm=assert_algorithm,
@@ -806,7 +815,7 @@ class AsyncMigrator(MigratorBase):
                 live,
                 older_than,
                 online=online,
-                diff=runs.DiffOptions(
+                diff=DiffOptions(
                     allow_drops,
                     ignore_changed_columns,
                     migration_id,
@@ -843,7 +852,7 @@ class AsyncMigrator(MigratorBase):
                 older_than,
                 exact_counts,
                 online,
-                diff=runs.DiffOptions(
+                diff=DiffOptions(
                     allow_drops,
                     ignore_changed_columns,
                     migration_id,

@@ -66,6 +66,7 @@ from sustained.migrations.migration import (
     migration_checksum,
 )
 from sustained.migrations.planning import (
+    DiffOptions,
     asserted_migration,
     drift_lines,
 )
@@ -165,12 +166,7 @@ def up(
     validate: bool,
     allow_out_of_order: bool,
     models: Optional[List[Type["Model"]]],
-    allow_drops: bool,
-    ignore_changed_columns: bool,
-    migration_id: Optional[str],
-    renames: Optional[Dict[str, str]],
-    table_renames: Optional[Dict[str, str]],
-    type_casts: Optional[Dict[str, str]],
+    diff: DiffOptions,
     unrehearsed: bool,
     reads: RunReads = RunReads(),
 ) -> Core[List[str]]:
@@ -185,12 +181,7 @@ def up(
             validate=validate,
             allow_out_of_order=allow_out_of_order,
             models=models,
-            allow_drops=allow_drops,
-            ignore_changed_columns=ignore_changed_columns,
-            migration_id=migration_id,
-            renames=renames,
-            table_renames=table_renames,
-            type_casts=type_casts,
+            diff=diff,
             unrehearsed=unrehearsed,
             reads=reads,
         )
@@ -208,12 +199,7 @@ def run_up(
     validate: bool,
     allow_out_of_order: bool,
     models: Optional[List[Type["Model"]]],
-    allow_drops: bool,
-    ignore_changed_columns: bool,
-    migration_id: Optional[str],
-    renames: Optional[Dict[str, str]],
-    table_renames: Optional[Dict[str, str]],
-    type_casts: Optional[Dict[str, str]],
+    diff: DiffOptions,
     unrehearsed: bool,
     reads: RunReads = RunReads(),
 ) -> Core[List[str]]:
@@ -299,12 +285,7 @@ def run_up(
                 generated = yield from plan_migrations(
                     m,
                     models,
-                    allow_drops=allow_drops,
-                    ignore_changed_columns=ignore_changed_columns,
-                    migration_id=migration_id,
-                    renames=renames,
-                    table_renames=table_renames,
-                    type_casts=type_casts,
+                    diff=diff,
                     assert_algorithm=reads.assert_algorithm,
                     online=reads.online,
                 )
@@ -658,12 +639,7 @@ def run_down(
 def plan(
     m: MigratorBase,
     models: List[Type["Model"]],
-    allow_drops: bool = False,
-    ignore_changed_columns: bool = False,
-    migration_id: Optional[str] = None,
-    renames: Optional[Dict[str, str]] = None,
-    table_renames: Optional[Dict[str, str]] = None,
-    type_casts: Optional[Dict[str, str]] = None,
+    diff: DiffOptions = DiffOptions(),
     ignore_undeclared: bool = True,
     snapshot: Optional["Snapshot"] = None,
     assert_algorithm: bool = False,
@@ -688,12 +664,7 @@ def plan(
     split = yield from plan_migrations(
         m,
         models,
-        allow_drops=allow_drops,
-        ignore_changed_columns=ignore_changed_columns,
-        migration_id=migration_id,
-        renames=renames,
-        table_renames=table_renames,
-        type_casts=type_casts,
+        diff=diff,
         ignore_undeclared=ignore_undeclared,
         snapshot=snapshot,
         assert_algorithm=assert_algorithm,
@@ -711,12 +682,7 @@ def plan(
 def plan_migrations(
     m: MigratorBase,
     models: List[Type["Model"]],
-    allow_drops: bool = False,
-    ignore_changed_columns: bool = False,
-    migration_id: Optional[str] = None,
-    renames: Optional[Dict[str, str]] = None,
-    table_renames: Optional[Dict[str, str]] = None,
-    type_casts: Optional[Dict[str, str]] = None,
+    diff: DiffOptions = DiffOptions(),
     ignore_undeclared: bool = True,
     snapshot: Optional["Snapshot"] = None,
     assert_algorithm: bool = False,
@@ -738,12 +704,7 @@ def plan_migrations(
         models,
         m._dialect,
         m._own_tables(),
-        allow_drops=allow_drops,
-        ignore_changed_columns=ignore_changed_columns,
-        migration_id=migration_id,
-        renames=renames,
-        table_renames=table_renames,
-        type_casts=type_casts,
+        diff=diff,
         ignore_undeclared=ignore_undeclared,
         snapshot=snapshot,
         online=online,
@@ -753,20 +714,6 @@ def plan_migrations(
         return generated
     context = yield ReadContext()
     return [asserted_migration(g, m._dialect, m._compiler, context) for g in generated]
-
-
-class DiffOptions(NamedTuple):
-    """
-    The diff options up() takes for the migration the models generate,
-    which impact() and preflight() take to analyze that same migration.
-    """
-
-    allow_drops: bool = False
-    ignore_changed_columns: bool = False
-    migration_id: Optional[str] = None
-    renames: Optional[Dict[str, str]] = None
-    table_renames: Optional[Dict[str, str]] = None
-    type_casts: Optional[Dict[str, str]] = None
 
 
 def impact(
@@ -807,12 +754,7 @@ def impact(
             yield from plan_migrations(
                 m,
                 list(models),
-                allow_drops=diff.allow_drops,
-                ignore_changed_columns=diff.ignore_changed_columns,
-                migration_id=diff.migration_id,
-                renames=diff.renames,
-                table_renames=diff.table_renames,
-                type_casts=diff.type_casts,
+                diff=diff,
                 assert_algorithm=assert_algorithm,
                 online=online,
             )

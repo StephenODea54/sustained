@@ -41,7 +41,7 @@ from sustained.migrations.core.requests import (
 )
 from sustained.migrations.core.tracing import Tracer, check_traceable
 from sustained.migrations.migration import AppliedRecord, Migration, MigrationStep
-from sustained.migrations.planning import rehearsed_form
+from sustained.migrations.planning import DiffOptions, rehearsed_form
 from sustained.migrations.rehearsal import (
     REHEARSAL_FAILED,
     Rehearsal,
@@ -194,12 +194,7 @@ def rehearse(
     m: MigratorBase,
     scratch: bool,
     models: Optional[List[Type["Model"]]],
-    allow_drops: bool,
-    ignore_changed_columns: bool,
-    migration_id: Optional[str],
-    renames: Optional[Dict[str, str]],
-    table_renames: Optional[Dict[str, str]],
-    type_casts: Optional[Dict[str, str]],
+    diff: DiffOptions,
     trace: bool = False,
     assert_algorithm: bool = False,
     online: bool = False,
@@ -240,12 +235,7 @@ def rehearse(
                 record_list,
                 before,
                 models,
-                allow_drops=allow_drops,
-                ignore_changed_columns=ignore_changed_columns,
-                migration_id=migration_id,
-                renames=renames,
-                table_renames=table_renames,
-                type_casts=type_casts,
+                diff=diff,
                 trace=trace,
                 assert_algorithm=assert_algorithm,
                 online=online,
@@ -291,12 +281,7 @@ def _rehearse_pinned(
     record_list: List[AppliedRecord],
     before: Optional[Dict[str, "IntrospectedTable"]],
     models: Optional[List[Type["Model"]]],
-    allow_drops: bool,
-    ignore_changed_columns: bool,
-    migration_id: Optional[str],
-    renames: Optional[Dict[str, str]],
-    table_renames: Optional[Dict[str, str]],
-    type_casts: Optional[Dict[str, str]],
+    diff: DiffOptions,
     trace: bool,
     assert_algorithm: bool = False,
     online: bool = False,
@@ -364,12 +349,7 @@ def _rehearse_pinned(
             drifts = yield from runs.plan_migrations(
                 m,
                 models,
-                allow_drops=allow_drops,
-                ignore_changed_columns=ignore_changed_columns,
-                migration_id=migration_id,
-                renames=renames,
-                table_renames=table_renames,
-                type_casts=type_casts,
+                diff=diff,
                 assert_algorithm=assert_algorithm,
                 online=online,
             )
@@ -401,7 +381,7 @@ def _rehearse_pinned(
                 landed[drifts[-1].id] = yield from runs.drift(
                     m,
                     models,
-                    ignore_changed_columns=ignore_changed_columns,
+                    ignore_changed_columns=diff.ignore_changed_columns,
                 )
         if up_error is None:
             yield from apply_each([x for x in pending if x.repeatable])

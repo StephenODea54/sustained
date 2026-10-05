@@ -14,6 +14,7 @@ from typing import (
     Dict,
     List,
     Mapping,
+    NamedTuple,
     Optional,
     Sequence,
     Tuple,
@@ -38,6 +39,21 @@ if TYPE_CHECKING:
     from sustained.impact import EngineContext, ImpactReport
     from sustained.introspect import Snapshot
     from sustained.model import Model
+
+
+class DiffOptions(NamedTuple):
+    """
+    The options a diff of the models takes. up(), rehearse(), plan(),
+    impact(), and preflight() pass them on for the migration the models
+    generate.
+    """
+
+    allow_drops: bool = False
+    ignore_changed_columns: bool = False
+    migration_id: Optional[str] = None
+    renames: Optional[Dict[str, str]] = None
+    table_renames: Optional[Dict[str, str]] = None
+    type_casts: Optional[Dict[str, str]] = None
 
 
 def generated_id(migration_id: Optional[str] = None) -> str:
@@ -88,36 +104,31 @@ def plan_migrations(
     models: List[Type["Model"]],
     dialect: Dialects,
     exclude_tables: Tuple[str, ...],
-    allow_drops: bool = False,
-    ignore_changed_columns: bool = False,
-    migration_id: Optional[str] = None,
-    renames: Optional[Dict[str, str]] = None,
-    table_renames: Optional[Dict[str, str]] = None,
-    type_casts: Optional[Dict[str, str]] = None,
+    diff: DiffOptions = DiffOptions(),
     ignore_undeclared: bool = True,
     snapshot: Optional["Snapshot"] = None,
     online: bool = False,
 ) -> List[Migration]:
     """
     The migrations a diff of the models against the database produces,
-    as plan_migration() plans them, with online passed on to
-    autogenerate_migrations() on PostgreSQL. The migrators write the
-    MySQL clauses online asks for themselves, after the diff, so the
-    diff is never asked for them.
+    as plan_migration() plans them, with the `diff` options and with
+    online passed on to autogenerate_migrations() on PostgreSQL. The
+    migrators write the MySQL clauses online asks for themselves, after
+    the diff, so the diff is never asked for them.
     """
     from sustained.autogenerate import autogenerate_migrations
 
     return autogenerate_migrations(
         connection,
         models,
-        id=generated_id(migration_id),
+        id=generated_id(diff.migration_id),
         dialect=dialect,
-        allow_drops=allow_drops,
-        ignore_changed_columns=ignore_changed_columns,
+        allow_drops=diff.allow_drops,
+        ignore_changed_columns=diff.ignore_changed_columns,
         exclude_tables=exclude_tables,
-        renames=renames,
-        table_renames=table_renames,
-        type_casts=type_casts,
+        renames=diff.renames,
+        table_renames=diff.table_renames,
+        type_casts=diff.type_casts,
         ignore_undeclared=ignore_undeclared,
         snapshot=snapshot,
         online=online and dialect is Dialects.POSTGRES,
