@@ -1076,6 +1076,20 @@ class RehearseCases(BothMigrators):
             await self.migrator(self.migrations(), connection=conn).rehearse()
         self.assertIn("autocommit", str(caught.exception))
 
+    @unittest.skipUnless(HAS_SQLITE_AUTOCOMMIT, "sqlite3 autocommit needs 3.12")
+    async def test_a_refused_begin_leaves_the_connection_in_a_transaction(self):
+        # A connection with autocommit=False always has a transaction
+        # open, so the server refuses the rehearsal's BEGIN. A ROLLBACK
+        # after it would end the driver's own transaction, and its
+        # commit() and rollback() would then raise.
+        conn = self.connect(autocommit=False)
+        with self.assertRaises(sqlite3.OperationalError):
+            await self.migrator(self.migrations(), connection=conn).rehearse()
+        self.assertTrue(conn.in_transaction)
+        conn.execute("CREATE TABLE z (x INTEGER)")
+        conn.commit()
+        conn.rollback()
+
     async def test_rehearsal_writes_no_failure_row_without_transactions(self):
         migrations = [Migration("002_bad", up="CRATE TABLE oops")]
         migrator = self.migrator(migrations)

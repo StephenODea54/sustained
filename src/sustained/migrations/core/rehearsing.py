@@ -295,12 +295,15 @@ def _rehearse_pinned(
     """
     records = {r.id: r for r in record_list}
     seq = _next_seq(record_list)
+    # The BEGIN runs before the try. When the server refuses it, no
+    # rehearsal transaction exists, and the rollback in the finally block
+    # would end a transaction the driver opened itself instead.
+    begin = m._compiler.begin_transaction_sql()
+    if begin is not None:
+        yield Execute(begin, pinned=True)
     m._rehearsing = True
     restore: Optional[List[str]] = None
     try:
-        begin = m._compiler.begin_transaction_sql()
-        if begin is not None:
-            yield Execute(begin, pinned=True)
         restore = yield from set_lock_timeout(m, lock_timeout)
         tracer: Optional[Tracer] = None
         if trace:
