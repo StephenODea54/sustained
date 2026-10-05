@@ -978,5 +978,18 @@ class MigratorPreflightTestCase(unittest.TestCase):
                 )
 
 
+class MixedImpactsTestCase(unittest.TestCase):
+    def test_a_mixed_run_keeps_each_attached_impact(self):
+        from sustained.impact import EngineContext
+        from sustained.impact.preflight import _impacts
+
+        attached = attach_impact([MigrationStatement(ADD, "001")], PG)[0]
+        statements = [attached, MigrationStatement("SELECT 1", "001")]
+        self.assertIsNone(_impacts(statements, PG, None))
+        found = _impacts(statements, PG, EngineContext("postgres", (16, 4)))
+        self.assertIs(found[0], attached.impact)
+        self.assertEqual(len(found), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -179,6 +179,25 @@ def analyze(
     )
 
 
+def impacts_of(
+    statements: Sequence[str],
+    dialect: "Dialects",
+    context: Optional[EngineContext] = None,
+) -> List[StatementImpact]:
+    """
+    Each statement's impact, in order: the `impact` a MigrationStatement
+    has, or else what `analyze()` gives with `context`, reading the
+    statements as one run.
+    """
+    attached: List[Optional[StatementImpact]] = [
+        getattr(s, "impact", None) for s in statements
+    ]
+    if all(impact is not None for impact in attached):
+        return [impact for impact in attached if impact is not None]
+    analyzed = analyze(statements, dialect, context).statements
+    return [a if a is not None else b for a, b in zip(attached, analyzed)]
+
+
 def attach_impact(
     statements: Sequence[str],
     dialect: "Dialects",

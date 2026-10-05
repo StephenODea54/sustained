@@ -40,17 +40,12 @@ def statement_impacts(
     statements as one run. Every entry is None on a dialect the analysis
     does not cover.
     """
-    from sustained.impact import analyze, supported
+    from sustained.impact import supported
+    from sustained.impact.analyzer import impacts_of
 
     if not supported(dialect):
         return [None] * len(statements)
-    attached: List[Optional[StatementImpact]] = [
-        getattr(s, "impact", None) for s in statements
-    ]
-    if all(impact is not None for impact in attached):
-        return attached
-    analyzed = analyze(statements, dialect).statements
-    return [a if a is not None else b for a, b in zip(attached, analyzed)]
+    return list(impacts_of(statements, dialect))
 
 
 def _impact_guard(rule: str, blocks: Callable[[StatementImpact], bool]) -> Guard:

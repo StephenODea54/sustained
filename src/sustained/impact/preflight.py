@@ -346,18 +346,15 @@ def _impacts(
     context: Optional[EngineContext],
 ) -> Optional[List["StatementImpact"]]:
     """
-    The statements' impacts when each has one attached, analyzed with
-    the context when it is given, and None when a context must be read
-    first.
+    The statements' impacts: the attached impact of each statement that
+    has one, and the others analyzed with the context. None when a
+    statement has no attached impact and a context must be read first.
     """
-    from sustained.impact.analyzer import analyze
+    from sustained.impact.analyzer import impacts_of
 
-    attached = [getattr(s, "impact", None) for s in statements]
-    if all(impact is not None for impact in attached):
-        return [impact for impact in attached if impact is not None]
-    if context is None:
+    if context is None and any(getattr(s, "impact", None) is None for s in statements):
         return None
-    return list(analyze(statements, dialect, context).statements)
+    return impacts_of(statements, dialect, context)
 
 
 def preflight(
