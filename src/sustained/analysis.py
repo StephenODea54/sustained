@@ -227,6 +227,13 @@ def _rewrite_tokens(statement: str, blank_literals: bool, rules: Lexicon) -> str
     return "".join(out)
 
 
+def _form(statement: str, blank_literals: bool, rules: Lexicon) -> str:
+    """The statement from _rewrite_tokens() with its whitespace collapsed."""
+    return _WHITESPACE_RE.sub(
+        " ", _rewrite_tokens(statement, blank_literals, rules)
+    ).strip()
+
+
 def normalize_statement(statement: str) -> str:
     """
     One statement on one line: comments removed, whitespace collapsed,
@@ -234,7 +241,7 @@ def normalize_statement(statement: str) -> str:
     literals keep their text. A '--' inside a literal starts no comment.
     """
     rules = scan_readings(None, False)[0]
-    return _WHITESPACE_RE.sub(" ", _rewrite_tokens(statement, False, rules)).strip()
+    return _form(statement, False, rules)
 
 
 def scannable_statement(statement: str, dialect: Optional["Dialects"] = None) -> str:
@@ -248,7 +255,7 @@ def scannable_statement(statement: str, dialect: Optional["Dialects"] = None) ->
     with standard literals and comments and Postgres dollar quotes.
     """
     rules = scan_readings(dialect, False)[0]
-    return _WHITESPACE_RE.sub(" ", _rewrite_tokens(statement, True, rules)).strip()
+    return _form(statement, True, rules)
 
 
 def scannable_forms(
@@ -269,7 +276,7 @@ def scannable_forms(
     """
     forms: List[str] = []
     for rules in scan_readings(dialect, "\\" in statement):
-        form = _WHITESPACE_RE.sub(" ", _rewrite_tokens(statement, True, rules)).strip()
+        form = _form(statement, True, rules)
         if form not in forms:
             forms.append(form)
     return tuple(forms)

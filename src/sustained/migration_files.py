@@ -373,18 +373,17 @@ def load_migrations(
     if not path.is_dir():
         raise ValueError(f"Migrations directory not found: {path}")
 
-    ups = {}
-    downs = {}
-    repeats = {}
+    ups: Dict[str, Path] = {}
+    downs: Dict[str, Path] = {}
+    repeats: Dict[str, Path] = {}
+    by_suffix = ((_UP_SUFFIX, ups), (_DOWN_SUFFIX, downs), (_REPEAT_SUFFIX, repeats))
     for entry in sorted(path.iterdir()):
         if entry.is_dir() or _ignored_name(entry.name):
             continue
-        if entry.name.endswith(_UP_SUFFIX):
-            ups[entry.name[: -len(_UP_SUFFIX)]] = entry
-        elif entry.name.endswith(_DOWN_SUFFIX):
-            downs[entry.name[: -len(_DOWN_SUFFIX)]] = entry
-        elif entry.name.endswith(_REPEAT_SUFFIX):
-            repeats[entry.name[: -len(_REPEAT_SUFFIX)]] = entry
+        for suffix, found in by_suffix:
+            if entry.name.endswith(suffix):
+                found[entry.name[: -len(suffix)]] = entry
+                break
         else:
             raise ValueError(
                 f"Migration file {entry.name!r} matches none of "
@@ -403,28 +402,29 @@ def load_migrations(
     if orphaned:
         raise ValueError(f"Down files without an up file: {', '.join(orphaned)}.")
 
-    def read(entry: Path) -> str:
+    def statements(entry: Path, empty: str = "") -> Tuple[str, List[str]]:
+        """
+        The file's text and its statements. Raises ValueError, with
+        `empty` after the message, when the file has no statements.
+        """
         text = entry.read_text(encoding="utf-8")
         # None means substitution is off, so files that happen to contain
         # '${...}' keep loading as they did before placeholders existed.
-        if placeholders is None:
-            return text
-        return substitute_placeholders(text, placeholders, entry.name)
+        if placeholders is not None:
+            text = substitute_placeholders(text, placeholders, entry.name)
+        split = split_sql_statements(text)
+        if not split:
+            raise ValueError(f"Migration file {entry.name!r} has no statements{empty}.")
+        return text, split
 
     migrations: List[Migration] = []
     for id in sorted(ups):
-        up_text = read(ups[id])
-        up_statements = split_sql_statements(up_text)
-        if not up_statements:
-            raise ValueError(f"Migration file {ups[id].name!r} has no statements.")
+        up_text, up_statements = statements(ups[id])
         down_statements = None
         if id in downs:
-            down_statements = split_sql_statements(read(downs[id]))
-            if not down_statements:
-                raise ValueError(
-                    f"Migration file {downs[id].name!r} has no statements; "
-                    "delete it if the migration is not reversible."
-                )
+            _, down_statements = statements(
+                downs[id], "; delete it if the migration is not reversible"
+            )
         migrations.append(
             Migration(
                 id,
@@ -434,14 +434,11 @@ def load_migrations(
             )
         )
     for id in sorted(repeats):
-        repeat_text = read(repeats[id])
-        statements = split_sql_statements(repeat_text)
-        if not statements:
-            raise ValueError(f"Migration file {repeats[id].name!r} has no statements.")
+        repeat_text, repeat_statements = statements(repeats[id])
         migrations.append(
             Migration(
                 id,
-                up=statements,
+                up=repeat_statements,
                 repeatable=True,
                 transactional=not declares_no_transaction(repeat_text),
             )
