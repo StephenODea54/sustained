@@ -108,7 +108,7 @@ The argument to `AggregateExpression` is raw SQL, so any dialect-specific quotin
 
 ### Functions
 
-`select_func()` calls any SQL function and treats each string argument as a column name. To pass a string as data, wrap it in `Literal`, and to pass it as raw SQL, wrap it in `Column`. Sustained does not quote the text of a `Column`:
+`select_func()` calls any SQL function and treats each string argument as a column name. To pass a string as data, wrap it in `Literal`, and to pass it as raw SQL, wrap it in `raw()`. Sustained does not quote the text of `raw()`:
 
 ```python
 from sustained import Literal
@@ -208,21 +208,21 @@ Venue.query().select_case(
 # FROM venues
 ```
 
-Wrap a result in `Column` when it names a column rather than a value:
+If a result names a column rather than a value, wrap it in `col()`. You can also write a condition as a `Predicate`, which quotes its columns for the dialect and writes its values as literals:
 
 ```python
-from sustained.expressions import Column
+from sustained import col
 
 Ticket.query().select_case(
     'charged',
-    Column('price'),
-    when_clauses=[('refunded_at IS NOT NULL', '0.00')],
+    col('price'),
+    when_clauses=[(col('refunded_at').not_null(), '0.00')],
 )
 # SELECT CASE WHEN refunded_at IS NOT NULL THEN '0.00' ELSE price END AS charged
 # FROM tickets
 ```
 
-The condition half of each pair is raw SQL and renders as written. A result that is neither a string nor a `Column` raises `TypeError` when the query renders.
+A string condition is raw SQL and renders as written, so never build one from a request. A result can also be `Literal`, `raw()`, or a `Func`.
 
 ### Subqueries in the select list
 

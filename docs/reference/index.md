@@ -12,7 +12,7 @@ If you are looking for how to do something specific, [Recipes](/recipes) is the 
 | --- | --- |
 | [Model](/reference/model) | `Model`, its class attributes, `create_model`, relation mappings, `RelationType` |
 | [QueryBuilder](/reference/query-builder) | Every query method: SELECT, joins, filters, groups, paging, writes, execution |
-| [Predicates and expressions](/reference/predicates) | `col`, `Predicate`, `Column`, `Literal`, `Func`, `Subquery`, the function registry |
+| [Predicates and expressions](/reference/predicates) | `col`, `Predicate`, `raw`, `Literal`, `Column` (deprecated), `Func`, `Subquery`, the function registry |
 | [Schema types](/reference/schema) | Column types, `ColumnDef` options, `Enum`, `Check`, `ForeignKey`, `Index`, `TableOptions`, DDL rendering |
 | [Migrations](/reference/migrations) | `Migration`, `Migrator`, `AsyncMigrator`, ddl steps, autogeneration, guards, SQL files, analysis |
 | [Impact](/reference/impact) | `analyze()`, `ImpactReport` and its parts, `Thresholds`, `EngineContext`, the report's text and JSON forms |

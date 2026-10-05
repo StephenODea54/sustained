@@ -193,7 +193,7 @@ Show.query().select('title').select_case(
 # SELECT title, CASE WHEN sold_out = 1 THEN 'sold out' ELSE 'open' END AS status
 ```
 
-`select_case()` treats each result as a string literal by default, so wrap a result in `Column('other_col')` when it names a column instead.
+`select_case()` treats each string result as a value, so wrap a result in `col('other_col')` when it names a column.
 
 ## Feed one query into another with a CTE
 

@@ -30,10 +30,12 @@ A column name often comes from a request, such as a sort parameter. Because Sust
 
 In `select()`, `'column AS alias'` sets an alias. Sustained reads the text after ` AS ` as the alias, so write a name that contains ` AS ` in quotes, such as `'"Cost AS Pct"'`. The rules apply to `select()`, `where()`, `having()`, `orderBy()`, `groupBy()`, `distinctOn()`, `returning()`, and `ColumnExpr`, and `from_()` takes a plain table name only.
 
-`Column()` is raw SQL. Sustained writes its text into the query as it is and does not quote it, so never build a `Column()` from a request. Pass other SQL through `QueryBuilder.raw()`, which is also not quoted:
+If you want a position to read its argument another way, wrap it. `col()` is always a column, `Literal` is always a value, and `raw()` is always raw SQL, in every position. Sustained writes the text of `raw()` into the query as it is and does not quote it, so never build it from a request. [Predicates and expressions](/reference/predicates#columns-values-and-raw-sql) lists the column and value positions.
 
 ```python
-Venue.query().orderBy(QueryBuilder.raw('LOWER(name)'))
+from sustained import raw
+
+Venue.query().orderBy(raw('LOWER(name)'))
 # SELECT * FROM venues ORDER BY LOWER(name) ASC
 ```
 
@@ -67,12 +69,12 @@ Show.query().where('starts_at', '=', None)
 
 `None` with any other operator raises `ValueError`.
 
-The value side does not have to be data. `Column` and `QueryBuilder.raw()` render as SQL text, and a `Func` or a `Subquery` renders as the function call or the parenthesized SELECT. A subquery there renders through the statement, so its own values become placeholders and join the parameter tuple in the order they appear in the SQL:
+The value side does not have to be data. `col()` renders as a quoted column, `raw()` renders as SQL text, and a `Func` or a `Subquery` renders as the function call or the parenthesized SELECT. A subquery there renders through the statement, so its own values become placeholders and join the parameter tuple in the order they appear in the SQL:
 
 ```python
-from sustained.expressions import Column, Func, Literal, Subquery
+from sustained.expressions import Func, Literal, Subquery
 
-Ticket.query().where('show_id', '=', Column('shows.id'))
+Ticket.query().where('show_id', '=', col('shows.id'))
 # SELECT * FROM tickets WHERE show_id = shows.id
 
 quota = Venue.query().select('capacity').where('id', '=', 3)

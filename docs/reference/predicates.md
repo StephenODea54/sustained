@@ -57,37 +57,55 @@ A composable condition. Pass a `Predicate` to `where()` or `having()` as the onl
 
 `bool(predicate)` always raises `TypeError`, so `a and b` fails instead of evaluating to one side of the expression. Use `&` and `|`.
 
-## Marking columns and literals
+## Columns, values, and raw SQL
 
-Sustained decides whether a bare string is a column name or a value, and in function arguments and `CASE` results it reads the string as a column. The two classes below override that reading.
+Every argument you pass to the builder is a column, a value, or raw SQL. Sustained quotes a column for the active dialect, binds a value as a parameter (or writes it as an escaped literal where the position renders literals), and writes raw SQL as it is.
+
+A plain string takes its meaning from its position. In a column position it is a column: `select()`, the column of `where()` and `having()`, `orderBy()`, `groupBy()`, aggregates, function arguments, window partitions and orders, both sides of a join `ON`, and the keys of `insert()` and `update()`. In a value position it is a value: the value of `where()`, the members of `IN` and `BETWEEN`, the values of `insert()` and `update()`, and `CASE` results.
+
+A column string follows one rule everywhere. It is `*`, `table.*`, a call on one column such as `'COUNT(id)'`, or a dotted path. Each part of a path takes the dialect's quotes, and a part already in `".."`, `[..]` or `` `..` `` quotes loses those quotes first. The keys of `insert()` and `update()` are one name each, so `'a.b'` there names one column called `a.b`.
+
+If you want to override the position, wrap the argument. Each wrapper means the same thing in every position.
 
 ```python
-Column(name)
+col(name)
 ```
-{: .sig #column}
+{: .sig #col-wrapper}
 
-The string is a column reference or raw SQL, which Sustained neither quotes it nor treats it as a value.
+The argument is a column. It follows the column string rule, also in a value position, so `where('a', '=', col('b'))` compares two columns.
 
 ```python
 Literal(value)
 ```
 {: .sig #literal}
 
-The value is a literal, even in a position where Sustained would read a column.
+The argument is a value, even in a column position. In a function argument, a select list, or a `CASE` result it renders as an inline literal. In `where()`, `insert()`, and `update()` it binds as a parameter.
 
 ```python
 from sustained import Literal
 
 query.select_func('COALESCE', 'nickname', 'name', Literal('unknown'), alias='display')
 
-# COALESCE(nickname, name, 'unknown') AS display
+# COALESCE("nickname", "name", 'unknown') AS "display"   (on Postgres)
 ```
+
+```python
+raw(sql)
+```
+{: .sig #raw}
+
+The argument is raw SQL. Sustained writes the text as it is, without quotes or parameters, so never build it from a request. `raw()` is in the `sustained` package, and `QueryBuilder.raw()` returns the same object.
+
+```python
+Column(sql)
+```
+{: .sig #column}
+
+`Column` is a deprecated name for `raw()`. It works in every position that takes `raw()` and raises a `DeprecationWarning` when you create one. It will be removed in 3.0.
 
 A literal can be a string, a number, a boolean, `None`, a `Decimal`, a `date`, a `datetime`, or `bytes`. A date or timestamp renders as a typed literal such as `DATE '2024-05-17'`, and a `datetime` with a time zone renders as `TIMESTAMPTZ` on Postgres and DuckDB. On the default dialect a date renders as its ISO text, because SQLite stores dates as text. MSSQL casts the ISO text to `DATE`, `DATETIME2`, or `DATETIMEOFFSET`. `bytes` renders as `X'...'`, as `decode('...', 'hex')` on Postgres, as `from_hex('...')` on DuckDB, and as `0x...` on MSSQL. A `Decimal` that is not finite raises `ValueError`. `str(query)` and CASE results render their values the same way.
 
-A string argument that is not a plain column path raises `ValueError` at render time.
-
-A `col()` reference is a column reference in the same two places: a function argument, and the value side of a comparison. It renders quoted for the active dialect and binds no parameter.
+A function argument string that is not a column name is quoted as one, so a forgotten `Literal()` makes the database report an unknown column. The default dialect writes names without quotes, so it raises `ValueError` for such a string.
 
 `Expression(value)`, in `sustained.types` and re-exported from `sustained.schema`, does the same job for schema defaults: raw SQL that renders as written in both the inline and the parameterized forms.
 
@@ -135,7 +153,7 @@ from sustained.expressions import Subquery
 
 ticket_count = (Ticket.query()
     .count()
-    .where('show_id', '=', Column('shows.id'))
+    .where('show_id', '=', col('shows.id'))
 )
 
 Show.query().select('title', Subquery(ticket_count, 'tickets_sold'))
@@ -218,8 +236,9 @@ These live in `sustained.types`. Use them to annotate code that accepts what the
 | --- | --- |
 | `DbReturnValue` | <code>str &#124; int &#124; float &#124; bool &#124; datetime &#124; date &#124; Decimal &#124; bytes</code> |
 | `Selectable` | Anything `select()` takes |
-| `CaseResult` | <code>DbReturnValue &#124; Column</code> |
-| `ColumnReference` | <code>str &#124; Expression</code>: the column of `where()`, `having()`, `orderBy()`, and `groupBy()` |
+| `CaseCondition` | <code>str &#124; Predicate</code>: a `CASE` condition, where a string is raw SQL |
+| `CaseResult` | <code>DbReturnValue &#124; Expression &#124; ColumnExpr &#124; Literal &#124; Func</code> |
+| `ColumnReference` | <code>str &#124; Expression &#124; ColumnExpr &#124; Literal &#124; Func</code>: the column of `where()`, `having()`, `orderBy()`, `groupBy()`, and a join `ON` |
 | `QueryResolvable` | <code>QueryBuilder &#124; Callable[..., QueryBuilder] &#124; Expression</code> |
 | `Join` | <code>BasicJoinMapping &#124; JoinMappingWithThrough</code> |
 

@@ -103,7 +103,7 @@ select_case(alias, else_result, when_clauses)
 ```
 {: .sig #select_case}
 
-A `CASE` expression from `(condition, result)` tuples. Results are string literals unless you wrap them in `Column()`.
+A `CASE` expression from `(condition, result)` tuples. A condition is a `Predicate` or a raw SQL string. A string result is a value, so wrap a result in `col()` when it names a column.
 
 Every registered function is also a method of its own name, so `query.coalesce('nick', 'name', alias='display')` and `query.select_func('COALESCE', ...)` build the same expression. The registered functions and their per-dialect spellings are in [Predicates and expressions](/reference/predicates#function-registry).
 
