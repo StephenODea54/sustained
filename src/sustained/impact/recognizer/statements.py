@@ -18,6 +18,7 @@ from sustained.impact.recognizer.cursor import (
     Cursor,
     Options,
     Unrecognized,
+    closing,
     depths,
     frozen,
     read_name,
@@ -151,17 +152,16 @@ class Statements(Cursor):
         case table name and alias. A derived table maps to None.
         """
         refs: Dict[str, Optional[str]] = {}
-        depth = 0
         index = 0
         opened = False
         while index < len(tokens):
             token = tokens[index]
             index += 1
-            if token.is_punct("(", ")"):
-                depth += 1 if token.text == "(" else -1
+            if token.is_punct("(", "["):
+                index = closing(tokens, index - 1) + 1
                 continue
-            if depth:
-                continue
+            if token.is_punct(")", "]"):
+                break
             if token.is_word(*_REFS_END):
                 opened = False
                 continue
@@ -182,14 +182,7 @@ class Statements(Cursor):
     ) -> Tuple[Optional[str], int]:
         """The dotted table name at `index`, or None for a derived table."""
         if index < len(tokens) and tokens[index].is_punct("("):
-            depth = 0
-            while index < len(tokens):
-                if tokens[index].is_punct("(", ")"):
-                    depth += 1 if tokens[index].text == "(" else -1
-                index += 1
-                if depth == 0:
-                    break
-            return None, index
+            return None, closing(tokens, index) + 1
         parts, index = read_name(tokens, index)
         return (".".join(parts) if parts else None), index
 

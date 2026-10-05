@@ -10,7 +10,13 @@ from sustained.impact.recognizer import (
     classify_default,
     recognize,
 )
-from sustained.impact.recognizer.cursor import Cursor, depths, read_name
+from sustained.impact.recognizer.cursor import (
+    Cursor,
+    Unrecognized,
+    closing,
+    depths,
+    read_name,
+)
 from sustained.impact.recognizer.sources import tables_read
 from sustained.impact.tokens import tokenize
 
@@ -787,6 +793,37 @@ class DepthsTestCase(unittest.TestCase):
         parsed = recognize("INSERT INTO t VALUES (ARRAY[1, 2]), (ARRAY[3])")
         self.assertEqual(parsed.options["rows"], 2)
         parsed = recognize("UPDATE t SET a = b[1] FROM u WHERE t.id = u.id")
+        self.assertEqual(parsed.table, "t")
+
+    def test_closing_finds_the_matching_bracket_or_the_end(self):
+        tokens = tokenize("(a (b) [c, d]) e", PG)
+        self.assertEqual(closing(tokens, 0), 10)
+        self.assertEqual(closing(tokens, 2), 4)
+        self.assertEqual(closing(tokenize("(a (b)", PG), 0), 5)
+
+    def test_cursor_readers_skip_commas_and_words_in_square_brackets(self):
+        def cursor(sql):
+            return Cursor(sql, tokenize(sql, PG), PG)
+
+        reader = cursor("(a[1], b) c")
+        self.assertEqual(len(reader.group()), 6)
+        self.assertTrue(reader.is_word("C"))
+        self.assertEqual(len(cursor("a[1, 2], b").item()), 6)
+        self.assertEqual(len(cursor("a[1, 2]) b").item()), 6)
+        self.assertEqual(len(cursor("a[x WHERE] WHERE b").up_to_word("WHERE")), 5)
+        self.assertEqual(len(cursor("a[1, 2], b").expression(frozenset())), 6)
+        self.assertEqual(len(cursor("a) b").rest()), 3)
+
+    def test_an_unclosed_group_is_unrecognized(self):
+        with self.assertRaises(Unrecognized):
+            Cursor("(a", tokenize("(a", PG), PG).group()
+
+    def test_a_derived_table_with_brackets_is_skipped(self):
+        parsed = recognize(
+            "UPDATE t SET a = 1 FROM (SELECT x[1] AS y) AS d, u WHERE t.id = u.id", PG
+        )
+        self.assertEqual(parsed.table, "t")
+        parsed = recognize("DELETE FROM t USING u) JOIN v WHERE t.id = 1", PG)
         self.assertEqual(parsed.table, "t")
 
 

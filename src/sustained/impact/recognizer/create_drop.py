@@ -19,6 +19,7 @@ from sustained.impact.recognizer.cursor import (
     Cursor,
     Options,
     Unrecognized,
+    depths,
     frozen,
     read_name,
 )
@@ -193,11 +194,8 @@ class CreateDrop(Cursor):
         self.accept("IF", "NOT", "EXISTS")
         name = self.name()
         tokens = self.body()
-        depth = 0
-        for index, token in enumerate(tokens):
-            if token.is_punct("(", ")"):
-                depth += 1 if token.text == "(" else -1
-            elif depth == 0 and token.is_word("ON"):
+        for index, token, depth in depths(tokens):
+            if depth == 0 and token.is_word("ON"):
                 sub = Cursor(self.sql, list(tokens[index + 1 :]), self.dialect)
                 table = sub.name()
                 self.table = table

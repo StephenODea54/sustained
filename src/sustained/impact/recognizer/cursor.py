@@ -8,6 +8,7 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
+    Callable,
     Dict,
     Iterator,
     List,
@@ -47,6 +48,17 @@ def depths(tokens: Sequence[Token], start: int = 0) -> Iterator[Tuple[int, Token
         yield index, token, depth
         if token.is_punct("(", "["):
             depth += 1
+
+
+def closing(tokens: Sequence[Token], start: int) -> int:
+    """
+    The index of the bracket that closes the one at `start`, or the
+    length of `tokens` when nothing closes it.
+    """
+    return next(
+        (i for i, t, d in depths(tokens, start) if d == 0 and i > start),
+        len(tokens),
+    )
 
 
 def read_name(tokens: Sequence[Token], index: int) -> Tuple[List[str], int]:
@@ -311,15 +323,9 @@ class Cursor:
     def group(self) -> List[Token]:
         """A parenthesized group, consumed; returns the tokens inside."""
         self.expect_punct("(")
-        start = self.pos
-        depth = 1
-        while depth:
-            token = self.next()
-            if token.is_punct("("):
-                depth += 1
-            elif token.is_punct(")"):
-                depth -= 1
-        return self.tokens[start : self.pos - 1]
+        tokens = self.advance_until(lambda i, t, d: d < 0)
+        self.expect_punct(")")
+        return tokens
 
     def body(self) -> List[Token]:
         """
@@ -336,17 +342,19 @@ class Cursor:
         statement on SQL Server outside parentheses. The caller's
         `finish()` reports the text from that word on.
         """
+        return self.advance_until(lambda i, t, d: d == 0 and self.starts_statement(i))
+
+    def advance_until(self, stop: Callable[[int, Token, int], bool]) -> List[Token]:
+        """
+        The tokens up to the first one `stop` accepts, or to the end,
+        consumed. `stop` takes each token's index, the token, and its
+        depth from `depths()`, counted from the cursor.
+        """
         start = self.pos
-        depth = 0
-        while not self.at_end():
-            token = self.tokens[self.pos]
-            if token.is_punct("("):
-                depth += 1
-            elif token.is_punct(")"):
-                depth -= 1
-            elif depth == 0 and self.starts_statement(self.pos):
-                break
-            self.pos += 1
+        self.pos = next(
+            (i for i, t, d in depths(self.tokens, start) if stop(i, t, d)),
+            len(self.tokens),
+        )
         return self.tokens[start : self.pos]
 
     def starts_statement(self, index: int) -> bool:
@@ -382,16 +390,7 @@ class Cursor:
             return False
         index += 1
         if index < len(tokens) and tokens[index].is_punct("("):
-            depth = 0
-            while index < len(tokens):
-                if tokens[index].is_punct("("):
-                    depth += 1
-                elif tokens[index].is_punct(")"):
-                    depth -= 1
-                    if depth == 0:
-                        break
-                index += 1
-            index += 1
+            index = closing(tokens, index) + 1
         return (
             index + 1 < len(tokens)
             and tokens[index].is_word("AS")
@@ -400,22 +399,11 @@ class Cursor:
 
     def item(self) -> List[Token]:
         """The tokens up to a comma at this depth or the end, consumed."""
-        start = self.pos
-        depth = 0
-        while not self.at_end():
-            token = self.tokens[self.pos]
-            if depth == 0 and self.starts_statement(self.pos):
-                break
-            if token.is_punct("(", "["):
-                depth += 1
-            elif token.is_punct(")", "]"):
-                if depth == 0:
-                    break
-                depth -= 1
-            elif depth == 0 and token.is_punct(","):
-                break
-            self.pos += 1
-        return self.tokens[start : self.pos]
+        return self.advance_until(
+            lambda i, t, d: d < 0
+            or d == 0
+            and (t.is_punct(",") or self.starts_statement(i))
+        )
 
     def expression(self, end_words: frozenset[str]) -> List[Token]:
         """
@@ -424,25 +412,17 @@ class Cursor:
         Server, at this depth, consumed. It takes at least one token.
         """
         start = self.pos
-        depth = 0
-        while not self.at_end():
-            token = self.tokens[self.pos]
-            if token.is_punct("(", "["):
-                depth += 1
-            elif token.is_punct(")", "]"):
-                if depth == 0:
-                    break
-                depth -= 1
-            elif depth == 0 and self.pos > start:
-                if token.is_punct(","):
-                    break
-                if token.kind == WORD and token.value in end_words:
-                    break
-                if self.starts_statement(self.pos):
-                    break
-            elif depth == 0 and token.is_punct(","):
-                break
-            self.pos += 1
+        self.advance_until(
+            lambda i, t, d: d < 0
+            or d == 0
+            and (
+                t.is_punct(",")
+                or i > start
+                and (
+                    t.kind == WORD and t.value in end_words or self.starts_statement(i)
+                )
+            )
+        )
         if self.pos == start:
             raise Unrecognized(f"expected an expression {self.where()}")
         return self.tokens[start : self.pos]
@@ -452,20 +432,10 @@ class Cursor:
         The tokens up to one of the words, or a word that starts another
         statement on SQL Server, outside parentheses, consumed.
         """
-        start = self.pos
-        depth = 0
-        while not self.at_end():
-            token = self.tokens[self.pos]
-            if token.is_punct("("):
-                depth += 1
-            elif token.is_punct(")"):
-                depth -= 1
-            elif depth == 0 and token.kind == WORD and token.value in words:
-                break
-            elif depth == 0 and self.starts_statement(self.pos):
-                break
-            self.pos += 1
-        return self.tokens[start : self.pos]
+        return self.advance_until(
+            lambda i, t, d: d == 0
+            and (t.kind == WORD and t.value in words or self.starts_statement(i))
+        )
 
     def text(self, tokens: Sequence[Token]) -> str:
         """The source text the tokens span, as the statement spells it."""
