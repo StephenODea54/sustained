@@ -1,7 +1,8 @@
 import unittest
 
 from sustained import Model, RelationType
-from sustained.builders.join_builder import OnClauseBuilder
+from sustained.builder import QueryBuilder
+from sustained.builders.join_builder import JoinClauseBuilder, OnClauseBuilder
 from sustained.builders.where_builder import WhereClauseBuilder
 from sustained.naming import fold_name, resolve_public_name
 
@@ -165,6 +166,41 @@ class TestClauseBuilderSpellings(unittest.TestCase):
             OnClauseBuilder().nope
         with self.assertRaises(AttributeError):
             OnClauseBuilder()._conditions_missing
+
+
+class TestGeneratedMethods(unittest.TestCase):
+    def test_clause_and_join_methods_are_defined_on_the_class(self):
+        for cls, names in (
+            (QueryBuilder, ("where", "orHavingNotBetween", "fullOuterJoinRelated")),
+            (QueryBuilder, ("orderBy", "andWhereILike", "crossJoin")),
+            (WhereClauseBuilder, ("whereIn", "orWhereRaw", "havingNull")),
+            (JoinClauseBuilder, ("join", "leftOuterJoin", "rightJoinRelated")),
+        ):
+            for name in names:
+                with self.subTest(cls=cls.__name__, name=name):
+                    self.assertIn(name, dir(cls))
+                    self.assertEqual(getattr(cls, name).__name__, name)
+
+    def test_keyword_arguments_reach_the_handler(self):
+        self.assertEqual(
+            str(Show.query().where(column_or_callable="title", op="=", val="x")),
+            str(Show.query().where("title", "=", "x")),
+        )
+        self.assertEqual(
+            str(Show.query().where("a", "=", 1).orWhereNotIn(col="id", vals=[1])),
+            str(Show.query().where("a", "=", 1).orWhereNotIn("id", [1])),
+        )
+
+    def test_a_prefixed_first_clause_raises_when_called(self):
+        method = WhereClauseBuilder(Show).orWhere
+        with self.assertRaisesRegex(
+            RuntimeError, "Cannot start a where clause with 'or'."
+        ):
+            method("a", "=", 1)
+
+    def test_a_raw_join_refuses_an_unknown_keyword(self):
+        with self.assertRaises(TypeError):
+            Show.query().leftJoin("tickets", usign=["show_id"])
 
 
 if __name__ == "__main__":

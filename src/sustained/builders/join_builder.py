@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import re
 from typing import (
     TYPE_CHECKING,
-    Any,
     Callable,
+    Dict,
     List,
+    NamedTuple,
     Optional,
     Set,
     Tuple,
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from ..builder import QueryBuilder
     from ..compilers import Compiler
     from ..model import Model
+    from ..types import AnyQuery
 
 
 def _column_on(reference: str, model_class: Type["Model"]) -> Optional[str]:
@@ -191,110 +192,69 @@ class JoinClauseBuilder:
 
     def __getattr__(self, name: str) -> Callable[..., "JoinClauseBuilder"]:
         """
-        Dynamically handles method calls for joins.
+        Resolves any other spelling of a join method, such as LEFT_JOIN or
+        leftjoin, without regard to case or underscores.
         """
         # Private names are never join methods; see QueryBuilder.__getattr__.
-        if name.startswith("_"):
+        canonical = (
+            None if name.startswith("_") else resolve_public_name(type(self), name)
+        )
+        if canonical is None:
             raise AttributeError(
                 f"'{type(self).__name__}' object has no attribute '{name}'"
             )
+        return cast(Callable[..., "JoinClauseBuilder"], getattr(self, canonical))
 
-        join_prefixes = "|".join(k for k in self._JOIN_METHOD_MAP.keys() if k)
-        join_match = re.match(
-            rf"^({join_prefixes})?(Join)(Related)?$",
-            name.replace("_", ""),
-            re.IGNORECASE,
-        )
+    def _add_join(
+        self,
+        join_type: str,
+        table: str,
+        *args: "JoinArgument",
+        using: Optional[List[str]] = None,
+    ) -> None:
+        """
+        Adds a raw join. One name covers three call signatures, so the
+        arguments are sorted out here rather than in the signature. The
+        typed overloads a caller sees live in join_builder.pyi.
+        """
+        quoted_table = self._compiler.quote_fully_qualified_identifier(table)
 
-        if join_match:
-            join_prefix, _, related_suffix = join_match.groups()
-            # The regex matches without regard to case, so `LeftJoin` and
-            # `leftjoin` reach here with a prefix the map does not hold.
-            # Look the prefix up by its lowered spelling, and report a
-            # spelling with no entry the way any missing attribute is
-            # reported, so hasattr() keeps working.
-            lowered = {k.lower(): v for k, v in self._JOIN_METHOD_MAP.items()}
-            sql_join_type = lowered.get((join_prefix or "").lower())
-            if sql_join_type is None:
-                raise AttributeError(
-                    f"'{type(self).__name__}' object has no attribute '{name}'"
+        if using:
+            if args:
+                raise ValueError(
+                    "Cannot use both an ON clause and a USING clause in the same join."
                 )
-
-            if related_suffix:
-                # This is a ...joinRelated() call
-                def dynamic_join_caller(
-                    relation_name: str, alias: Optional[str] = None
-                ) -> "JoinClauseBuilder":
-                    self._join_related_internal(sql_join_type, relation_name, alias)
-                    return self
-
-                return dynamic_join_caller
+            if not isinstance(using, list):
+                raise TypeError("The 'using' argument must be a list of column names.")
+            quoted_using = ", ".join(self._compiler.quote_identifier(u) for u in using)
+            join_condition = f"USING ({quoted_using})"
+        elif len(args) == 3 or (len(args) == 1 and callable(args[0])):
+            on_builder = OnClauseBuilder(self._compiler)
+            if len(args) == 3:
+                # Static syntax: .join('table', 'col1', '=', 'col2')
+                col1, op, col2 = cast(Tuple[str, str, OnOperand], args)
+                on_builder.on(col1, op, col2)
             else:
-                # This is a raw ...join() call
-                # One name covers three call signatures, so the arguments are
-                # sorted out below rather than in the signature. The typed
-                # overloads a caller sees live in join_builder.pyi.
-                def dynamic_raw_join_caller(
-                    table: str, *args: Any, **kwargs: Any
-                ) -> "JoinClauseBuilder":
-                    using = kwargs.get("using")
-                    quoted_table = self._compiler.quote_fully_qualified_identifier(
-                        table
-                    )
+                # Composable syntax: .join('table', lambda j: ...)
+                cast(Callable[[OnClauseBuilder], None], args[0])(on_builder)
 
-                    if using:
-                        if args:
-                            raise ValueError(
-                                "Cannot use both an ON clause and a USING clause in the same join."
-                            )
-                        if not isinstance(using, list):
-                            raise TypeError(
-                                "The 'using' argument must be a list of column names."
-                            )
-                        quoted_using = ", ".join(
-                            self._compiler.quote_identifier(u) for u in using
-                        )
-                        join_condition = f"USING ({quoted_using})"
-                    elif len(args) == 3 or (len(args) == 1 and callable(args[0])):
-                        on_clause_builder = OnClauseBuilder(self._compiler)
-                        if len(args) == 3:
-                            # Static syntax: .join('table', 'col1', '=', 'col2')
-                            col1, op, col2 = args
-                            on_clause_builder.on(col1, op, col2)
-                        else:
-                            # Composable syntax: .join('table', lambda j: ...)
-                            args[0](on_clause_builder)
-                        # The ON clause can hold a subquery, whose values
-                        # belong to the statement, so it renders later.
-                        on_builder = on_clause_builder
+            # The ON clause can contain a subquery, whose values belong to
+            # the statement, so it renders later.
+            def render_join(ctx: RenderContext) -> str:
+                return f"{join_type} {quoted_table} ON {on_builder.render(ctx)}"
 
-                        def render_join(ctx: RenderContext) -> str:
-                            return (
-                                f"{sql_join_type} {quoted_table} "
-                                f"ON {on_builder.render(ctx)}"
-                            )
+            self._joins.append(render_join)
+            return
+        elif not args and join_type == "CROSS JOIN":
+            # A cross join pairs every row with every row, so it takes no
+            # condition.
+            join_condition = ""
+        else:
+            raise ValueError(
+                "Invalid arguments for join method. Use `join(table, col1, op, col2)`, `join(table, lambda j: ...)`, or `join(table, using=['col1', 'col2'])`."
+            )
 
-                        self._joins.append(render_join)
-                        return self
-                    elif not args and sql_join_type == "CROSS JOIN":
-                        # A cross join pairs every row with every row, so it
-                        # takes no condition.
-                        join_condition = ""
-                    else:
-                        raise ValueError(
-                            "Invalid arguments for join method. Use `join(table, col1, op, col2)`, `join(table, lambda j: ...)`, or `join(table, using=['col1', 'col2'])`."
-                        )
-
-                    join_clause = f"{sql_join_type} {quoted_table} {join_condition}"
-                    join_clause = join_clause.rstrip()
-                    self._joins.append(join_clause)
-                    return self
-
-                return dynamic_raw_join_caller
-
-        raise AttributeError(
-            f"'{type(self).__name__}' object has no attribute '{name}'"
-        )
+        self._joins.append(f"{join_type} {quoted_table} {join_condition}".rstrip())
 
     def _join_related_internal(
         self, join_type: str, relation_name: str, alias: Optional[str] = None
@@ -408,3 +368,68 @@ class JoinClauseBuilder:
         second_join_type = "INNER JOIN" if join_type == "JOIN" else join_type
         join_clause2 = f"{second_join_type} {join_table_part} ON {on_clause2}"
         self._joins.append(join_clause2)
+
+
+OnOperand = Union[str, Expression, "AnyQuery"]
+"""The right side of an ON condition: a column, raw SQL, or a subquery."""
+
+JoinArgument = Union[OnOperand, Callable[[OnClauseBuilder], None]]
+"""A positional argument of a raw join after the table: an ON part or a lambda."""
+
+
+class JoinMethod(NamedTuple):
+    """One generated join method: its SQL join type and whether it joins a relation."""
+
+    join_type: str
+    related: bool
+
+
+def _join_methods() -> Dict[str, JoinMethod]:
+    """Every join method name: each join type as a raw join and a relation join."""
+    methods = {}
+    for prefix, join_type in JoinClauseBuilder._JOIN_METHOD_MAP.items():
+        base = f"{prefix}Join" if prefix else "join"
+        methods[base] = JoinMethod(join_type, False)
+        methods[f"{base}Related"] = JoinMethod(join_type, True)
+    return methods
+
+
+_JOIN_METHODS = _join_methods()
+"""The generated join methods by name. QueryBuilder delegates each one."""
+
+
+def _raw_join_method(name: str, join_type: str) -> Callable[..., JoinClauseBuilder]:
+    """Builds one raw join method. The typed overloads live in join_builder.pyi."""
+
+    def call(
+        self: JoinClauseBuilder,
+        table: str,
+        *args: JoinArgument,
+        using: Optional[List[str]] = None,
+    ) -> JoinClauseBuilder:
+        self._add_join(join_type, table, *args, using=using)
+        return self
+
+    call.__name__ = name
+    call.__qualname__ = f"JoinClauseBuilder.{name}"
+    return call
+
+
+def _related_join_method(name: str, join_type: str) -> Callable[..., JoinClauseBuilder]:
+    """Builds one relation join method."""
+
+    def call(
+        self: JoinClauseBuilder, relation_name: str, alias: Optional[str] = None
+    ) -> JoinClauseBuilder:
+        self._join_related_internal(join_type, relation_name, alias)
+        return self
+
+    call.__name__ = name
+    call.__qualname__ = f"JoinClauseBuilder.{name}"
+    return call
+
+
+for _name, _method in _JOIN_METHODS.items():
+    _build = _related_join_method if _method.related else _raw_join_method
+    setattr(JoinClauseBuilder, _name, _build(_name, _method.join_type))
+del _name, _method, _build

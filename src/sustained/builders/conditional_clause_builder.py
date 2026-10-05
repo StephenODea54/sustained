@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import re
 from typing import (
     TYPE_CHECKING,
     Callable,
+    Dict,
     List,
+    NamedTuple,
     Optional,
     Sequence,
     Tuple,
     Type,
     Union,
+    cast,
 )
 
 from ..expressions import (
@@ -21,6 +23,7 @@ from ..expressions import (
     like,
     null_test,
 )
+from ..naming import resolve_public_name
 from ..rendering import (
     Renderable,
     RenderContext,
@@ -58,19 +61,22 @@ class ConditionalClauseBuilder:
     # The clause keyword, set by each subclass.
     _clause_keyword = ""
 
-    _WHERE_METHOD_MAP = {
-        "where": "_add_internal",
-        "whereIn": "_add_in_internal",
-        "whereNotIn": "_add_in_internal",
-        "whereBetween": "_add_between_internal",
-        "whereNotBetween": "_add_between_internal",
-        "whereExists": "_add_exists_internal",
-        "whereNotExists": "_add_exists_internal",
-        "whereLike": "_add_like_internal",
-        "whereILike": "_add_like_internal",
-        "whereNull": "_add_null_internal",
-        "whereNotNull": "_add_null_internal",
-        "whereRaw": "_add_raw_internal",
+    # Each where-family method: the handler it calls and the variant
+    # arguments it passes. A having name and an and/or prefix reach the
+    # same entry; see _CLAUSE_METHODS below.
+    _WHERE_METHOD_MAP: Dict[str, Tuple[str, Dict[str, object]]] = {
+        "where": ("_add_internal", {}),
+        "whereIn": ("_add_in_internal", {"negate": False}),
+        "whereNotIn": ("_add_in_internal", {"negate": True}),
+        "whereBetween": ("_add_between_internal", {"negate": False}),
+        "whereNotBetween": ("_add_between_internal", {"negate": True}),
+        "whereExists": ("_add_exists_internal", {"negate": False}),
+        "whereNotExists": ("_add_exists_internal", {"negate": True}),
+        "whereLike": ("_add_like_internal", {"operator": "LIKE"}),
+        "whereILike": ("_add_like_internal", {"operator": "ILIKE"}),
+        "whereNull": ("_add_null_internal", {"negate": False}),
+        "whereNotNull": ("_add_null_internal", {"negate": True}),
+        "whereRaw": ("_add_raw_internal", {}),
     }
 
     def __init__(
@@ -90,65 +96,32 @@ class ConditionalClauseBuilder:
 
     def __getattr__(self, name: str) -> Callable[..., "ConditionalClauseBuilder"]:
         """
-        Dynamically handles method calls for clauses.
+        Resolves any other spelling of a clause method, such as WHERE_IN
+        or orwherein, without regard to case or underscores.
         """
         # Private names are never clause methods; see QueryBuilder.__getattr__.
-        if name.startswith("_"):
+        canonical = (
+            None if name.startswith("_") else resolve_public_name(type(self), name)
+        )
+        if canonical is None:
             raise AttributeError(
                 f"'{type(self).__name__}' object has no attribute '{name}'"
             )
+        return cast(Callable[..., "ConditionalClauseBuilder"], getattr(self, canonical))
 
-        # Names match without regard to case or underscores, the same way
-        # QueryBuilder resolves them, so WHERE_IN reaches whereIn.
-        folded = name.replace("_", "")
-        base_name = re.sub(r"^(or|and)", "", folded, flags=re.IGNORECASE)
-        lookup_name = re.sub(r"^having", "where", base_name.lower())
-        lowered = {k.lower(): v for k, v in self._WHERE_METHOD_MAP.items()}
-        method_name = lowered.get(lookup_name)
-
-        if method_name:
-            conjunction_str = re.match(r"^(or|and)", folded, flags=re.IGNORECASE)
-            if conjunction_str:
-                conjunction = conjunction_str.group(0).upper()
-            else:
-                conjunction = "AND" if self._clauses else ""
-
-            # Check if this is the first clause and an "or" or "and" prefix was used
-            if not self._clauses and conjunction in ("OR", "AND"):
-                raise RuntimeError(
-                    f"Cannot start a {self._clause_keyword.lower()} clause with '{conjunction.lower()}'."
-                )
-
-            internal_method = getattr(self, method_name)
-
-            # A pass-through to the internal handler resolved above. The
-            # typed overloads a caller sees live in the stub beside this file.
-            def dynamic_caller(*args: SqlValue) -> "ConditionalClauseBuilder":
-                if "not" in base_name.lower():
-                    op_override = True  # Flag to indicate "NOT" version
-                else:
-                    op_override = False
-
-                if "ilike" in base_name.lower():
-                    op_like_override = "ILIKE"
-                elif "like" in base_name.lower():
-                    op_like_override = "LIKE"
-                else:
-                    op_like_override = None
-
-                internal_method(
-                    conjunction,
-                    *args,
-                    op_override=op_override,
-                    op_like_override=op_like_override,
-                )
-                return self
-
-            return dynamic_caller
-
-        raise AttributeError(
-            f"'{type(self).__name__}' object has no attribute '{name}'"
-        )
+    def _conjunction(self, prefix: str) -> str:
+        """
+        The conjunction a new clause joins with. A clause with no and/or
+        prefix joins with AND after the first clause. A prefixed first
+        clause raises, because it has nothing to join.
+        """
+        if not prefix:
+            return "AND" if self._clauses else ""
+        if not self._clauses:
+            raise RuntimeError(
+                f"Cannot start a {self._clause_keyword.lower()} clause with '{prefix}'."
+            )
+        return prefix.upper()
 
     def _add_between_internal(
         self,
@@ -157,11 +130,10 @@ class ConditionalClauseBuilder:
         val1: DbReturnValue,
         val2: DbReturnValue,
         *,
-        op_override: bool = False,
-        op_like_override: Optional[str] = None,
+        negate: bool,
     ) -> None:
         """Internal handler for adding `BETWEEN` and `NOT BETWEEN` clauses."""
-        render = between(self._quote_column(col), val1, val2, negate=op_override)
+        render = between(self._quote_column(col), val1, val2, negate=negate)
         self._clauses.append((conjunction, render))
 
     def _add_exists_internal(
@@ -169,11 +141,10 @@ class ConditionalClauseBuilder:
         conjunction: str,
         query: QueryResolvable,
         *,
-        op_override: bool = False,
-        op_like_override: Optional[str] = None,
+        negate: bool,
     ) -> None:
         """Internal handler for adding `EXISTS` and `NOT EXISTS` clauses."""
-        actual_op = "NOT EXISTS" if op_override else "EXISTS"
+        actual_op = "NOT EXISTS" if negate else "EXISTS"
         inner = self._subquery(
             query,
             "EXISTS",
@@ -220,13 +191,11 @@ class ConditionalClauseBuilder:
         col: str,
         pattern: str,
         *,
-        op_override: bool = False,
-        op_like_override: Optional[str] = None,
+        operator: str,
     ) -> None:
         """Internal handler for adding `LIKE` and `ILIKE` clauses."""
-        actual_op = op_like_override if op_like_override else "LIKE"
         self._clauses.append(
-            (conjunction, like(self._quote_column(col), pattern, actual_op))
+            (conjunction, like(self._quote_column(col), pattern, operator))
         )
 
     def _add_raw_internal(
@@ -234,9 +203,6 @@ class ConditionalClauseBuilder:
         conjunction: str,
         sql: str,
         params: Optional[Sequence[SqlValue]] = None,
-        *,
-        op_override: bool = False,
-        op_like_override: Optional[str] = None,
     ) -> None:
         """
         Internal handler for raw predicates with bound values. Values are
@@ -265,11 +231,10 @@ class ConditionalClauseBuilder:
         conjunction: str,
         col: ColumnReference,
         *,
-        op_override: bool = False,
-        op_like_override: Optional[str] = None,
+        negate: bool,
     ) -> None:
         """Internal handler for adding `IS NULL` and `IS NOT NULL` clauses."""
-        render = null_test(self._quote_column(col), negate=op_override)
+        render = null_test(self._quote_column(col), negate=negate)
         self._clauses.append((conjunction, render))
 
     def _add_internal(
@@ -280,9 +245,6 @@ class ConditionalClauseBuilder:
         ],
         op: Optional[str] = None,
         val: Optional[Union[Expression, DbReturnValue]] = None,
-        *,
-        op_override: bool = False,
-        op_like_override: Optional[str] = None,
     ) -> None:
         """Internal handler for adding clauses."""
         from ..expressions import Predicate
@@ -355,21 +317,20 @@ class ConditionalClauseBuilder:
         col: str,
         vals: Union[List[DbReturnValue], QueryResolvable],
         *,
-        op_override: bool = False,
-        op_like_override: Optional[str] = None,
+        negate: bool,
     ) -> None:
         """Internal handler for adding `IN` and `NOT IN` clauses."""
         quoted_col = self._quote_column(col)
         if isinstance(vals, list):
-            render = in_list(quoted_col, vals, negate=op_override)
+            render = in_list(quoted_col, vals, negate=negate)
         else:
             inner = self._subquery(
                 vals,
-                "NOT IN" if op_override else "IN",
+                "NOT IN" if negate else "IN",
                 "Argument for In/NotIn must be a list, a callable, "
                 "QueryBuilder.raw(), or QueryBuilder instance.",
             )
-            render = in_subquery(quoted_col, inner, negate=op_override)
+            render = in_subquery(quoted_col, inner, negate=negate)
         self._clauses.append((conjunction, render))
 
     def _build_clause_list_string(self, ctx: RenderContext) -> str:
@@ -388,3 +349,64 @@ class ConditionalClauseBuilder:
 
     def has_clauses(self) -> bool:
         return bool(self._clauses)
+
+
+class ClauseMethod(NamedTuple):
+    """
+    One generated clause method: the clause family it belongs to ("where"
+    or "having"), its and/or prefix ("" for none), the handler it calls,
+    and the variant arguments it passes to the handler.
+    """
+
+    family: str
+    prefix: str
+    handler: str
+    variant: Dict[str, object]
+
+
+def _clause_methods() -> Dict[str, ClauseMethod]:
+    """
+    Every clause method name: each where-family entry under its where and
+    having names, each with no prefix, an and prefix, and an or prefix.
+    """
+    methods = {}
+    for where_name, (
+        handler,
+        variant,
+    ) in ConditionalClauseBuilder._WHERE_METHOD_MAP.items():
+        for family in ("where", "having"):
+            base = family + where_name[len("where") :]
+            for prefix in ("", "and", "or"):
+                name = prefix + base[0].upper() + base[1:] if prefix else base
+                methods[name] = ClauseMethod(family, prefix, handler, variant)
+    return methods
+
+
+_CLAUSE_METHODS = _clause_methods()
+"""The generated clause methods by name. QueryBuilder delegates each one."""
+
+
+def _clause_method(
+    name: str, method: ClauseMethod
+) -> Callable[..., ConditionalClauseBuilder]:
+    """
+    Builds one clause method. Both clause builders accept the where and
+    the having names, so a nested callable can use either. The typed
+    overloads a caller sees live in the stub beside this file.
+    """
+
+    def call(
+        self: ConditionalClauseBuilder, *args: object, **kwargs: object
+    ) -> ConditionalClauseBuilder:
+        handler = getattr(self, method.handler)
+        handler(self._conjunction(method.prefix), *args, **method.variant, **kwargs)
+        return self
+
+    call.__name__ = name
+    call.__qualname__ = f"ConditionalClauseBuilder.{name}"
+    return call
+
+
+for _name, _method in _CLAUSE_METHODS.items():
+    setattr(ConditionalClauseBuilder, _name, _clause_method(_name, _method))
+del _name, _method

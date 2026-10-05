@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -24,6 +23,8 @@ from sustained.builders import (
     SelectClauseBuilder,
     WhereClauseBuilder,
 )
+from sustained.builders.conditional_clause_builder import _CLAUSE_METHODS
+from sustained.builders.join_builder import _JOIN_METHODS
 from sustained.dialects import Dialects
 from sustained.exceptions import DialectError
 from sustained.expressions import (
@@ -1406,16 +1407,12 @@ class QueryBuilder:
     def __getattr__(self, name: str) -> Callable[..., "QueryBuilder"]:
         """
         Resolves a method name that is not spelled exactly as defined, and
-        the dynamic join, where, and having families.
+        the registered SQL functions.
 
         A name matches without regard to case or underscores, so whereIn,
         where_in, WHEREIN, and WHERE_IN all reach the same method. Code
         ported from Objection.js keeps working whatever capitalization it
         uses.
-
-        Every caller below passes its arguments straight through to the
-        clause builder that validates them, so the signatures stay open.
-        The typed overloads a caller sees live in builder.pyi.
         """
         # Never resolve private or dunder names dynamically. Protocols such as
         # copy and pickle probe for these before __init__ has populated the
@@ -1426,64 +1423,50 @@ class QueryBuilder:
                 f"'{type(self).__name__}' object has no attribute '{name}'"
             )
 
-        folded = name.replace("_", "")
         canonical = resolve_public_name(type(self), name)
         if canonical is not None:
             return cast(Callable[..., "QueryBuilder"], getattr(self, canonical))
-
-        # Handle join methods by delegating to JoinClauseBuilder
-        join_prefixes = "|".join(
-            k for k in self._join_builder._JOIN_METHOD_MAP.keys() if k
-        )
-        if re.match(rf"^({join_prefixes})?(Join)(Related)?$", folded, re.IGNORECASE):
-            return self._delegate("_join_builder", folded)
-
-        # Handle where methods by delegating to WhereClauseBuilder
-        where_suffixes = "|".join(self._where_builder._WHERE_METHOD_MAP.keys())
-        if re.match(rf"^(or|and)?({where_suffixes})$", folded, re.IGNORECASE):
-            return self._delegate("_where_builder", folded)
-
-        # Handle having methods by delegating to HavingClauseBuilder
-        having_suffixes = "|".join(
-            k.replace("where", "having")
-            for k in self._where_builder._WHERE_METHOD_MAP.keys()
-        )
-        if re.match(rf"^(or|and)?({having_suffixes})$", folded, re.IGNORECASE):
-            return self._delegate("_having_builder", folded)
-
-        # orderBy lives on its clause builder under one exact spelling, so
-        # the call goes out under that spelling.
-        if folded.lower() == "orderby":
-            return self._delegate("_order_by_builder", "orderBy")
 
         # Handle registered functions dynamically. The registry matches
         # without regard to case, and a name such as STRING_AGG keeps its
         # underscore there.
         try:
             FunctionRegistry.get_metadata(name)
-
-            def dynamic_func_caller(*args: Any, **kwargs: Any) -> "QueryBuilder":
-                self.select_func(name, *args, **kwargs)
-                return self
-
-            return dynamic_func_caller
         except KeyError:
-            # It's not a registered function, so continue to the final AttributeError
-            pass
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}'"
+            ) from None
 
-        raise AttributeError(
-            f"'{type(self).__name__}' object has no attribute '{name}'"
-        )
-
-    def _delegate(self, builder: str, name: str) -> Callable[..., "QueryBuilder"]:
-        """Returns a caller that runs `name` on a clause builder, then returns the query."""
-
-        def dynamic_caller(*args: Any, **kwargs: Any) -> "QueryBuilder":
-            getattr(getattr(self, builder), name)(*args, **kwargs)
+        def dynamic_func_caller(*args: Any, **kwargs: Any) -> "QueryBuilder":
+            self.select_func(name, *args, **kwargs)
             return self
 
-        return dynamic_caller
+        return dynamic_func_caller
 
+
+def _delegate(builder: str, name: str) -> Callable[..., QueryBuilder]:
+    """
+    Builds a QueryBuilder method that runs `name` on one of its clause
+    builders, then returns the query. The clause builder validates the
+    arguments, so the signature stays open. The typed overloads a caller
+    sees live in builder.pyi.
+    """
+
+    def call(self: QueryBuilder, *args: Any, **kwargs: Any) -> QueryBuilder:
+        getattr(getattr(self, builder), name)(*args, **kwargs)
+        return self
+
+    call.__name__ = name
+    call.__qualname__ = f"QueryBuilder.{name}"
+    return call
+
+
+for _name, _clause in _CLAUSE_METHODS.items():
+    setattr(QueryBuilder, _name, _delegate(f"_{_clause.family}_builder", _name))
+for _name in _JOIN_METHODS:
+    setattr(QueryBuilder, _name, _delegate("_join_builder", _name))
+setattr(QueryBuilder, "orderBy", _delegate("_order_by_builder", "orderBy"))
+del _name, _clause
 
 WriteBuilder = QueryBuilder
 """

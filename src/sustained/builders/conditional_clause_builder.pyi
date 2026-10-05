@@ -9,7 +9,7 @@ from ..rendering import RenderContext
 from ..types import ColumnReference, DbReturnValue, Expression, QueryResolvable
 
 class ConditionalClauseBuilder:
-    _WHERE_METHOD_MAP: Dict[str, str]
+    _WHERE_METHOD_MAP: Dict[str, Tuple[str, Dict[str, object]]]
     def __init__(
         self, model_class: Type[Model], compiler: Optional[Compiler] = None
     ) -> None: ...
