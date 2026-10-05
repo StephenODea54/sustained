@@ -168,7 +168,7 @@ def no_lock_without_timeout() -> Guard:
     that.
 
     The impact analysis reads timeout scopes the same way, through
-    `sustained.impact.state.TimeoutScope`; its `pg.lock_timeout` finding
+    `sustained.impact.timeouts.TimeoutScope`; its `pg.lock_timeout` finding
     covers every lock that blocks reads or writes, where this rule reads
     only ALTER TABLE and DROP TABLE.
     """
@@ -176,7 +176,7 @@ def no_lock_without_timeout() -> Guard:
     def guard(
         statements: Sequence[MigrationStatement], dialect: Dialects
     ) -> List[Verdict]:
-        from sustained.impact.state import TimeoutScope
+        from sustained.impact.timeouts import TimeoutScope
 
         if dialect is not Dialects.POSTGRES:
             return []

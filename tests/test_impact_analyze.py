@@ -22,7 +22,8 @@ from sustained.impact.context import Relation
 from sustained.impact.intent import intent_agrees
 from sustained.impact.model import Intent, ParsedStatement
 from sustained.impact.recognizer import recognize
-from sustained.impact.state import RunState, TimeoutScope, sets_a_timeout
+from sustained.impact.state import RunState
+from sustained.impact.timeouts import TimeoutScope, sets_a_timeout
 
 PG = Dialects.POSTGRES
 
