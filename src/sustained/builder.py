@@ -836,9 +836,7 @@ class QueryBuilder:
         With analyze=True the statement actually executes, so do not use it
         on writes you do not want applied.
         """
-        import time
-
-        from sustained.execution import connection_scope, cursor_scope, notify_statement
+        from sustained.execution import connection_scope, cursor_scope, execute_timed
 
         sql, params = self._compiler.prepare_execution(*self.to_sql())
         prefix = self._compiler.compile_explain(analyze)
@@ -846,9 +844,7 @@ class QueryBuilder:
             connection_scope(connection, self._model_class._connection) as conn,
             cursor_scope(conn) as cursor,
         ):
-            started = time.perf_counter()
-            cursor.execute(f"{prefix} {sql}", params)
-            notify_statement(f"{prefix} {sql}", params, time.perf_counter() - started)
+            execute_timed(cursor, f"{prefix} {sql}", params)
             return [tuple(row) for row in cursor.fetchall()]
 
     def offset(self, value: int) -> "QueryBuilder":
@@ -1260,28 +1256,21 @@ class QueryBuilder:
         Raises:
             AmbiguousColumns: If the result set repeats a column name.
         """
-        import time
-
-        from sustained.execution import notify_statement
+        from sustained.execution import (
+            connection_scope,
+            cursor_columns,
+            cursor_scope,
+            execute_timed,
+        )
 
         if self._stmt_type != "select":
             raise ValueError("Only SELECT queries return result sets.")
-        from sustained.execution import checked_columns, connection_scope, cursor_scope
-
         with (
             connection_scope(connection, self._model_class._connection) as conn,
             cursor_scope(conn) as cursor,
         ):
-            sql, params = self._compiler.prepare_execution(*self.to_sql())
-            started = time.perf_counter()
-            cursor.execute(sql, params)
-            notify_statement(sql, params, time.perf_counter() - started)
-            columns = (
-                checked_columns([desc[0] for desc in cursor.description])
-                if cursor.description
-                else []
-            )
-            return columns, cursor.fetchall()
+            execute_timed(cursor, *self._compiler.prepare_execution(*self.to_sql()))
+            return cursor_columns(cursor), cursor.fetchall()
 
     def to_dicts(
         self, connection: Optional[Binding] = None
@@ -1407,10 +1396,8 @@ class QueryBuilder:
         Raises:
             AmbiguousColumns: If the result set repeats a column name.
         """
-        import time
-
         from sustained.aio import resolve_adapter
-        from sustained.execution import checked_columns, notify_statement
+        from sustained.execution import checked_columns, timed_statement
 
         if self._stmt_type != "select":
             raise ValueError("Only SELECT queries return result sets.")
@@ -1418,9 +1405,8 @@ class QueryBuilder:
         # A pool runs no statement itself, so the fetch goes to the
         # adapter its scope() checks out.
         async with resolve_adapter(adapter, self._model_class).scope() as resolved:
-            started = time.perf_counter()
-            columns, rows = await resolved.fetch(sql, params)
-        notify_statement(sql, params, time.perf_counter() - started)
+            with timed_statement(sql, params):
+                columns, rows = await resolved.fetch(sql, params)
         names = checked_columns(columns)
         return [dict(zip(names, row)) for row in rows]
 

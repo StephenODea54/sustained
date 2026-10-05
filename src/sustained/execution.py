@@ -115,6 +115,36 @@ def notify_statement(sql: str, params: Tuple[SqlValue, ...], duration: float) ->
         _statement_listener(sql, params, duration)
 
 
+@contextmanager
+def timed_statement(sql: str, params: Tuple[SqlValue, ...]) -> Iterator[None]:
+    """
+    Times the statement run inside the block and passes it to the
+    statement listener. A statement that raises is not reported.
+    """
+    started = time.perf_counter()
+    yield
+    notify_statement(sql, params, time.perf_counter() - started)
+
+
+def execute_timed(cursor: Cursor, sql: str, params: Tuple[SqlValue, ...]) -> None:
+    """Executes one statement on the cursor and reports it to the listener."""
+    with timed_statement(sql, params):
+        cursor.execute(sql, params)
+
+
+def cursor_columns(cursor: Cursor) -> List[str]:
+    """
+    The column names of the cursor's result set, or an empty list for a
+    statement with no result set.
+
+    Raises:
+        AmbiguousColumns: If the result set repeats a column name.
+    """
+    if not cursor.description:
+        return []
+    return checked_columns([desc[0] for desc in cursor.description])
+
+
 # Per-thread stack of connections pinned by transaction() blocks that were
 # opened against a pool. Statements inside the block use the pinned
 # connection instead of checking a fresh one out.
