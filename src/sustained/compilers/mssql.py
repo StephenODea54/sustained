@@ -27,6 +27,7 @@ _SIMPLE_OPERAND_RE = re.compile(r"^(?:[\w.]|\[(?:[^\]]|\]\])*\])+$|^-?\d+(?:\.\d
 
 class MssqlCompiler(Compiler):
     supports_partial_index = True
+    rewrites_index_predicate = True
 
     _IDENT_QUOTES = ("[", "]")
     # SQL Server has no NULLS FIRST or NULLS LAST.

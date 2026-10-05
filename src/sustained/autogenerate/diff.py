@@ -648,10 +648,24 @@ def _column_type_changed(
 
 def index_details_differ(index: "Index", actual_index: IntrospectedIndex) -> bool:
     """
-    Whether the declared partial predicate, key part directions, or
-    prefix lengths differ from the introspected index. A read that does
-    not report these details compares as equal, so a dialect without
-    that read does not report drift on every run.
+    Whether the declared key part directions or prefix lengths differ
+    from the introspected index. A read that does not report these
+    details compares as equal, so a dialect without that read does not
+    report drift on every run.
+    """
+    if not actual_index.details:
+        return False
+    declared_desc = tuple(part.desc for part in index.key_parts)
+    if declared_desc != tuple(actual_index.descending):
+        return True
+    declared_prefix = tuple(part.prefix_length for part in index.key_parts)
+    return declared_prefix != tuple(actual_index.prefix_lengths)
+
+
+def index_predicate_differs(index: "Index", actual_index: IntrospectedIndex) -> bool:
+    """
+    Whether the declared partial predicate differs from the introspected
+    one. A read that does not report index details compares as equal.
     """
     if not actual_index.details:
         return False
@@ -659,13 +673,19 @@ def index_details_differ(index: "Index", actual_index: IntrospectedIndex) -> boo
     live_where = (
         None if actual_index.where is None else normalize_predicate(actual_index.where)
     )
-    if declared_where != live_where:
-        return True
-    declared_desc = tuple(part.desc for part in index.key_parts)
-    if declared_desc != tuple(actual_index.descending):
-        return True
-    declared_prefix = tuple(part.prefix_length for part in index.key_parts)
-    return declared_prefix != tuple(actual_index.prefix_lengths)
+    return declared_where != live_where
+
+
+def _predicate_note(
+    model: Type["Model"], index: "Index", actual_index: IntrospectedIndex
+) -> str:
+    """The note for an index whose predicate reads differently."""
+    live = "no predicate" if actual_index.where is None else repr(actual_index.where)
+    declared = "no predicate" if index.where is None else repr(index.where)
+    return (
+        f"{model.tableName} index '{index.name}' predicate reads as {live}, "
+        f"the model declares {declared}"
+    )
 
 
 def _diff_indexes(
@@ -694,6 +714,15 @@ def _diff_indexes(
             or index_details_differ(index, actual_index)
         ):
             diff.changed_indexes.append((model, index, actual_index))
+        elif index_predicate_differs(index, actual_index):
+            if compiler.rewrites_index_predicate:
+                # The engine rewrites the predicate on the way in, so a
+                # mismatch here is a doubt, and a doubt never drops.
+                diff.constraint_notes.append(
+                    _predicate_note(model, index, actual_index)
+                )
+            else:
+                diff.changed_indexes.append((model, index, actual_index))
     for name, actual_index in actual_table.indexes.items():
         if name in declared_indexes:
             continue

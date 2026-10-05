@@ -979,6 +979,10 @@ class Compiler:
 
     # Whether CREATE INDEX accepts a WHERE predicate (partial index).
     supports_partial_index = False
+    # Whether the engine stores a partial index predicate in its own
+    # spelling rather than as written. Autogenerate reports a predicate
+    # mismatch on such an engine as a note and never rebuilds the index.
+    rewrites_index_predicate = False
     # Whether a key part accepts a prefix length, as in `col(10)`.
     supports_index_prefix = False
     # Whether a key part accepts DESC.

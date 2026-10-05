@@ -17,6 +17,7 @@ class PostgresCompiler(Compiler):
     _typed_temporal_literals = True
     _ALTER_TYPE_KEYWORD = "TYPE"
     supports_partial_index = True
+    rewrites_index_predicate = True
 
     _stores_column_comments = True
     # The %s style used by psycopg and psycopg2.

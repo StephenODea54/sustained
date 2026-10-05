@@ -187,6 +187,10 @@ class User(Model):
     indexes = [Index('ix_users_email', 'email', unique=True)]
 ```
 
+`Index` takes `where=` for a partial index predicate. In place of a column name, it also takes `IndexColumn(name, desc=False, prefix_length=None)` for a DESC key part or a MySQL prefix index. The diff compares the columns, uniqueness, directions, and prefix lengths exactly. When one of them changes, the generated migration drops the index and creates it again.
+
+Postgres and SQL Server store a predicate in their own spelling. For example, Postgres stores `a > 0 AND b > 0` as `((a > 0) AND (b > 0))`. Sustained normalizes both spellings before it compares them. On these two engines, a predicate that still differs after normalization is reported as a constraint note, and the generated migration does not change the index. To change the predicate on Postgres or SQL Server, write that migration by hand. SQLite stores the predicate as you wrote it, so there a predicate change drops the index and creates it again.
+
 `autoincrement` requires a single integer primary key. On DuckDB and Presto it raises `DialectError`, because they have no identity columns. A model with `tableColumns` also gets strict column-name access automatically, so a misspelled column raises `AttributeError`.
 
 ## Enum columns
