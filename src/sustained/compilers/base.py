@@ -119,6 +119,19 @@ def _identifier_parts(text: str) -> Optional[List[Tuple[str, bool]]]:
         position += 1
 
 
+def write_column_name(name: str) -> str:
+    """
+    Reads a column key of insert() or update(). A key that is one name in
+    "..", [..] or `..` quotes loses the quotes, so the target dialect quotes
+    it again. Any other key stays as given, and the compiler quotes it as
+    one name.
+    """
+    parts = _identifier_parts(name) if name else None
+    if parts is not None and len(parts) == 1 and parts[0][1]:
+        return parts[0][0]
+    return name
+
+
 def table_qualifier(table_sql: str) -> str:
     """
     Everything in front of the last name of a rendered table reference,

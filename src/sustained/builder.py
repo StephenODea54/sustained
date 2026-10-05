@@ -25,6 +25,7 @@ from sustained.builders import (
 )
 from sustained.builders.conditional_clause_builder import _CLAUSE_METHODS
 from sustained.builders.join_builder import _JOIN_METHODS
+from sustained.compilers.base import write_column_name
 from sustained.dialects import Dialects
 from sustained.exceptions import DialectError
 from sustained.expressions import (
@@ -900,7 +901,9 @@ class QueryBuilder:
                     "All rows in a multi-row insert must share the same columns."
                 )
         self._stmt_type = "insert"
-        self._insert_rows = [dict(row) for row in rows]
+        self._insert_rows = [
+            {write_column_name(k): v for k, v in row.items()} for row in rows
+        ]
         return self
 
     def _has_expression_values(self) -> bool:
@@ -944,7 +947,8 @@ class QueryBuilder:
         if not isinstance(query, QueryBuilder):
             raise TypeError("insert_from() requires a QueryBuilder as the source.")
         self._stmt_type = "insert_from"
-        self._insert_from = (list(columns) if columns else None, query)
+        names = [write_column_name(c) for c in columns] if columns else None
+        self._insert_from = (names, query)
         return self
 
     def create_table_as(
@@ -1033,7 +1037,7 @@ class QueryBuilder:
         if not values:
             raise ValueError("update() requires at least one column to set.")
         self._stmt_type = "update"
-        self._update_values = dict(values)
+        self._update_values = {write_column_name(k): v for k, v in values.items()}
         return self
 
     def delete(self) -> "QueryBuilder":

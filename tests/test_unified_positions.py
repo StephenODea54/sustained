@@ -163,5 +163,37 @@ class TestWrappersInEveryPosition(unittest.TestCase):
         )
 
 
+class TestQuotedWriteKeys(unittest.TestCase):
+    """insert() and update() keys accept a name already in quotes."""
+
+    def tearDown(self) -> None:
+        Thing.set_dialect(Dialects.DEFAULT)
+
+    def test_quoted_keys_take_the_target_quotes(self) -> None:
+        cases = (
+            (Dialects.POSTGRES, "[Full Name]", '"Full Name"'),
+            (Dialects.MYSQL, '"Full Name"', "`Full Name`"),
+            (Dialects.MSSQL, "`Full Name`", "[Full Name]"),
+        )
+        for dialect, key, quoted in cases:
+            with self.subTest(dialect=dialect.name):
+                Thing.set_dialect(dialect)
+                insert = str(Thing.query().insert({key: 1}))
+                self.assertIn(f"({quoted}) VALUES (1)", insert)
+                update = str(Thing.query().where("id", "=", 1).update({key: 1}))
+                self.assertIn(f"SET {quoted} = 1", update)
+
+    def test_insert_from_takes_quoted_columns(self) -> None:
+        Thing.set_dialect(Dialects.POSTGRES)
+        source = Thing.query().select("a")
+        sql = str(Thing.query().insert_from(['"a.b"', "c"], source))
+        self.assertIn('INSERT INTO "things" ("a.b", "c") SELECT', sql)
+
+    def test_dotted_key_stays_one_name(self) -> None:
+        Thing.set_dialect(Dialects.POSTGRES)
+        sql = str(Thing.query().insert({"a.b": 1}))
+        self.assertIn('("a.b") VALUES (1)', sql)
+
+
 if __name__ == "__main__":
     unittest.main()
