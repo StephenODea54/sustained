@@ -795,6 +795,15 @@ class QueryBuilder:
         OFFSET stripped, and returns the row count. The query itself is
         left unmodified.
         """
+        from sustained.execution import count_rows
+
+        return count_rows(self, connection)
+
+    def _count_query(self) -> "QueryBuilder":
+        """
+        A SELECT COUNT(*) AS total wrapped around a copy of this query,
+        for total(). The copy drops ORDER BY, LIMIT, TOP, and OFFSET.
+        """
         inner = self.clone()
         inner._order_by_builder = OrderByClauseBuilder(
             self._model_class, compiler=self._compiler
@@ -805,7 +814,7 @@ class QueryBuilder:
         wrapper = QueryBuilder(self._model_class, dialect=self._dialect)
         wrapper.from_(inner, alias="sustained_count")
         wrapper.count("*", alias="total")
-        return int(wrapper.to_dicts(connection)[0]["total"])
+        return wrapper
 
     def cursor_page(
         self, column: str, page_size: int, after: Optional[SqlValue] = None
@@ -836,16 +845,9 @@ class QueryBuilder:
         With analyze=True the statement actually executes, so do not use it
         on writes you do not want applied.
         """
-        from sustained.execution import connection_scope, cursor_scope, execute_timed
+        from sustained.execution import explain_plan
 
-        sql, params = self._compiler.prepare_execution(*self.to_sql())
-        prefix = self._compiler.compile_explain(analyze)
-        with (
-            connection_scope(connection, self._model_class._connection) as conn,
-            cursor_scope(conn) as cursor,
-        ):
-            execute_timed(cursor, f"{prefix} {sql}", params)
-            return [tuple(row) for row in cursor.fetchall()]
+        return explain_plan(self, connection, analyze)
 
     def offset(self, value: int) -> "QueryBuilder":
         """
@@ -1247,31 +1249,6 @@ class QueryBuilder:
             self._eager_relations.append(name)
         return self
 
-    def _run_select_raw(
-        self, connection: Optional[Binding]
-    ) -> Tuple[List[str], Sequence[Sequence[RowValue]]]:
-        """
-        Executes this SELECT and returns (column names, raw rows).
-
-        Raises:
-            AmbiguousColumns: If the result set repeats a column name.
-        """
-        from sustained.execution import (
-            connection_scope,
-            cursor_columns,
-            cursor_scope,
-            execute_timed,
-        )
-
-        if self._stmt_type != "select":
-            raise ValueError("Only SELECT queries return result sets.")
-        with (
-            connection_scope(connection, self._model_class._connection) as conn,
-            cursor_scope(conn) as cursor,
-        ):
-            execute_timed(cursor, *self._compiler.prepare_execution(*self.to_sql()))
-            return cursor_columns(cursor), cursor.fetchall()
-
     def to_dicts(
         self, connection: Optional[Binding] = None
     ) -> List[Dict[str, RowValue]]:
@@ -1279,40 +1256,29 @@ class QueryBuilder:
         Executes the SELECT and returns rows as plain dicts keyed by column
         name. Eager loading is not applied; use run() for model instances.
         """
-        columns, rows = self._run_select_raw(connection)
-        return [dict(zip(columns, row)) for row in rows]
+        from sustained.execution import fetch_dicts
 
-    # pandas and pyarrow are optional installs. Naming their types here
-    # would make Sustained fail to type check for anyone who skips them,
-    # so the DataFrame and Table types are left open.
+        return fetch_dicts(self, connection)
+
+    # pandas and pyarrow are optional installs, so the DataFrame and Table
+    # types are left open. See execution.fetch_dataframe().
     def to_df(self, connection: Optional[Binding] = None) -> Any:
         """
         Executes the SELECT and returns a pandas DataFrame with the query's
         column names. Requires pandas to be installed.
         """
-        try:
-            import pandas
-        except ImportError:
-            raise RuntimeError(
-                "to_df() requires pandas. Install it with: pip install pandas"
-            ) from None
-        columns, rows = self._run_select_raw(connection)
-        return pandas.DataFrame.from_records(list(rows), columns=columns)
+        from sustained.execution import fetch_dataframe
+
+        return fetch_dataframe(self, connection)
 
     def to_arrow(self, connection: Optional[Binding] = None) -> Any:
         """
         Executes the SELECT and returns a pyarrow Table with the query's
         column names. Requires pyarrow to be installed.
         """
-        try:
-            import pyarrow
-        except ImportError:
-            raise RuntimeError(
-                "to_arrow() requires pyarrow. Install it with: pip install pyarrow"
-            ) from None
-        columns, rows = self._run_select_raw(connection)
-        data = {name: [row[i] for row in rows] for i, name in enumerate(columns)}
-        return pyarrow.table(data)
+        from sustained.execution import fetch_arrow
+
+        return fetch_arrow(self, connection)
 
     def run(
         self, connection: Optional[Binding] = None
@@ -1336,29 +1302,9 @@ class QueryBuilder:
         Raises:
             AmbiguousColumns: If the result set repeats a column name.
         """
-        from sustained.execution import (
-            connection_scope,
-            cursor_scope,
-            in_transaction,
-            rollback_quietly,
-            run_query,
-        )
+        from sustained.execution import run
 
-        with (
-            connection_scope(connection, self._model_class._connection) as conn,
-            cursor_scope(conn) as cursor,
-        ):
-            try:
-                return run_query(self, conn, cursor)
-            except BaseException:
-                # A write that raises outside a transaction() block would
-                # leave its partial work pending, such as the rows an
-                # executemany sent before the failing one, and the next
-                # write's commit would keep them. On Postgres the failure
-                # also leaves the session aborted.
-                if self._stmt_type != "select" and not in_transaction(conn):
-                    rollback_quietly(conn)
-                raise
+        return run(self, connection)
 
     async def arun(
         self, adapter: Optional["AsyncAdapter"] = None
@@ -1384,8 +1330,9 @@ class QueryBuilder:
         Async first(): executes with LIMIT 1 and returns one instance or
         None. The query itself is left unmodified.
         """
-        results = cast(List["Model"], await self._first_query().arun(adapter))
-        return results[0] if results else None
+        from sustained.aio import first_model_async
+
+        return await first_model_async(self, adapter)
 
     async def ato_dicts(
         self, adapter: Optional["AsyncAdapter"] = None
@@ -1396,19 +1343,9 @@ class QueryBuilder:
         Raises:
             AmbiguousColumns: If the result set repeats a column name.
         """
-        from sustained.aio import resolve_adapter
-        from sustained.execution import checked_columns, timed_statement
+        from sustained.aio import fetch_dicts_async
 
-        if self._stmt_type != "select":
-            raise ValueError("Only SELECT queries return result sets.")
-        sql, params = self._compiler.prepare_execution(*self.to_sql())
-        # A pool runs no statement itself, so the fetch goes to the
-        # adapter its scope() checks out.
-        async with resolve_adapter(adapter, self._model_class).scope() as resolved:
-            with timed_statement(sql, params):
-                columns, rows = await resolved.fetch(sql, params)
-        names = checked_columns(columns)
-        return [dict(zip(names, row)) for row in rows]
+        return await fetch_dicts_async(self, adapter)
 
     def first(self, connection: Optional[Binding] = None) -> Optional["Model"]:
         """
@@ -1423,8 +1360,9 @@ class QueryBuilder:
         Returns:
             The first model instance or None.
         """
-        results = cast(List["Model"], self._first_query().run(connection))
-        return results[0] if results else None
+        from sustained.execution import first_model
+
+        return first_model(self, connection)
 
     def _first_query(self) -> "QueryBuilder":
         """

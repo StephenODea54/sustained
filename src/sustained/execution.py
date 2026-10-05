@@ -10,11 +10,13 @@ the dialect's placeholder: qmark for the default and MSSQL dialects
 
 from __future__ import annotations
 
+import importlib
 import threading
 import time
 from contextlib import contextmanager
 from typing import (
     TYPE_CHECKING,
+    Any,
     Callable,
     Dict,
     Generator,
@@ -702,25 +704,22 @@ def run_query(
     query: "AnyQuery", conn: Connection, cursor: Cursor
 ) -> Union[List["Model"], WriteResult]:
     """QueryBuilder.run() itself, on a connection and cursor already open."""
-    started = time.perf_counter()
     per_row_count: Optional[int] = None
     batch = insert_batch(query)
     if batch is not None:
-        if batch.batchable:
-            cursor.executemany(batch.sql, batch.values())
-        else:
-            # The cursor reports the count of its last execute only, so
-            # the per-row counts are added up here, as arun() does.
-            counts = []
-            for row_sql, row_values in batch.rows:
-                cursor.execute(row_sql, row_values)
-                counts.append(int(cursor.rowcount))
-            per_row_count = total_row_count(counts)
-        notify_statement(batch.sql, batch.flat_params(), time.perf_counter() - started)
+        with timed_statement(batch.sql, batch.flat_params()):
+            if batch.batchable:
+                cursor.executemany(batch.sql, batch.values())
+            else:
+                # The cursor reports the count of its last execute only, so
+                # the per-row counts are added up here, as arun() does.
+                counts = []
+                for row_sql, row_values in batch.rows:
+                    cursor.execute(row_sql, row_values)
+                    counts.append(int(cursor.rowcount))
+                per_row_count = total_row_count(counts)
     else:
-        sql, params = query._compiler.prepare_execution(*query.to_sql())
-        cursor.execute(sql, params)
-        notify_statement(sql, params, time.perf_counter() - started)
+        execute_timed(cursor, *query._compiler.prepare_execution(*query.to_sql()))
 
     if query._stmt_type == "select":
         models = fetch_models(query._model_class, cursor)
@@ -728,12 +727,114 @@ def run_query(
         return models
 
     if query._returning_columns and cursor.description is not None:
-        columns = checked_columns([desc[0] for desc in cursor.description])
+        columns = cursor_columns(cursor)
         result: WriteResult = [dict(zip(columns, row)) for row in cursor.fetchall()]
     else:
         result = cursor.rowcount if per_row_count is None else per_row_count
     commit_unless_in_transaction(conn)
     return result
+
+
+def run(
+    query: "AnyQuery", connection: Optional[Binding]
+) -> Union[List["Model"], WriteResult]:
+    """QueryBuilder.run(): resolves the connection, then runs the query."""
+    with (
+        connection_scope(connection, query._model_class._connection) as conn,
+        cursor_scope(conn) as cursor,
+    ):
+        try:
+            return run_query(query, conn, cursor)
+        except BaseException:
+            # A write that raises outside a transaction() block would
+            # leave its partial work pending, such as the rows an
+            # executemany sent before the failing one, and the next
+            # write's commit would keep them. On Postgres the failure
+            # also leaves the session aborted.
+            if query._stmt_type != "select" and not in_transaction(conn):
+                rollback_quietly(conn)
+            raise
+
+
+def first_model(query: "AnyQuery", connection: Optional[Binding]) -> Optional["Model"]:
+    """QueryBuilder.first(): runs the query capped at one row."""
+    results = cast(List["Model"], run(query._first_query(), connection))
+    return results[0] if results else None
+
+
+def select_rows(
+    query: "AnyQuery", connection: Optional[Binding]
+) -> Tuple[List[str], Sequence[Sequence[RowValue]]]:
+    """
+    Executes a SELECT and returns (column names, raw rows).
+
+    Raises:
+        AmbiguousColumns: If the result set repeats a column name.
+    """
+    if query._stmt_type != "select":
+        raise ValueError("Only SELECT queries return result sets.")
+    with (
+        connection_scope(connection, query._model_class._connection) as conn,
+        cursor_scope(conn) as cursor,
+    ):
+        execute_timed(cursor, *query._compiler.prepare_execution(*query.to_sql()))
+        return cursor_columns(cursor), cursor.fetchall()
+
+
+def fetch_dicts(
+    query: "AnyQuery", connection: Optional[Binding]
+) -> List[Dict[str, RowValue]]:
+    """QueryBuilder.to_dicts(): the SELECT's rows as dicts keyed by column."""
+    columns, rows = select_rows(query, connection)
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def count_rows(query: "AnyQuery", connection: Optional[Binding]) -> int:
+    """QueryBuilder.total(): runs the query's COUNT(*) wrapper."""
+    return int(fetch_dicts(query._count_query(), connection)[0]["total"])
+
+
+# pandas and pyarrow are optional installs. Naming their types here would
+# make Sustained fail to type check for anyone who skips them, so the
+# modules load through importlib and the DataFrame and Table types are
+# left open.
+def fetch_dataframe(query: "AnyQuery", connection: Optional[Binding]) -> Any:
+    """QueryBuilder.to_df(): the SELECT's rows as a pandas DataFrame."""
+    try:
+        pandas = importlib.import_module("pandas")
+    except ImportError:
+        raise RuntimeError(
+            "to_df() requires pandas. Install it with: pip install pandas"
+        ) from None
+    columns, rows = select_rows(query, connection)
+    return pandas.DataFrame.from_records(list(rows), columns=columns)
+
+
+def fetch_arrow(query: "AnyQuery", connection: Optional[Binding]) -> Any:
+    """QueryBuilder.to_arrow(): the SELECT's rows as a pyarrow Table."""
+    try:
+        pyarrow = importlib.import_module("pyarrow")
+    except ImportError:
+        raise RuntimeError(
+            "to_arrow() requires pyarrow. Install it with: pip install pyarrow"
+        ) from None
+    columns, rows = select_rows(query, connection)
+    data = {name: [row[i] for row in rows] for i, name in enumerate(columns)}
+    return pyarrow.table(data)
+
+
+def explain_plan(
+    query: "AnyQuery", connection: Optional[Binding], analyze: bool
+) -> List[Tuple[RowValue, ...]]:
+    """QueryBuilder.explain(): runs the dialect's EXPLAIN on the query."""
+    sql, params = query._compiler.prepare_execution(*query.to_sql())
+    prefix = query._compiler.compile_explain(analyze)
+    with (
+        connection_scope(connection, query._model_class._connection) as conn,
+        cursor_scope(conn) as cursor,
+    ):
+        execute_timed(cursor, f"{prefix} {sql}", params)
+        return [tuple(row) for row in cursor.fetchall()]
 
 
 def checked_columns(columns: Sequence[str]) -> List[str]:
@@ -765,7 +866,7 @@ def fetch_models(model_class: Type["Model"], cursor: Cursor) -> List["Model"]:
     """
     if cursor.description is None:
         return []
-    columns = checked_columns([desc[0] for desc in cursor.description])
+    columns = cursor_columns(cursor)
     return [model_class(**dict(zip(columns, row))) for row in cursor.fetchall()]
 
 

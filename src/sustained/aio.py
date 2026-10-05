@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import itertools
 import re
-import time
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from typing import (
@@ -46,7 +45,7 @@ from sustained.execution import (
     checked_columns,
     enter_autocommit,
     insert_batch,
-    notify_statement,
+    timed_statement,
     total_row_count,
     transaction_sql,
 )
@@ -779,6 +778,35 @@ async def run_async(
             raise
 
 
+async def first_model_async(
+    query: "AnyQuery", adapter: Optional[AsyncAdapter] = None
+) -> Optional["Model"]:
+    """QueryBuilder.afirst(): runs the query capped at one row."""
+    results = cast(List["Model"], await run_async(query._first_query(), adapter))
+    return results[0] if results else None
+
+
+async def fetch_dicts_async(
+    query: "AnyQuery", adapter: Optional[AsyncAdapter] = None
+) -> List[Dict[str, RowValue]]:
+    """
+    QueryBuilder.ato_dicts(): the SELECT's rows as dicts keyed by column.
+
+    Raises:
+        AmbiguousColumns: If the result set repeats a column name.
+    """
+    if query._stmt_type != "select":
+        raise ValueError("Only SELECT queries return result sets.")
+    sql, params = query._compiler.prepare_execution(*query.to_sql())
+    # A pool runs no statement itself, so the fetch goes to the adapter
+    # its scope() checks out.
+    async with resolve_adapter(adapter, query._model_class).scope() as resolved:
+        with timed_statement(sql, params):
+            columns, rows = await resolved.fetch(sql, params)
+    names = checked_columns(columns)
+    return [dict(zip(names, row)) for row in rows]
+
+
 async def _rollback_quietly(adapter: AsyncAdapter) -> None:
     """
     Rolls back after a statement that failed, dropping a rollback error so
@@ -794,11 +822,10 @@ async def _run_query_on(
     query: "AnyQuery", resolved: AsyncAdapter
 ) -> Union[List["Model"], WriteResult]:
     """The query itself, on one adapter that is already checked out."""
-    started = time.perf_counter()
     if query._stmt_type == "select":
         sql, params = query._compiler.prepare_execution(*query.to_sql())
-        columns, rows = await resolved.fetch(sql, params)
-        notify_statement(sql, params, time.perf_counter() - started)
+        with timed_statement(sql, params):
+            columns, rows = await resolved.fetch(sql, params)
         names = checked_columns(columns)
         models = [query._model_class(**dict(zip(names, row))) for row in rows]
         await eager_load_paths_async(
@@ -807,25 +834,26 @@ async def _run_query_on(
         return models
 
     batch = insert_batch(query)
+    result: WriteResult
     if batch is not None:
-        if batch.batchable:
-            result: WriteResult = await resolved.executemany(batch.sql, batch.values())
-        else:
-            counts = []
-            for row_sql, row_values in batch.rows:
-                counts.append(await resolved.execute(row_sql, row_values))
-            result = total_row_count(counts)
-        notify_statement(batch.sql, batch.flat_params(), time.perf_counter() - started)
+        with timed_statement(batch.sql, batch.flat_params()):
+            if batch.batchable:
+                result = await resolved.executemany(batch.sql, batch.values())
+            else:
+                counts = []
+                for row_sql, row_values in batch.rows:
+                    counts.append(await resolved.execute(row_sql, row_values))
+                result = total_row_count(counts)
     elif query._returning_columns:
         sql, params = query._compiler.prepare_execution(*query.to_sql())
-        columns, rows = await resolved.fetch(sql, params)
-        notify_statement(sql, params, time.perf_counter() - started)
+        with timed_statement(sql, params):
+            columns, rows = await resolved.fetch(sql, params)
         returning_names = checked_columns(columns)
         result = [dict(zip(returning_names, row)) for row in rows]
     else:
         sql, params = query._compiler.prepare_execution(*query.to_sql())
-        result = await resolved.execute(sql, params)
-        notify_statement(sql, params, time.perf_counter() - started)
+        with timed_statement(sql, params):
+            result = await resolved.execute(sql, params)
 
     if not in_async_transaction(resolved):
         await resolved.commit()
