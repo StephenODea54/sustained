@@ -115,14 +115,6 @@ def _effect(
     return Effect(rule, table, lock, work, confidence, message=message, notes=notes)
 
 
-def _rename_note(what: str, old: str) -> Finding:
-    return RENAME.finding(
-        Severity.INFO,
-        f"running application code that names the {what} {old} fails once the "
-        "rename commits",
-    )
-
-
 def _add_column(facts: Facts, action: Action) -> Optional[Effect]:
     table = common.table(facts)
     options = action.options
@@ -183,10 +175,10 @@ def _action(facts: Facts, action: Action) -> Optional[Effect]:
     if kind in ("drop_not_null", "set_default", "drop_default"):
         return _effect(ALTER_COLUMN, table, CATALOG_ENTRY, Work.CATALOG)
     if kind == "rename_column":
-        note = _rename_note("column", str(action.column))
+        note = common.rename_note(RENAME, "column", str(action.column))
         return _effect(RENAME, table, CATALOG_ENTRY, Work.CATALOG, notes=(note,))
     if kind == "rename_to":
-        note = _rename_note("table", table)
+        note = common.rename_note(RENAME, "table", table)
         return _effect(RENAME, table, CATALOG_ENTRY, Work.CATALOG, notes=(note,))
     return None
 

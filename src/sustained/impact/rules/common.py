@@ -5,7 +5,8 @@ The handler helpers every rule profile uses.
 - `dispatch()` hands a statement to the handler for its kind, and
   `unknown()` is the outcome for a statement or ALTER TABLE action no
   handler reads.
-- `row_write_message()` words the finding for an UPDATE or DELETE.
+- `row_write_message()` words the finding for an UPDATE or DELETE, and
+  `rename_note()` the one for a rename.
 - `add_stats()` keys a table's stats by `schema.table`, and by the bare
   name when an unqualified name finds the table.
 - `with_observations()` puts a traced rehearsal's observations in place
@@ -33,7 +34,7 @@ from sustained.impact.model import (
     TableImpact,
     Work,
 )
-from sustained.impact.rules import Facts, Outcome, Profile, title
+from sustained.impact.rules import Facts, Outcome, Profile, Rule, title
 from sustained.impact.window import aggregate, row_scopes
 
 UNNAMED_TABLE = "(unnamed table)"
@@ -100,6 +101,23 @@ def row_write_message(facts: Facts, table: str, detail: str = "") -> str:
         f"{detail}; on a large table, {batches} in batches outside the DDL "
         "migration"
     )
+
+
+def rename_text(what: str, name: object, when: str = "commits") -> str:
+    """
+    The note for a rename: running code that names the old `what`, such
+    as `column` or `table`, fails once the rename `when`, such as
+    `commits` or `runs`.
+    """
+    return (
+        f"running application code that names the {what} {name} fails once the "
+        f"rename {when}"
+    )
+
+
+def rename_note(rule: Rule, what: str, name: object) -> Finding:
+    """The `info` finding of `rename_text()`, for a rename that commits."""
+    return rule.finding(Severity.INFO, rename_text(what, name))
 
 
 def add_stats(

@@ -109,14 +109,6 @@ def _effect(
     )
 
 
-def _rename_note(what: str, old: str) -> Finding:
-    return RENAME.finding(
-        Severity.INFO,
-        f"running application code that names the {what} {old} fails once the "
-        "rename commits",
-    )
-
-
 def _action(facts: Facts, action: Action) -> Optional[Effect]:
     """One ALTER TABLE action's effect, or None for one no rule reads."""
     table = common.table(facts)
@@ -143,11 +135,15 @@ def _action(facts: Facts, action: Action) -> Optional[Effect]:
             f"DROP COLUMN rewrites every row of {table}",
         )
     if action.kind == "rename_column":
-        note = _rename_note("column", str(action.column))
+        note = common.rename_note(RENAME, "column", str(action.column))
         return _effect(facts, RENAME, table, Work.CATALOG, notes=(note,))
     if action.kind == "rename_to":
         return _effect(
-            facts, RENAME, table, Work.CATALOG, notes=(_rename_note("table", table),)
+            facts,
+            RENAME,
+            table,
+            Work.CATALOG,
+            notes=(common.rename_note(RENAME, "table", table),),
         )
     return None
 

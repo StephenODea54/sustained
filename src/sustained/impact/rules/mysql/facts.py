@@ -20,7 +20,7 @@ from sustained.impact.model import (
     Confidence,
     Work,
 )
-from sustained.impact.rules import Facts
+from sustained.impact.rules import Facts, common
 from sustained.impact.rules.mysql.catalog import (
     RULE_SETS,
     RuleSet,
@@ -110,4 +110,4 @@ class Change(NamedTuple):
 
 
 def rename_note(what: str, old: str) -> str:
-    return f"running application code that names the {what} {old} fails once the rename runs"
+    return common.rename_text(what, old, "runs")

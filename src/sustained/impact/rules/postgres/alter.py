@@ -478,11 +478,7 @@ def _rename(facts: Facts, action: Action) -> Outcome:
         return Outcome.of(Effect(RENAME, table, ACCESS_EXCLUSIVE, Work.CATALOG))
     what = "column" if action.kind == "rename_column" else "table"
     old = action.column if action.kind == "rename_column" else table
-    note = RENAME.finding(
-        Severity.INFO,
-        f"running application code that names the {what} {old} fails once "
-        "the rename commits",
-    )
+    note = common.rename_note(RENAME, what, old)
     return Outcome.of(
         Effect(RENAME, table, ACCESS_EXCLUSIVE, Work.CATALOG, notes=(note,))
     )

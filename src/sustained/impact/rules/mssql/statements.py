@@ -213,11 +213,7 @@ def _reorganize(facts: Facts, table: str, clustered: bool) -> Outcome:
 
 def _rename_table(facts: Facts) -> Outcome:
     table = common.table(facts)
-    note = RENAME.finding(
-        Severity.INFO,
-        f"running application code that names the table {table} fails once the "
-        "rename commits",
-    )
+    note = common.rename_note(RENAME, "table", table)
     return Outcome.of(Effect(RENAME, table, SCH_M, Work.CATALOG, notes=(note,)))
 
 

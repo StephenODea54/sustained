@@ -627,14 +627,9 @@ def _set_default(facts: Facts, action: Action) -> Outcome:
 def _rename(facts: Facts, action: Action) -> Outcome:
     table = common.table(facts)
     if action.kind == "rename_index":
-        what = f"index {action.options.get('old')}"
+        note = common.rename_note(RENAME, "index", action.options.get("old"))
     else:
-        what = f"column {action.column}"
-    note = RENAME.finding(
-        Severity.INFO,
-        f"running application code that names the {what} fails once the rename "
-        "commits",
-    )
+        note = common.rename_note(RENAME, "column", action.column)
     return Outcome.of(_effect(RENAME, table, Work.CATALOG, notes=(note,)))
 
 
