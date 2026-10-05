@@ -18,7 +18,7 @@ from sustained import ddl
 from sustained.analysis import MigrationStatement, summarize, with_intent
 from sustained.dialects import Dialects
 from sustained.impact import Confidence, analyze, supported
-from sustained.impact.analyzer import intent_agrees
+from sustained.impact.intent import intent_agrees
 from sustained.impact.model import INTENT_KINDS, Intent
 from sustained.impact.recognizer import recognize
 from sustained.migrations import Migration, migration_checksum

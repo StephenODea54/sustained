@@ -15,7 +15,7 @@ import unittest
 from typing import Dict, List, Set, Tuple
 
 import sustained.impact.recognizer as recognizer
-from sustained.impact.analyzer import parsed_from_intent
+from sustained.impact.intent import parsed_from_intent
 from sustained.impact.model import UNKNOWN_KIND, Intent
 from sustained.impact.recognizer import (
     ACTION_KINDS,
@@ -156,15 +156,17 @@ class IntentDefaultsTestCase(unittest.TestCase):
     def test_add_column_sets_every_column_option(self) -> None:
         parsed = recognizer.recognize("ALTER TABLE t ADD COLUMN c int")
         intent = Intent("add_column", "t", "c", {"has_default": False})
-        built = parsed_from_intent(intent)
-        assert built is not None
+        reading = parsed_from_intent(intent)
+        assert reading is not None
+        built = reading[0]
         self.assertEqual(set(built.actions[0].options), set(parsed.actions[0].options))
         self.assertEqual(set(COLUMN_DEFAULTS), set(parsed.actions[0].options))
 
     def test_create_table_sets_every_table_option(self) -> None:
         parsed = recognizer.recognize("CREATE TABLE t (a int)")
-        built = parsed_from_intent(Intent("create_table", "t"))
-        assert built is not None
+        reading = parsed_from_intent(Intent("create_table", "t"))
+        assert reading is not None
+        built = reading[0]
         self.assertEqual(set(built.options), set(parsed.options))
         self.assertEqual(set(CREATE_TABLE_DEFAULTS), set(parsed.options))
 
