@@ -244,16 +244,14 @@ def _rebuilt(facts: Facts) -> Optional[str]:
 def _insert(facts: Facts) -> Outcome:
     rebuilt = _rebuilt(facts)
     if rebuilt is not None:
-        return Outcome(
-            (
-                _effect(
-                    facts,
-                    REBUILD,
-                    rebuilt,
-                    Work.REWRITE,
-                    f"the rebuild copies every row of {rebuilt} into a new table "
-                    "and builds its indexes again",
-                ),
+        return Outcome.of(
+            _effect(
+                facts,
+                REBUILD,
+                rebuilt,
+                Work.REWRITE,
+                f"the rebuild copies every row of {rebuilt} into a new table "
+                "and builds its indexes again",
             )
         )
     table = common.table(facts)
@@ -312,32 +310,28 @@ def _write_rows(facts: Facts) -> Outcome:
     if facts.intent is not None and facts.intent.kind == "backfill":
         what = "the backfill"
     batches = "delete" if facts.parsed.kind == "delete" else "backfill"
-    return Outcome(
-        (
-            _effect(
-                facts,
-                WRITE_ROWS,
-                table,
-                Work.ROWS,
-                f"{what} writes rows of {table}",
-                advice=f"on a large table, {batches} in batches outside the DDL "
-                "migration",
-            ),
+    return Outcome.of(
+        _effect(
+            facts,
+            WRITE_ROWS,
+            table,
+            Work.ROWS,
+            f"{what} writes rows of {table}",
+            advice=f"on a large table, {batches} in batches outside the DDL "
+            "migration",
         )
     )
 
 
 def _create_index(facts: Facts) -> Outcome:
     table = common.table(facts)
-    return Outcome(
-        (
-            _effect(
-                facts,
-                CREATE_INDEX,
-                table,
-                Work.INDEX_BUILD,
-                f"the index build reads every row of {table}",
-            ),
+    return Outcome.of(
+        _effect(
+            facts,
+            CREATE_INDEX,
+            table,
+            Work.INDEX_BUILD,
+            f"the index build reads every row of {table}",
         )
     )
 
@@ -367,15 +361,13 @@ def _drop_index(facts: Facts) -> Outcome:
 def _reindex(facts: Facts) -> Outcome:
     name = facts.parsed.options.get("name")
     if name is None:
-        return Outcome(
-            (
-                _effect(
-                    facts,
-                    REINDEX,
-                    DATABASE,
-                    Work.INDEX_BUILD,
-                    "REINDEX builds every index in the database again",
-                ),
+        return Outcome.of(
+            _effect(
+                facts,
+                REINDEX,
+                DATABASE,
+                Work.INDEX_BUILD,
+                "REINDEX builds every index in the database again",
             )
         )
     name = str(name)
@@ -387,23 +379,21 @@ def _reindex(facts: Facts) -> Outcome:
         if not known:
             # The name may be a collation, whose indexes span tables.
             confidence = Confidence.LIKELY
-    return Outcome(
-        (
-            _effect(
-                facts,
-                REINDEX,
-                table,
-                Work.INDEX_BUILD,
-                f"REINDEX builds the indexes of {table} again",
-                confidence=confidence,
-            ),
+    return Outcome.of(
+        _effect(
+            facts,
+            REINDEX,
+            table,
+            Work.INDEX_BUILD,
+            f"REINDEX builds the indexes of {table} again",
+            confidence=confidence,
         )
     )
 
 
 def _schema_change(facts: Facts) -> Outcome:
     table = facts.parsed.table or DATABASE
-    return Outcome((_effect(facts, SCHEMA_CHANGE, table, Work.CATALOG),))
+    return Outcome.of(_effect(facts, SCHEMA_CHANGE, table, Work.CATALOG))
 
 
 def _drop_table(facts: Facts) -> Outcome:
@@ -454,7 +444,7 @@ def _vacuum(facts: Facts) -> Outcome:
         Work.REWRITE,
         "VACUUM copies the whole database into a new file",
     )
-    return Outcome((effect,), findings)
+    return Outcome.of(effect, findings=findings)
 
 
 STATEMENTS: Dict[str, common.Handler] = {

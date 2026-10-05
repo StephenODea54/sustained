@@ -234,10 +234,10 @@ def online_outcome(facts: Facts, change: Change) -> Outcome:
             f"the server refuses this statement: {refusal}; {change.reason}",
             source=rules[change.rule].source,
         )
-        return Outcome(
-            (Effect(rule, table, None, Work.CATALOG, change.confidence),),
-            (finding,),
-            change.confidence,
+        return Outcome.of(
+            Effect(rule, table, None, Work.CATALOG, change.confidence),
+            findings=(finding,),
+            confidence=change.confidence,
         )
     work = change.work
     confidence = change.confidence

@@ -88,7 +88,7 @@ ActionHandler = Callable[[Facts, Action], Outcome]
 
 def simple(rule: Rule, lock: str, work: Work) -> ActionHandler:
     def handler(facts: Facts, action: Action) -> Outcome:
-        return Outcome((Effect(rule, common.table(facts), lock, work),))
+        return Outcome.of(Effect(rule, common.table(facts), lock, work))
 
     return handler
 
@@ -272,8 +272,8 @@ def _set_not_null(facts: Facts, action: Action) -> Outcome:
     table = common.table(facts)
     column = action.column or "?"
     if _proven_not_null(facts, table, column):
-        return Outcome(
-            (Effect(SET_NOT_NULL_PROVEN, table, ACCESS_EXCLUSIVE, Work.CATALOG),)
+        return Outcome.of(
+            Effect(SET_NOT_NULL_PROVEN, table, ACCESS_EXCLUSIVE, Work.CATALOG)
         )
     check = f"{last_part(table, facts.statement)}_{column}_not_null"[:63]
     t, c = spelled(facts.statement, table), spelled(facts.statement, column)
@@ -284,20 +284,18 @@ def _set_not_null(facts: Facts, action: Action) -> Outcome:
         f"ALTER TABLE {t} ALTER COLUMN {c} SET NOT NULL",
         f"ALTER TABLE {t} DROP CONSTRAINT {k}",
     )
-    return Outcome(
-        (
-            Effect(
-                SET_NOT_NULL,
-                table,
-                ACCESS_EXCLUSIVE,
-                Work.SCAN,
-                Confidence.LIKELY,
-                message=f"reads and writes on {table} wait while every row is "
-                f"checked for NULL, unless a valid CHECK ({column} IS NOT NULL) "
-                "already proves it; add that check NOT VALID, validate it, then "
-                "SET NOT NULL skips the scan",
-                remedy=remedy,
-            ),
+    return Outcome.of(
+        Effect(
+            SET_NOT_NULL,
+            table,
+            ACCESS_EXCLUSIVE,
+            Work.SCAN,
+            Confidence.LIKELY,
+            message=f"reads and writes on {table} wait while every row is "
+            f"checked for NULL, unless a valid CHECK ({column} IS NOT NULL) "
+            "already proves it; add that check NOT VALID, validate it, then "
+            "SET NOT NULL skips the scan",
+            remedy=remedy,
         ),
         confidence=Confidence.LIKELY,
     )
@@ -328,9 +326,9 @@ def _add_constraint(facts: Facts, action: Action) -> Outcome:
             f"if {table} is a partitioned table, PostgreSQL before 17 refuses an "
             "exclusion constraint on it",
         )
-    return Outcome(
-        (Effect(ADD_EXCLUSION, table, ACCESS_EXCLUSIVE, Work.INDEX_BUILD),),
-        findings,
+    return Outcome.of(
+        Effect(ADD_EXCLUSION, table, ACCESS_EXCLUSIVE, Work.INDEX_BUILD),
+        findings=findings,
     )
 
 
@@ -348,21 +346,19 @@ def _validate_later(facts: Facts, action: Action) -> Tuple[str, ...]:
 def _add_check(facts: Facts, action: Action) -> Outcome:
     table = common.table(facts)
     if action.options.get("not_valid"):
-        return Outcome(
-            (Effect(ADD_CHECK_NOT_VALID, table, ACCESS_EXCLUSIVE, Work.CATALOG),)
+        return Outcome.of(
+            Effect(ADD_CHECK_NOT_VALID, table, ACCESS_EXCLUSIVE, Work.CATALOG)
         )
-    return Outcome(
-        (
-            Effect(
-                ADD_CHECK,
-                table,
-                ACCESS_EXCLUSIVE,
-                Work.SCAN,
-                message=f"reads and writes on {table} wait while every row is "
-                "checked; add the check NOT VALID, then VALIDATE CONSTRAINT in a "
-                "later migration, which lets reads and writes go on",
-                remedy=_validate_later(facts, action),
-            ),
+    return Outcome.of(
+        Effect(
+            ADD_CHECK,
+            table,
+            ACCESS_EXCLUSIVE,
+            Work.SCAN,
+            message=f"reads and writes on {table} wait while every row is "
+            "checked; add the check NOT VALID, then VALIDATE CONSTRAINT in a "
+            "later migration, which lets reads and writes go on",
+            remedy=_validate_later(facts, action),
         )
     )
 
@@ -397,20 +393,18 @@ def _add_foreign_key(facts: Facts, action: Action) -> Outcome:
             ),
             findings,
         )
-    return Outcome(
-        (
-            Effect(
-                ADD_FOREIGN_KEY,
-                table,
-                SHARE_ROW_EXCLUSIVE,
-                Work.SCAN,
-                message=f"writes to {table} and {referenced} wait while every row "
-                f"of {table} is checked; add the key NOT VALID, then VALIDATE "
-                "CONSTRAINT in a later migration",
-                remedy=_validate_later(facts, action),
-            ),
-            Effect(ADD_FOREIGN_KEY, referenced, SHARE_ROW_EXCLUSIVE, Work.CATALOG),
-        )
+    return Outcome.of(
+        Effect(
+            ADD_FOREIGN_KEY,
+            table,
+            SHARE_ROW_EXCLUSIVE,
+            Work.SCAN,
+            message=f"writes to {table} and {referenced} wait while every row "
+            f"of {table} is checked; add the key NOT VALID, then VALIDATE "
+            "CONSTRAINT in a later migration",
+            remedy=_validate_later(facts, action),
+        ),
+        Effect(ADD_FOREIGN_KEY, referenced, SHARE_ROW_EXCLUSIVE, Work.CATALOG),
     )
 
 
@@ -418,8 +412,8 @@ def _add_key(facts: Facts, action: Action) -> Outcome:
     table = common.table(facts)
     options = action.options
     if options.get("using_index"):
-        return Outcome(
-            (Effect(ADD_KEY_USING_INDEX, table, ACCESS_EXCLUSIVE, Work.CATALOG),)
+        return Outcome.of(
+            Effect(ADD_KEY_USING_INDEX, table, ACCESS_EXCLUSIVE, Work.CATALOG)
         )
     primary = options.get("constraint") == "primary_key"
     columns = key_columns(facts.statement)
@@ -436,18 +430,16 @@ def _add_key(facts: Facts, action: Action) -> Outcome:
             f"CREATE UNIQUE INDEX CONCURRENTLY {quoted(index)} ON {t} {columns}",
             f"ALTER TABLE {t} ADD CONSTRAINT {k} {kind} USING INDEX {quoted(index)}",
         )
-    return Outcome(
-        (
-            Effect(
-                ADD_KEY,
-                table,
-                ACCESS_EXCLUSIVE,
-                Work.INDEX_BUILD,
-                message=f"reads and writes on {table} wait for the whole index "
-                f"build; build a unique index CONCURRENTLY {TRANSACTION_NOTE}, "
-                "then add the constraint USING INDEX",
-                remedy=remedy,
-            ),
+    return Outcome.of(
+        Effect(
+            ADD_KEY,
+            table,
+            ACCESS_EXCLUSIVE,
+            Work.INDEX_BUILD,
+            message=f"reads and writes on {table} wait for the whole index "
+            f"build; build a unique index CONCURRENTLY {TRANSACTION_NOTE}, "
+            "then add the constraint USING INDEX",
+            remedy=remedy,
         )
     )
 
@@ -483,7 +475,7 @@ def _validate(facts: Facts, action: Action) -> Outcome:
 def _rename(facts: Facts, action: Action) -> Outcome:
     table = common.table(facts)
     if action.kind == "rename_constraint":
-        return Outcome((Effect(RENAME, table, ACCESS_EXCLUSIVE, Work.CATALOG),))
+        return Outcome.of(Effect(RENAME, table, ACCESS_EXCLUSIVE, Work.CATALOG))
     what = "column" if action.kind == "rename_column" else "table"
     old = action.column if action.kind == "rename_column" else table
     note = RENAME.finding(
@@ -491,8 +483,8 @@ def _rename(facts: Facts, action: Action) -> Outcome:
         f"running application code that names the {what} {old} fails once "
         "the rename commits",
     )
-    return Outcome(
-        (Effect(RENAME, table, ACCESS_EXCLUSIVE, Work.CATALOG, notes=(note,)),)
+    return Outcome.of(
+        Effect(RENAME, table, ACCESS_EXCLUSIVE, Work.CATALOG, notes=(note,))
     )
 
 
@@ -608,22 +600,20 @@ def _detach_partition(facts: Facts, action: Action) -> Outcome:
                 "PARTITION CONCURRENTLY",
             )
         )
-        return Outcome(
-            (
-                Effect(
-                    DETACH_PARTITION_CONCURRENTLY,
-                    table,
-                    SHARE_UPDATE_EXCLUSIVE,
-                    Work.CATALOG,
-                ),
-                Effect(
-                    DETACH_PARTITION_CONCURRENTLY,
-                    partition,
-                    SHARE_UPDATE_EXCLUSIVE,
-                    Work.CATALOG,
-                ),
+        return Outcome.of(
+            Effect(
+                DETACH_PARTITION_CONCURRENTLY,
+                table,
+                SHARE_UPDATE_EXCLUSIVE,
+                Work.CATALOG,
             ),
-            tuple(findings),
+            Effect(
+                DETACH_PARTITION_CONCURRENTLY,
+                partition,
+                SHARE_UPDATE_EXCLUSIVE,
+                Work.CATALOG,
+            ),
+            findings=tuple(findings),
         )
     effects = [
         Effect(DETACH_PARTITION, table, ACCESS_EXCLUSIVE, Work.CATALOG),
@@ -672,16 +662,14 @@ _LIGHT_PARAMETERS_RE = re.compile(
 def _set_parameters(facts: Facts, action: Action) -> Outcome:
     light = all(_LIGHT_PARAMETERS_RE.fullmatch(key.upper()) for key in action.options)
     if light:
-        return Outcome(
-            (
-                Effect(
-                    TABLE_PARAMETERS,
-                    common.table(facts),
-                    SHARE_UPDATE_EXCLUSIVE,
-                    Work.CATALOG,
-                ),
+        return Outcome.of(
+            Effect(
+                TABLE_PARAMETERS,
+                common.table(facts),
+                SHARE_UPDATE_EXCLUSIVE,
+                Work.CATALOG,
             )
         )
-    return Outcome(
-        (Effect(TABLE_CATALOG, common.table(facts), ACCESS_EXCLUSIVE, Work.CATALOG),)
+    return Outcome.of(
+        Effect(TABLE_CATALOG, common.table(facts), ACCESS_EXCLUSIVE, Work.CATALOG)
     )

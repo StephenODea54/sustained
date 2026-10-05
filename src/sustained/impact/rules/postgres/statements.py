@@ -133,52 +133,46 @@ def _create_index(facts: Facts) -> Outcome:
                 f"INDEX CONCURRENTLY on it; {_PARTITIONED_INDEX}",
             )
         )
-        return Outcome(
-            (
-                Effect(
-                    CREATE_INDEX_CONCURRENTLY,
-                    table,
-                    SHARE_UPDATE_EXCLUSIVE,
-                    Work.INDEX_BUILD,
-                ),
+        return Outcome.of(
+            Effect(
+                CREATE_INDEX_CONCURRENTLY,
+                table,
+                SHARE_UPDATE_EXCLUSIVE,
+                Work.INDEX_BUILD,
             ),
-            tuple(findings),
+            findings=tuple(findings),
         )
     if parent and parsed.options.get("only"):
         # ON ONLY creates an invalid index on the partitioned table
         # alone, which is valid once each partition's index is attached.
-        return Outcome((Effect(CREATE_INDEX, table, SHARE, Work.CATALOG),))
+        return Outcome.of(Effect(CREATE_INDEX, table, SHARE, Work.CATALOG))
     if parent:
-        return Outcome(
-            (
-                Effect(
-                    CREATE_INDEX,
-                    table,
-                    SHARE,
-                    Work.INDEX_BUILD,
-                    message=f"writes to {table} and each of its partitions wait "
-                    f"while the index is built on every partition; "
-                    f"{_PARTITIONED_INDEX}",
-                ),
-                *cascade(facts, CREATE_INDEX, table, SHARE, Work.INDEX_BUILD),
-            )
-        )
-    concurrent = insert_after(facts.statement, "INDEX", "CONCURRENTLY")
-    remedy = (trimmed(concurrent),) if concurrent else ()
-    only = bool(parsed.options.get("only"))
-    return Outcome(
-        (
+        return Outcome.of(
             Effect(
                 CREATE_INDEX,
                 table,
                 SHARE,
                 Work.INDEX_BUILD,
-                message=f"writes to {table} wait for the whole index build; "
-                f"build it CONCURRENTLY {TRANSACTION_NOTE}",
-                remedy=remedy,
+                message=f"writes to {table} and each of its partitions wait "
+                f"while the index is built on every partition; "
+                f"{_PARTITIONED_INDEX}",
             ),
+            *cascade(facts, CREATE_INDEX, table, SHARE, Work.INDEX_BUILD),
+        )
+    concurrent = insert_after(facts.statement, "INDEX", "CONCURRENTLY")
+    remedy = (trimmed(concurrent),) if concurrent else ()
+    only = bool(parsed.options.get("only"))
+    return Outcome.of(
+        Effect(
+            CREATE_INDEX,
+            table,
+            SHARE,
+            Work.INDEX_BUILD,
+            message=f"writes to {table} wait for the whole index build; "
+            f"build it CONCURRENTLY {TRANSACTION_NOTE}",
+            remedy=remedy,
         ),
-        (
+        findings=(
             ()
             if only
             else unread(
@@ -213,24 +207,22 @@ def _attach_index(facts: Facts) -> Outcome:
         child_table = None if reported is None else str(reported)
     confidence = Confidence.KNOWN if parent_table and child_table else Confidence.LIKELY
     child_label = _table_label(partition, child_table)
-    return Outcome(
-        (
-            Effect(
-                ATTACH_INDEX,
-                _table_label(name, parent_table),
-                ACCESS_SHARE,
-                Work.CATALOG,
-            ),
-            Effect(
-                ATTACH_INDEX,
-                child_label,
-                ACCESS_SHARE,
-                Work.CATALOG,
-                blocks=Blocks.READS_AND_WRITES,
-                message=f"reads and writes on {child_label} wait until the "
-                f"attach commits, which takes ACCESS EXCLUSIVE on the index "
-                f"{partition}",
-            ),
+    return Outcome.of(
+        Effect(
+            ATTACH_INDEX,
+            _table_label(name, parent_table),
+            ACCESS_SHARE,
+            Work.CATALOG,
+        ),
+        Effect(
+            ATTACH_INDEX,
+            child_label,
+            ACCESS_SHARE,
+            Work.CATALOG,
+            blocks=Blocks.READS_AND_WRITES,
+            message=f"reads and writes on {child_label} wait until the "
+            f"attach commits, which takes ACCESS EXCLUSIVE on the index "
+            f"{partition}",
         ),
         confidence=confidence,
     )
@@ -520,23 +512,21 @@ def _drop_view(facts: Facts) -> Outcome:
 def _write_rows(facts: Facts) -> Outcome:
     table = common.table(facts)
     message = common.row_write_message(facts, table)
-    return Outcome(
-        (
-            Effect(
-                WRITE_ROWS,
-                table,
-                ROW_EXCLUSIVE,
-                Work.ROWS,
-                message=message,
-                blocks=Blocks.WRITES,
-            ),
+    return Outcome.of(
+        Effect(
+            WRITE_ROWS,
+            table,
+            ROW_EXCLUSIVE,
+            Work.ROWS,
+            message=message,
+            blocks=Blocks.WRITES,
         )
     )
 
 
 def _insert(facts: Facts) -> Outcome:
     table = common.table(facts)
-    return Outcome((Effect(INSERT_ROWS, table, ROW_EXCLUSIVE, Work.ROWS),))
+    return Outcome.of(Effect(INSERT_ROWS, table, ROW_EXCLUSIVE, Work.ROWS))
 
 
 def _reindex(facts: Facts) -> Outcome:
@@ -633,8 +623,8 @@ def _vacuum(facts: Facts) -> Outcome:
 def _cluster(facts: Facts) -> Outcome:
     if facts.parsed.table is None:
         return _vacuum(facts)
-    return Outcome(
-        (Effect(VACUUM_FULL, facts.parsed.table, ACCESS_EXCLUSIVE, Work.REWRITE),)
+    return Outcome.of(
+        Effect(VACUUM_FULL, facts.parsed.table, ACCESS_EXCLUSIVE, Work.REWRITE)
     )
 
 
@@ -645,19 +635,17 @@ def _refresh(facts: Facts) -> Outcome:
     if options.get("concurrently"):
         # The query runs in full, and only the rows that differ are
         # written into the view, whose file stays in place.
-        return Outcome((Effect(REFRESH_CONCURRENTLY, view, EXCLUSIVE, Work.ROWS),))
+        return Outcome.of(Effect(REFRESH_CONCURRENTLY, view, EXCLUSIVE, Work.ROWS))
     concurrent = insert_after(facts.statement, "VIEW", "CONCURRENTLY")
-    return Outcome(
-        (
-            Effect(
-                REFRESH,
-                view,
-                ACCESS_EXCLUSIVE,
-                work,
-                message=f"reads of {view} wait for the whole refresh; refresh it "
-                "CONCURRENTLY, which needs a unique index on the view",
-                remedy=(trimmed(concurrent),) if concurrent else (),
-            ),
+    return Outcome.of(
+        Effect(
+            REFRESH,
+            view,
+            ACCESS_EXCLUSIVE,
+            work,
+            message=f"reads of {view} wait for the whole refresh; refresh it "
+            "CONCURRENTLY, which needs a unique index on the view",
+            remedy=(trimmed(concurrent),) if concurrent else (),
         )
     )
 
@@ -669,12 +657,10 @@ def _trigger(facts: Facts) -> Outcome:
         if facts.parsed.kind == "create_trigger"
         else ACCESS_EXCLUSIVE
     )
-    return Outcome(
-        (
-            Effect(TRIGGER, table, lock, Work.CATALOG),
-            *cascade(facts, TRIGGER, table, lock, Work.CATALOG),
-        ),
-        unread(facts, table, locked_below(table, lock)),
+    return Outcome.of(
+        Effect(TRIGGER, table, lock, Work.CATALOG),
+        *cascade(facts, TRIGGER, table, lock, Work.CATALOG),
+        findings=unread(facts, table, locked_below(table, lock)),
     )
 
 
@@ -682,7 +668,7 @@ def _comment(facts: Facts) -> Outcome:
     if facts.parsed.options.get("object") not in ("table", "column"):
         return Outcome()
     table = common.table(facts)
-    return Outcome((Effect(COMMENT, table, SHARE_UPDATE_EXCLUSIVE, Work.CATALOG),))
+    return Outcome.of(Effect(COMMENT, table, SHARE_UPDATE_EXCLUSIVE, Work.CATALOG))
 
 
 def _lock_table(facts: Facts) -> Outcome:

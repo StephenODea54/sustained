@@ -297,16 +297,14 @@ def _write_rows(facts: Facts) -> Outcome:
         ", and InnoDB locks every row the statement reads when no index narrows "
         "the WHERE clause",
     )
-    return Outcome(
-        (
-            Effect(
-                rule,
-                table,
-                ROW_LOCKS,
-                Work.ROWS,
-                message=message,
-                blocks=Blocks.WRITES,
-            ),
+    return Outcome.of(
+        Effect(
+            rule,
+            table,
+            ROW_LOCKS,
+            Work.ROWS,
+            message=message,
+            blocks=Blocks.WRITES,
         )
     )
 
@@ -314,7 +312,7 @@ def _write_rows(facts: Facts) -> Outcome:
 def _insert(facts: Facts) -> Outcome:
     rule = rules_for(facts)["insert"]
     table = common.table(facts)
-    return Outcome((Effect(rule, table, ROW_LOCKS, Work.ROWS),))
+    return Outcome.of(Effect(rule, table, ROW_LOCKS, Work.ROWS))
 
 
 def _trigger(facts: Facts) -> Outcome:

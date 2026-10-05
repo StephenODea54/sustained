@@ -80,7 +80,9 @@ def _create_index(facts: Facts) -> Outcome:
         effect = online_effect(
             facts, online_rule, table, lock, work, "the index build", options, (16,)
         )
-        return Outcome((effect,), online_findings(facts, online_rule) + refused)
+        return Outcome.of(
+            effect, findings=online_findings(facts, online_rule) + refused
+        )
     who = "reads and writes on" if clustered else "writes to"
     message = f"{who} {table} wait for the whole index build"
     remedy = _online_remedy(
@@ -88,8 +90,9 @@ def _create_index(facts: Facts) -> Outcome:
         facts.statement,
         not facts.transactional and facts.context.version >= (15,),
     )
-    return Outcome(
-        (Effect(rule, table, lock, work, message=message, remedy=remedy),), refused
+    return Outcome.of(
+        Effect(rule, table, lock, work, message=message, remedy=remedy),
+        findings=refused,
     )
 
 
@@ -145,8 +148,8 @@ def _alter_index(facts: Facts) -> Outcome:
                     "the index is rebuilt",
                 ),
             )
-        return Outcome(
-            (Effect(DISABLE_INDEX, table, SCH_M, Work.CATALOG, notes=notes),)
+        return Outcome.of(
+            Effect(DISABLE_INDEX, table, SCH_M, Work.CATALOG, notes=notes)
         )
     return common.unknown(facts, f"ALTER INDEX ... {str(operation).upper()}")
 
@@ -163,7 +166,7 @@ def _rebuild_index(facts: Facts, table: str, copies: bool) -> Outcome:
         effect = online_effect(
             facts, REBUILD, table, SCH_M, work, "the rebuild", options, (12,)
         )
-        return Outcome((effect,), online_findings(facts, REBUILD) + refused)
+        return Outcome.of(effect, findings=online_findings(facts, REBUILD) + refused)
     remedy: Tuple[str, ...] = ()
     if enterprise(facts.context) is not False:
         online = "ONLINE = ON"
@@ -174,9 +177,9 @@ def _rebuild_index(facts: Facts, table: str, copies: bool) -> Outcome:
         if not with_options(options):
             remedy = (f"{facts.statement} WITH ({online})",)
     message = f"reads and writes on {table} wait for the whole rebuild"
-    return Outcome(
-        (Effect(REBUILD, table, SCH_M, work, message=message, remedy=remedy),),
-        refused,
+    return Outcome.of(
+        Effect(REBUILD, table, SCH_M, work, message=message, remedy=remedy),
+        findings=refused,
     )
 
 
@@ -192,22 +195,20 @@ def _reorganize(facts: Facts, table: str, clustered: bool) -> Outcome:
     if clustered:
         work, confidence = Work.REWRITE, Confidence.LIKELY
     if facts.transactional:
-        return Outcome(
-            (
-                Effect(
-                    REORGANIZE,
-                    table,
-                    X,
-                    work,
-                    confidence,
-                    message=f"inside a transaction, the lock REORGANIZE takes on "
-                    f"{table} is held until the migration commits; run it in a "
-                    "migration with transactional=False",
-                    blocks=exclusive_blocks(facts),
-                ),
+        return Outcome.of(
+            Effect(
+                REORGANIZE,
+                table,
+                X,
+                work,
+                confidence,
+                message=f"inside a transaction, the lock REORGANIZE takes on "
+                f"{table} is held until the migration commits; run it in a "
+                "migration with transactional=False",
+                blocks=exclusive_blocks(facts),
             )
         )
-    return Outcome((Effect(REORGANIZE, table, IX, work, Confidence.LIKELY),))
+    return Outcome.of(Effect(REORGANIZE, table, IX, work, Confidence.LIKELY))
 
 
 def _rename_table(facts: Facts) -> Outcome:
@@ -217,7 +218,7 @@ def _rename_table(facts: Facts) -> Outcome:
         f"running application code that names the table {table} fails once the "
         "rename commits",
     )
-    return Outcome((Effect(RENAME, table, SCH_M, Work.CATALOG, notes=(note,)),))
+    return Outcome.of(Effect(RENAME, table, SCH_M, Work.CATALOG, notes=(note,)))
 
 
 def _truncate(facts: Facts) -> Outcome:
@@ -265,7 +266,7 @@ def _trigger(facts: Facts) -> Outcome:
         table = _trigger_table(facts, name)
     if table is None:
         return common.unknown(facts, "a trigger whose table the schema read lacks")
-    return Outcome((Effect(TRIGGER, table, SCH_M, Work.CATALOG),))
+    return Outcome.of(Effect(TRIGGER, table, SCH_M, Work.CATALOG))
 
 
 def _trigger_table(facts: Facts, name: str) -> Optional[str]:
@@ -300,22 +301,20 @@ def _write_rows(facts: Facts) -> Outcome:
     if whole:
         lock, confidence = escalation(facts, table)
         if lock is not None:
-            return Outcome(
-                (
-                    Effect(
-                        LOCK_ESCALATION,
+            return Outcome.of(
+                Effect(
+                    LOCK_ESCALATION,
+                    table,
+                    X,
+                    Work.ROWS,
+                    confidence,
+                    message=common.row_write_message(
+                        facts,
                         table,
-                        X,
-                        Work.ROWS,
-                        confidence,
-                        message=common.row_write_message(
-                            facts,
-                            table,
-                            f", since writing every row escalates its locks to X on "
-                            f"the whole table once it has {ESCALATION_LOCKS:,}",
-                        ),
-                        blocks=blocked,
+                        f", since writing every row escalates its locks to X on "
+                        f"the whole table once it has {ESCALATION_LOCKS:,}",
                     ),
+                    blocks=blocked,
                 )
             )
     notes: Tuple[Finding, ...] = ()
@@ -336,17 +335,15 @@ def _write_rows(facts: Facts) -> Outcome:
                 f"its locks to X on the whole of {table}",
             ),
         )
-    return Outcome(
-        (
-            Effect(
-                WRITE_ROWS,
-                table,
-                IX,
-                Work.ROWS,
-                message=common.row_write_message(facts, table),
-                notes=notes,
-                blocks=blocked,
-            ),
+    return Outcome.of(
+        Effect(
+            WRITE_ROWS,
+            table,
+            IX,
+            Work.ROWS,
+            message=common.row_write_message(facts, table),
+            notes=notes,
+            blocks=blocked,
         )
     )
 
@@ -357,7 +354,7 @@ def _update_statistics(facts: Facts) -> Outcome:
     which only other schema changes wait for.
     """
     table = common.table(facts)
-    return Outcome((Effect(UPDATE_STATISTICS, table, SCH_S, Work.SCAN),))
+    return Outcome.of(Effect(UPDATE_STATISTICS, table, SCH_S, Work.SCAN))
 
 
 STATEMENTS: Dict[str, common.Handler] = {

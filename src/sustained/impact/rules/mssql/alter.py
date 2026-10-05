@@ -161,30 +161,26 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
     options = action.options
     generated = options.get("generated")
     if options.get("identity") or generated == "stored":
-        return Outcome(
-            (
-                _effect(
-                    ADD_COLUMN_REWRITE,
-                    table,
-                    Work.REWRITE,
-                    message=f"adding the column writes a value into every row of "
-                    f"{table}",
-                ),
+        return Outcome.of(
+            _effect(
+                ADD_COLUMN_REWRITE,
+                table,
+                Work.REWRITE,
+                message=f"adding the column writes a value into every row of "
+                f"{table}",
             )
         )
     if generated:
-        return Outcome((_effect(ADD_COLUMN, table, Work.CATALOG),))
+        return Outcome.of(_effect(ADD_COLUMN, table, Work.CATALOG))
     kind = column_type(str(options.get("type", "")))
     if kind.base in _ROWVERSION:
-        return Outcome(
-            (
-                _effect(
-                    ADD_COLUMN_REWRITE,
-                    table,
-                    Work.REWRITE,
-                    message=f"adding a {kind.base} column writes a value into every "
-                    f"row of {table}",
-                ),
+        return Outcome.of(
+            _effect(
+                ADD_COLUMN_REWRITE,
+                table,
+                Work.REWRITE,
+                message=f"adding a {kind.base} column writes a value into every "
+                f"row of {table}",
             )
         )
     default = options.get("default")
@@ -202,22 +198,20 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
                     "NULL, backfill it, then make it NOT NULL",
                 ),
             )
-        return Outcome((_effect(ADD_COLUMN, table, Work.CATALOG, notes=notes),))
+        return Outcome.of(_effect(ADD_COLUMN, table, Work.CATALOG, notes=notes))
     written = _written(options.get("type"), table)
     if written is not None:
         message, confidence = written
-        return Outcome(
-            (
-                _effect(
-                    ADD_COLUMN_REWRITE,
-                    table,
-                    Work.REWRITE,
-                    confidence,
-                    message=message,
-                    remedy=(
-                        f"add the column as NULL without a default, backfill {table} "
-                        "in batches, then make it NOT NULL",
-                    ),
+        return Outcome.of(
+            _effect(
+                ADD_COLUMN_REWRITE,
+                table,
+                Work.REWRITE,
+                confidence,
+                message=message,
+                remedy=(
+                    f"add the column as NULL without a default, backfill {table} "
+                    "in batches, then make it NOT NULL",
                 ),
             )
         )
@@ -232,52 +226,46 @@ def _add_column(facts: Facts, action: Action) -> Outcome:
         confidence = (
             Confidence.KNOWN if options.get("default_certain") else Confidence.LIKELY
         )
-        return Outcome(
-            (
-                _effect(
-                    ADD_COLUMN_REWRITE,
-                    table,
-                    Work.REWRITE,
-                    confidence,
-                    message=f"{gives}, so adding the column writes every row of "
-                    f"{table}",
-                    remedy=(
-                        f"add the column as NULL without a default, backfill {table} "
-                        "in batches, then make it NOT NULL",
-                    ),
+        return Outcome.of(
+            _effect(
+                ADD_COLUMN_REWRITE,
+                table,
+                Work.REWRITE,
+                confidence,
+                message=f"{gives}, so adding the column writes every row of "
+                f"{table}",
+                remedy=(
+                    f"add the column as NULL without a default, backfill {table} "
+                    "in batches, then make it NOT NULL",
                 ),
             )
         )
     allowed = enterprise(facts.context)
     if allowed:
-        return Outcome((_effect(ADD_COLUMN_DEFAULT, table, Work.CATALOG),))
+        return Outcome.of(_effect(ADD_COLUMN_DEFAULT, table, Work.CATALOG))
     if allowed is None:
-        return Outcome(
-            (
-                _effect(
-                    ADD_COLUMN_DEFAULT,
-                    table,
-                    Work.REWRITE,
-                    Confidence.LIKELY,
-                    message=f"on the {ENTERPRISE_EDITIONS} editions this changes only "
-                    f"the catalog; on the others it writes the default into every row "
-                    f"of {table}; the edition was not read",
-                ),
-            )
-        )
-    return Outcome(
-        (
+        return Outcome.of(
             _effect(
                 ADD_COLUMN_DEFAULT,
                 table,
                 Work.REWRITE,
-                message=f"{facts.context.edition} writes the default into every row "
-                f"of {table}; the {ENTERPRISE_EDITIONS} editions change only the "
-                "catalog",
-                remedy=(
-                    f"add the column as NULL without a default, backfill {table} in "
-                    "batches, then add the default and make it NOT NULL",
-                ),
+                Confidence.LIKELY,
+                message=f"on the {ENTERPRISE_EDITIONS} editions this changes only "
+                f"the catalog; on the others it writes the default into every row "
+                f"of {table}; the edition was not read",
+            )
+        )
+    return Outcome.of(
+        _effect(
+            ADD_COLUMN_DEFAULT,
+            table,
+            Work.REWRITE,
+            message=f"{facts.context.edition} writes the default into every row "
+            f"of {table}; the {ENTERPRISE_EDITIONS} editions change only the "
+            "catalog",
+            remedy=(
+                f"add the column as NULL without a default, backfill {table} in "
+                "batches, then add the default and make it NOT NULL",
             ),
         )
     )
@@ -321,7 +309,7 @@ def _drop_column(facts: Facts, action: Action) -> Outcome:
         f"DROP COLUMN leaves the column's space in each row of {table} until the "
         "table or its clustered index is rebuilt",
     )
-    return Outcome((_effect(DROP_COLUMN, table, Work.CATALOG, notes=(note,)),))
+    return Outcome.of(_effect(DROP_COLUMN, table, Work.CATALOG, notes=(note,)))
 
 
 class _Column(NamedTuple):
@@ -385,7 +373,7 @@ def _alter_column(facts: Facts, action: Action) -> Outcome:
         if facts.context.version >= (13,):
             remedy = (f"{facts.statement} WITH (ONLINE = ON)",)
     effect = _effect(rule, table, work, confidence, message, remedy)
-    return Outcome((effect,))
+    return Outcome.of(effect)
 
 
 def _column_change(
@@ -453,7 +441,7 @@ def _online_column(
     effect = online_effect(
         facts, ALTER_COLUMN_ONLINE, table, SCH_M, work, "ALTER COLUMN", options
     )
-    return Outcome((effect._replace(confidence=confidence),), findings)
+    return Outcome.of(effect._replace(confidence=confidence), findings=findings)
 
 
 def _add_constraint(facts: Facts, action: Action) -> Outcome:
@@ -550,17 +538,17 @@ def _add_key(facts: Facts, table: str, action: Action) -> Outcome:
     if is_online(options):
         what = "the key's index build"
         effect = online_effect(facts, ADD_KEY_ONLINE, table, SCH_M, work, what, options)
-        return Outcome(
-            (effect._replace(confidence=confidence),),
-            online_findings(facts, ADD_KEY_ONLINE) + refused,
+        return Outcome.of(
+            effect._replace(confidence=confidence),
+            findings=online_findings(facts, ADD_KEY_ONLINE) + refused,
         )
     remedy: Tuple[str, ...] = ()
     if enterprise(facts.context) is not False:
         remedy = (f"{facts.statement} WITH (ONLINE = ON)",)
     verb = "copies every row of" if clustered else "builds an index over"
     message = f"reads and writes on {table} wait while the key {verb} {table}"
-    return Outcome(
-        (_effect(ADD_KEY, table, work, confidence, message, remedy),), refused
+    return Outcome.of(
+        _effect(ADD_KEY, table, work, confidence, message, remedy), findings=refused
     )
 
 
@@ -633,7 +621,7 @@ def _check_constraint(facts: Facts, action: Action) -> Outcome:
 
 
 def _set_default(facts: Facts, action: Action) -> Outcome:
-    return Outcome((_effect(DEFAULT, common.table(facts), Work.CATALOG),))
+    return Outcome.of(_effect(DEFAULT, common.table(facts), Work.CATALOG))
 
 
 def _rename(facts: Facts, action: Action) -> Outcome:
@@ -647,7 +635,7 @@ def _rename(facts: Facts, action: Action) -> Outcome:
         f"running application code that names the {what} fails once the rename "
         "commits",
     )
-    return Outcome((_effect(RENAME, table, Work.CATALOG, notes=(note,)),))
+    return Outcome.of(_effect(RENAME, table, Work.CATALOG, notes=(note,)))
 
 
 def _rebuild(facts: Facts, action: Action) -> Outcome:
@@ -656,13 +644,13 @@ def _rebuild(facts: Facts, action: Action) -> Outcome:
         effect = online_effect(
             facts, REBUILD, table, SCH_M, Work.REWRITE, "REBUILD", action.options, (12,)
         )
-        return Outcome((effect,), online_findings(facts, REBUILD))
+        return Outcome.of(effect, findings=online_findings(facts, REBUILD))
     remedy: Tuple[str, ...] = ()
     if enterprise(facts.context) is not False:
         remedy = (f"ALTER TABLE {table} REBUILD WITH (ONLINE = ON)",)
     message = f"reads and writes on {table} wait while REBUILD copies every row"
-    return Outcome(
-        (_effect(REBUILD, table, Work.REWRITE, message=message, remedy=remedy),)
+    return Outcome.of(
+        _effect(REBUILD, table, Work.REWRITE, message=message, remedy=remedy)
     )
 
 
@@ -682,7 +670,7 @@ def _switch(facts: Facts, action: Action) -> Outcome:
 
 
 def _trigger_state(facts: Facts, action: Action) -> Outcome:
-    return Outcome((_effect(TRIGGER, common.table(facts), Work.CATALOG),))
+    return Outcome.of(_effect(TRIGGER, common.table(facts), Work.CATALOG))
 
 
 ACTIONS: Dict[str, ActionHandler] = {

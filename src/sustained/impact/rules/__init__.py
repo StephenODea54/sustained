@@ -145,6 +145,18 @@ class Outcome(NamedTuple):
     partitions_unread: bool = False
     unnamed: Tuple[Effect, ...] = ()
 
+    @classmethod
+    def of(
+        cls,
+        *effects: Effect,
+        findings: Tuple[Finding, ...] = (),
+        confidence: Confidence = Confidence.KNOWN,
+        partitions_unread: bool = False,
+        unnamed: Tuple[Effect, ...] = (),
+    ) -> "Outcome":
+        """The outcome with the effects given one by one."""
+        return cls(effects, findings, confidence, partitions_unread, unnamed)
+
 
 class Probe(NamedTuple):
     """

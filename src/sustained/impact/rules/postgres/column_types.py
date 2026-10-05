@@ -367,22 +367,20 @@ def _column_type(facts: Facts, action: Action) -> Outcome:
     )
     indexed = _indexed(facts, table, column) if rebuild else False
     if not indexed and indexed is not None:
-        return Outcome(
-            (Effect(ALTER_TYPE_COERCIBLE, table, ACCESS_EXCLUSIVE, Work.CATALOG),)
+        return Outcome.of(
+            Effect(ALTER_TYPE_COERCIBLE, table, ACCESS_EXCLUSIVE, Work.CATALOG)
         )
     if indexed is None:
         confidence = Confidence.LIKELY
-    return Outcome(
-        (
-            Effect(
-                ALTER_TYPE_INDEXES,
-                table,
-                ACCESS_EXCLUSIVE,
-                Work.INDEX_BUILD,
-                confidence,
-                message=f"the rows stay as they are, but {rebuild}, so each index "
-                f"on {column} is rebuilt while reads and writes on {table} wait",
-            ),
+    return Outcome.of(
+        Effect(
+            ALTER_TYPE_INDEXES,
+            table,
+            ACCESS_EXCLUSIVE,
+            Work.INDEX_BUILD,
+            confidence,
+            message=f"the rows stay as they are, but {rebuild}, so each index "
+            f"on {column} is rebuilt while reads and writes on {table} wait",
         ),
         confidence=confidence,
     )
@@ -414,18 +412,16 @@ def _type_keys(facts: Facts, action: Action) -> List[Effect]:
 def _type_rewrite(
     table: str, column: str, confidence: Confidence, reason: str
 ) -> Outcome:
-    return Outcome(
-        (
-            Effect(
-                ALTER_TYPE,
-                table,
-                ACCESS_EXCLUSIVE,
-                Work.REWRITE,
-                confidence,
-                message=f"{reason}, so {table} and its indexes are rewritten while "
-                "reads and writes wait; the online route takes four steps: add a "
-                f"new column, write to both, backfill it, and swap it for {column}",
-            ),
+    return Outcome.of(
+        Effect(
+            ALTER_TYPE,
+            table,
+            ACCESS_EXCLUSIVE,
+            Work.REWRITE,
+            confidence,
+            message=f"{reason}, so {table} and its indexes are rewritten while "
+            "reads and writes wait; the online route takes four steps: add a "
+            f"new column, write to both, backfill it, and swap it for {column}",
         ),
         confidence=confidence,
     )

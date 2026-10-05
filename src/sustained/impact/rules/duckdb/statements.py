@@ -203,7 +203,7 @@ def _alter_table(facts: Facts) -> Outcome:
 
 def _create_index(facts: Facts) -> Outcome:
     table = common.table(facts)
-    return Outcome((_effect(CREATE_INDEX, table, None, Work.INDEX_BUILD),))
+    return Outcome.of(_effect(CREATE_INDEX, table, None, Work.INDEX_BUILD))
 
 
 def _index_table(facts: Facts, name: str) -> Optional[str]:
@@ -229,7 +229,7 @@ def _drop_index(facts: Facts) -> Outcome:
 
 def _comment(facts: Facts) -> Outcome:
     table = facts.parsed.table or DATABASE
-    return Outcome((_effect(COMMENT, table, CATALOG_ENTRY, Work.CATALOG),))
+    return Outcome.of(_effect(COMMENT, table, CATALOG_ENTRY, Work.CATALOG))
 
 
 def _create_table(facts: Facts) -> Outcome:
@@ -245,7 +245,7 @@ def _create_table(facts: Facts) -> Outcome:
 
 def _schema_change(facts: Facts) -> Outcome:
     table = facts.parsed.table or DATABASE
-    return Outcome((_effect(SCHEMA_CHANGE, table, None, Work.CATALOG),))
+    return Outcome.of(_effect(SCHEMA_CHANGE, table, None, Work.CATALOG))
 
 
 def _drop_table(facts: Facts) -> Outcome:
@@ -269,7 +269,7 @@ def _drop_table(facts: Facts) -> Outcome:
 def _write_rows(facts: Facts) -> Outcome:
     kind = facts.parsed.kind
     if kind == "insert":
-        return Outcome((_effect(WRITE_ROWS, common.table(facts), None, Work.ROWS),))
+        return Outcome.of(_effect(WRITE_ROWS, common.table(facts), None, Work.ROWS))
     effects = []
     for table in common.tables(facts):
         advice = "; on a large table, backfill in batches outside the DDL migration"
