@@ -30,17 +30,20 @@ generated it knows it. The diff and `DdlStep` rendering attach it to the
 
 from __future__ import annotations
 
+import functools
 from enum import Enum
 from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Any,
+    Dict,
     FrozenSet,
     List,
     Mapping,
     NamedTuple,
     Optional,
     Tuple,
+    Type,
 )
 
 if TYPE_CHECKING:
@@ -49,12 +52,18 @@ if TYPE_CHECKING:
 _NO_DETAILS: Mapping[str, object] = MappingProxyType({})
 
 
+@functools.lru_cache(maxsize=None)
+def _ranks(ranked: Type[Enum]) -> Dict[str, int]:
+    """The rank of each member of a _Ranked enum, by member name."""
+    return {member.name: rank for rank, member in enumerate(ranked)}
+
+
 class _Ranked(str, Enum):
     """A str enum whose members rank in the order they are declared."""
 
     @property
     def rank(self) -> int:
-        return list(type(self)).index(self)
+        return _ranks(type(self))[self.name]
 
     def __lt__(self, other: object) -> bool:
         if type(other) is not type(self):
