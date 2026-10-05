@@ -385,6 +385,15 @@ class Model(metaclass=ModelMeta):
         return ".".join(parts)
 
     @classmethod
+    def _table_columns(cls) -> "dict[str, ColumnDef]":
+        """The model's tableColumns, or a ValueError when it has none."""
+        if not cls.tableColumns:
+            raise ValueError(
+                f"Model '{cls.__name__}' has no tableColumns to create a table from."
+            )
+        return cls.tableColumns
+
+    @classmethod
     def create_table_sql(cls, if_not_exists: bool = False) -> str:
         """
         Renders the CREATE TABLE statement for this model's tableColumns
@@ -393,15 +402,11 @@ class Model(metaclass=ModelMeta):
         from sustained.dialects import Dialects
         from sustained.schema import build_create_table_sql
 
-        if not cls.tableColumns:
-            raise ValueError(
-                f"Model '{cls.__name__}' has no tableColumns to create a table from."
-            )
         compiler = Dialects.get_compiler(cls._dialect)
         return build_create_table_sql(
             compiler,
             cls._qualified_table_sql(),
-            cls.tableColumns,
+            cls._table_columns(),
             if_not_exists,
             options=cls.tableOptions,
             constraints=cls.tableConstraints,
@@ -442,20 +447,20 @@ class Model(metaclass=ModelMeta):
         COMMENT ON COLUMN statements follow the CREATE TABLE.
         """
         from sustained.dialects import Dialects
-        from sustained.schema import column_comment_statements
+        from sustained.schema import create_table_statements
 
-        statements: list[str] = []
-        compiler = Dialects.get_compiler(cls._dialect)
-        if include_enum_types and compiler.enum_strategy() == "native":
-            for name, values in cls.enum_types().items():
-                statements.append(compiler.compile_create_enum_type(name, list(values)))
-        statements.append(cls.create_table_sql(if_not_exists=if_not_exists))
-        statements.extend(
-            column_comment_statements(
-                compiler, cls._qualified_table_sql(), cls.tableColumns or {}
-            )
+        statements = create_table_statements(
+            Dialects.get_compiler(cls._dialect),
+            cls._qualified_table_sql(),
+            None,
+            cls._table_columns(),
+            constraints=cls.tableConstraints,
+            options=cls.tableOptions,
+            indexes=cls.indexes or [],
+            enum_types=include_enum_types,
+            if_not_exists=if_not_exists,
         )
-        return statements + cls.create_indexes_sql()
+        return [str(statement) for statement in statements]
 
     @classmethod
     def create_table(

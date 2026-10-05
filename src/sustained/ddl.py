@@ -44,9 +44,9 @@ from sustained.schema import (
     TableOptions,
     add_column_statements,
     bare_table_name,
-    build_create_table_sql,
     collect_enum_types,
     create_index_statement,
+    create_table_statements,
     enum_check_expression,
     enum_check_name,
 )
@@ -305,49 +305,25 @@ def create_table(
 def _render_create_table(args: _Args, compiler: "Compiler") -> List[str]:
     columns = args["columns"]
     assert isinstance(columns, dict)
-    table_sql = _table_sql(args, compiler)
     table = args["table"]
     assert isinstance(table, str)
-    statements: List[str] = []
-    if compiler.enum_strategy() == "native":
-        for name, values in collect_enum_types(columns).items():
-            statements.append(
-                _tag(
-                    compiler.compile_create_enum_type(name, list(values)),
-                    "create_enum_type",
-                    None,
-                    name=name,
-                )
-            )
     constraints = args["constraints"]
     assert isinstance(constraints, list)
     options = args["options"]
     assert options is None or isinstance(options, TableOptions)
-    statements.append(
-        _tag(
-            build_create_table_sql(
-                compiler,
-                table_sql,
-                columns,
-                options=options,
-                constraints=constraints or None,
-            ),
-            "create_table",
-            table,
-        )
-    )
-    from sustained.schema import column_comment_statements
-
-    statements.extend(
-        _tag(statement, "set_column_comment", table)
-        for statement in column_comment_statements(compiler, table_sql, columns)
-    )
     indexes = args["indexes"]
     assert isinstance(indexes, list)
-    statements.extend(
-        create_index_statement(compiler, table_sql, table, index) for index in indexes
+    return list(
+        create_table_statements(
+            compiler,
+            _table_sql(args, compiler),
+            table,
+            columns,
+            constraints=constraints,
+            options=options,
+            indexes=indexes,
+        )
     )
-    return statements
 
 
 @_inverse_of("create_table")

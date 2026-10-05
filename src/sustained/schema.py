@@ -777,6 +777,59 @@ def add_column_statements(
     return statements
 
 
+def create_table_statements(
+    compiler: "Compiler",
+    table_sql: str,
+    intent_table: Optional[str],
+    columns: Dict[str, ColumnDef],
+    constraints: Optional[Sequence[TableConstraint]] = None,
+    options: Optional[TableOptions] = None,
+    indexes: Sequence[Index] = (),
+    enum_types: bool = True,
+    if_not_exists: bool = False,
+    defer_foreign_keys: bool = False,
+) -> List["MigrationStatement"]:
+    """
+    The statements that build one table, each tagged for the impact
+    analysis: CREATE TYPE for each native enum type when `enum_types`
+    is set, CREATE TABLE, the COMMENT ON COLUMN statements of a dialect
+    that stores comments as separate statements, and CREATE INDEX for
+    each index. `intent_table` is the dotted, unquoted table name.
+    """
+    from sustained.analysis import with_intent
+
+    statements: List["MigrationStatement"] = []
+    if enum_types and compiler.enum_strategy() == "native":
+        statements.extend(
+            with_intent(
+                compiler.compile_create_enum_type(name, list(values)),
+                "create_enum_type",
+                None,
+                name=name,
+            )
+            for name, values in collect_enum_types(columns).items()
+        )
+    create = build_create_table_sql(
+        compiler,
+        table_sql,
+        columns,
+        if_not_exists,
+        options=options,
+        constraints=constraints,
+        defer_foreign_keys=defer_foreign_keys,
+    )
+    statements.append(with_intent(create, "create_table", intent_table))
+    statements.extend(
+        with_intent(statement, "set_column_comment", intent_table)
+        for statement in column_comment_statements(compiler, table_sql, columns)
+    )
+    statements.extend(
+        create_index_statement(compiler, table_sql, intent_table, index)
+        for index in indexes
+    )
+    return statements
+
+
 def reference_target_sql(compiler: "Compiler", references: str) -> str:
     """Renders the table and column half of a REFERENCES clause."""
     ref_table, ref_column = references.rsplit(".", 1)

@@ -33,8 +33,7 @@ from sustained.schema import (
     ColumnState,
     ForeignKey,
     bare_table_name,
-    build_create_table_sql,
-    create_index_statement,
+    create_table_statements,
     enum_check_expression,
     enum_check_name,
 )
@@ -182,37 +181,20 @@ def _create_table_steps(
     model's indexes. Enum types are created once for the whole
     migration, so they are not repeated here.
     """
-    from sustained.schema import column_comment_statements
-
     assert model.tableColumns is not None
-    table_sql = model._qualified_table_sql(compiler)
-    table = _intent_table(model)
-    statements: List[str] = [
-        with_intent(
-            build_create_table_sql(
-                compiler,
-                table_sql,
-                model.tableColumns,
-                options=model.tableOptions,
-                constraints=model.tableConstraints,
-                defer_foreign_keys=defer_foreign_keys,
-            ),
-            "create_table",
-            table,
-        )
-    ]
-    statements.extend(
-        _tagged(
-            column_comment_statements(compiler, table_sql, model.tableColumns),
-            "set_column_comment",
-            table,
+    return list(
+        create_table_statements(
+            compiler,
+            model._qualified_table_sql(compiler),
+            _intent_table(model),
+            model.tableColumns,
+            constraints=model.tableConstraints,
+            options=model.tableOptions,
+            indexes=model.indexes or [],
+            enum_types=False,
+            defer_foreign_keys=defer_foreign_keys,
         )
     )
-    statements.extend(
-        create_index_statement(compiler, table_sql, table, index)
-        for index in model.indexes or []
-    )
-    return statements
 
 
 def _deferred_foreign_key_steps(
