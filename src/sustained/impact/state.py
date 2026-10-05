@@ -65,6 +65,7 @@ Names compare case-insensitively, as the recognizer's docstring asks.
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass, field
 from typing import (
     TYPE_CHECKING,
     Callable,
@@ -91,25 +92,42 @@ _UNSET = object()
 # The SET scopes that leave the session's own value unchanged.
 _NOT_THE_SESSION = frozenset({"global", "persist", "persist_only", "user"})
 
-# The RunState attributes that hold what the run did to tables, indexes,
-# checks, columns, storage, partitions, and domains, which a ROLLBACK
-# undoes.
-_FACTS = (
-    "born",
-    "created",
-    "filled",
-    "gone",
-    "renamed",
-    "indexes",
-    "not_null_checks",
-    "schema_checks",
-    "schema_columns",
-    "storage",
-    "links",
-    "defaults",
-    "partitioned",
-    "domains",
-)
+# The RunState attributes that record what the run did to tables,
+# indexes, checks, columns, storage, partitions, and domains, which a
+# ROLLBACK undoes.
+_FACTS = ("tables", "gone", "renamed", "indexes", "storage", "domains")
+
+
+@dataclass
+class _Table:
+    """
+    What the run did to one table, under the name the table has now.
+    `born` says the run created the table, and `created` that it is
+    still empty. `filled` says the run filled it from a query, and
+    `sources` gives the live names of the tables whose rows were copied
+    into it, or None when the query read rows from something else.
+    `checks` gives the checks of the form `column IS NOT NULL` the run
+    added, by check name: the column, and whether the check is valid.
+    `schema_checks` and `schema_columns` give the checks and columns of
+    the schema read that the run renamed or dropped: the name each has
+    now, or None once dropped. `link` is set on a partition the run
+    attached, created, or detached: the name as the statement spells it,
+    and the partitioned table it is a partition of now, or None once
+    detached. `default` says the partition is the DEFAULT partition of
+    its partitioned table, and `partitioned` that the run created the
+    table partitioned.
+    """
+
+    born: bool = False
+    created: bool = False
+    filled: bool = False
+    sources: Optional[Tuple[str, ...]] = None
+    checks: Dict[str, Tuple[str, bool]] = field(default_factory=dict)
+    schema_checks: Dict[str, Optional[str]] = field(default_factory=dict)
+    schema_columns: Dict[str, Optional[str]] = field(default_factory=dict)
+    link: Optional[Tuple[str, Optional[str]]] = None
+    default: bool = False
+    partitioned: bool = False
 
 
 class RunState:
@@ -142,41 +160,17 @@ class RunState:
         self.local_scope = local_scope
         self.context = context
         self.transactional_ddl = transactional_ddl
-        # The tables the run created, and of those the ones still empty.
-        self.born: Set[str] = set()
-        self.created: Set[str] = set()
-        # The tables the run created and filled from a query: the live
-        # names of the tables whose rows were copied into them, or None
-        # when the query read rows from something else.
-        self.filled: Dict[str, Optional[Tuple[str, ...]]] = {}
+        # What the run did to each table, by lower case name.
+        self.tables: Dict[str, _Table] = {}
         # The names the run dropped or renamed away.
         self.gone: Set[str] = set()
         self.renamed: Dict[str, str] = {}
         self.indexes: Dict[str, str] = {}
-        # The checks of the form `column IS NOT NULL` the run added, by
-        # table and check name: the column, and whether the check is valid.
-        self.not_null_checks: Dict[str, Dict[str, Tuple[str, bool]]] = {}
-        # By table, the checks of the schema read that the run renamed
-        # or dropped: the name each has now, or None once dropped.
-        self.schema_checks: Dict[str, Dict[str, Optional[str]]] = {}
-        # By table, the columns of the schema read that the run renamed
-        # or dropped: the name each has now, or None once dropped.
-        self.schema_columns: Dict[str, Dict[str, Optional[str]]] = {}
         self.settings: Dict[str, str] = {}
         self.timeouts = TimeoutScope()
         # The storage facts the rules recorded, by live table name, such
         # as InnoDB's instant row versions.
         self.storage: Dict[str, Dict[str, object]] = {}
-        # The partitions the run attached, created, or detached, by lower
-        # case name: the name as the statement spells it, and the
-        # partitioned table it is a partition of now, or None once
-        # detached.
-        self.links: Dict[str, Tuple[str, Optional[str]]] = {}
-        # Of those, the ones that are the DEFAULT partition of their
-        # partitioned table.
-        self.defaults: Set[str] = set()
-        # The partitioned tables the run created.
-        self.partitioned: Set[str] = set()
         # The domains the run created, by lower case name: whether the
         # domain has a NOT NULL or a CHECK of its own, and the type it
         # is over as the statement spells it; None once the run dropped
@@ -198,6 +192,18 @@ class RunState:
         """A copy of what the run recorded about tables."""
         return {name: copy.deepcopy(getattr(self, name)) for name in _FACTS}
 
+    def _table(self, table: str) -> _Table:
+        """What the run did to a table, or an empty record when nothing."""
+        return self.tables.get(table.lower()) or _Table()
+
+    def _entry(self, table: str) -> _Table:
+        """The record of a table, added when the run has none yet."""
+        return self.tables.setdefault(table.lower(), _Table())
+
+    def _links(self) -> List[Tuple[str, str, Optional[str]]]:
+        """Each partition the run linked: its key, its name, its parent."""
+        return [(k, *t.link) for k, t in self.tables.items() if t.link is not None]
+
     def rollback(self) -> None:
         """
         Takes in a `ROLLBACK` in a migration's transaction. The
@@ -211,11 +217,11 @@ class RunState:
 
     def is_new(self, table: str) -> bool:
         """Whether the run created the table earlier, and it is still empty."""
-        return table.lower() in self.created
+        return self._table(table).created
 
     def created_in_run(self, table: str) -> bool:
         """Whether the run created the table, empty or filled since."""
-        return table.lower() in self.born
+        return self._table(table).born
 
     def original(self, table: str) -> str:
         """The live name of a table the run may have renamed."""
@@ -228,12 +234,12 @@ class RunState:
         one the run filled, and otherwise the context's stats for its
         live name.
         """
-        key = table.lower()
-        if key in self.created:
+        found = self._table(table)
+        if found.created:
             return TableStats(0, 0)
-        if key not in self.filled:
+        if not found.filled:
             return context.stats(self.original(table))
-        sources = self.filled[key]
+        sources = found.sources
         if sources is None:
             return TableStats()
         read = [context.stats(source) for source in sources]
@@ -275,12 +281,11 @@ class RunState:
         Whether a valid check the run added proves the column has no
         NULL.
         """
-        checks = self.not_null_checks.get(table.lower(), {})
-        return (column.lower(), True) in checks.values()
+        return (column.lower(), True) in self._table(table).checks.values()
 
     def schema_check_kept(self, table: str, name: str) -> bool:
         """Whether a check the schema read reports on the table is still there."""
-        renamed = self.schema_checks.get(table.lower(), {})
+        renamed = self._table(table).schema_checks
         return renamed.get(name.lower(), name) is not None
 
     def schema_column(self, table: str, column: str) -> Optional[str]:
@@ -289,7 +294,7 @@ class RunState:
         now names `column`, or None when the run added the column or
         moved the name onto it.
         """
-        return _schema_name(self.schema_columns.get(table.lower(), {}), column)
+        return _schema_name(self._table(table).schema_columns, column)
 
     def relation(
         self, table: str, context: Optional["EngineContext"] = None
@@ -303,36 +308,39 @@ class RunState:
         """
         context = context or self.context
         key = table.lower()
+        found = self._table(table)
         read = None
-        if context is not None and key not in self.born | self.gone:
+        if context is not None and not found.born and key not in self.gone:
             read = context.relations.get(self.original(table).lower())
+        links = self._links()
+        linked = {child for child, _, _ in links}
         below = [
-            name
-            for name, parent in self.links.values()
+            (child, name)
+            for child, name, parent in links
             if parent is not None and parent.lower() == key
         ]
-        if read is None and not below and key not in self.links:
-            if key not in self.partitioned:
+        if read is None and not below and found.link is None:
+            if not found.partitioned:
                 return None
         read = read or Relation()
         partitions = [
             name
             for name in (self.now_named(p) for p in read.partitions)
-            if name is not None and name.lower() not in self.links
+            if name is not None and name.lower() not in linked
         ]
         default = self.now_named(read.default) if read.default else None
-        if default is None or default.lower() in self.links:
+        if default is None or default.lower() in linked:
             default = None
-        for name in below:
+        for child, name in below:
             partitions.append(name)
-            if name.lower() in self.defaults:
+            if self.tables[child].default:
                 default = name
-        if key in self.links:
-            parent: Optional[str] = self.links[key][1]
+        if found.link is not None:
+            parent: Optional[str] = found.link[1]
         else:
             parent = self.now_named(read.parent) if read.parent else None
         return read._replace(
-            partitioned=read.partitioned or key in self.partitioned,
+            partitioned=read.partitioned or found.partitioned,
             parent=parent,
             default=default,
             partitions=tuple(partitions),
@@ -347,7 +355,7 @@ class RunState:
         for now, was in self.renamed.items():
             if was.lower() == wanted:
                 return now
-        if wanted in self.gone or wanted in self.born or wanted in self.renamed:
+        if wanted in self.gone or self._table(wanted).born or wanted in self.renamed:
             # The name is gone, or names a table the run made or renamed.
             return None
         return live
@@ -425,15 +433,14 @@ class RunState:
             return
         key = table.lower()
         self.forget(key)
-        self.born.add(key)
-        self.created.add(key)
-        if options.get("partitioned"):
-            self.partitioned.add(key)
         parent = options.get("partition_of")
-        if parent:
-            self.links[key] = (table, str(parent))
-            if options.get("default_partition"):
-                self.defaults.add(key)
+        self.tables[key] = _Table(
+            born=True,
+            created=True,
+            link=(table, str(parent)) if parent else None,
+            default=bool(parent and options.get("default_partition")),
+            partitioned=bool(options.get("partitioned")),
+        )
         if options.get("as_select"):
             self.fill(table, options.get("reads"))
 
@@ -444,7 +451,7 @@ class RunState:
         neither the schema nor the sizes and so cannot say it is absent.
         """
         key = table.lower()
-        if key in self.born or key in self.renamed:
+        if self._table(key).born or key in self.renamed:
             return True
         if key in self.gone:
             return False
@@ -464,8 +471,8 @@ class RunState:
         `reads` is the recognizer's tuple of the tables the query reads,
         or None when the query reads rows from something else.
         """
-        key = table.lower()
-        sources: Optional[Tuple[str, ...]] = self.filled.get(key, ())
+        found = self._entry(table)
+        sources: Optional[Tuple[str, ...]] = found.sources if found.filled else ()
         if not isinstance(reads, tuple):
             sources = None
         else:
@@ -475,8 +482,7 @@ class RunState:
             # The query read only empty tables, or none, as SELECT 1
             # does, so the table has at most a few rows.
             return
-        self.filled[key] = sources
-        self.created.discard(key)
+        found.filled, found.sources, found.created = True, sources, False
 
     def insert(self, table: str, reads: object) -> None:
         """
@@ -494,12 +500,7 @@ class RunState:
         Takes in `ATTACH PARTITION`. A partitioned table the run created,
         and each one it is below, then has the rows of the partition.
         """
-        key = child.lower()
-        self.links[key] = (child, parent)
-        if default:
-            self.defaults.add(key)
-        else:
-            self.defaults.discard(key)
+        self._link(child, parent, default)
         for name in [parent, *self.above(parent)]:
             if self.created_in_run(name):
                 self.fill(name, (child,))
@@ -510,17 +511,29 @@ class RunState:
         keeps the size its partitions gave it, which may be more than it
         has now.
         """
+        self._link(child, None, False)
+
+    def _link(self, child: str, parent: Optional[str], default: bool) -> None:
+        """
+        Records the partitioned table a partition is below now, or None.
+        A partition the run had not linked before moves to the end of
+        `tables`, so `relation()` lists the partitions in the order the
+        run linked them.
+        """
         key = child.lower()
-        self.links[key] = (child, None)
-        self.defaults.discard(key)
+        found = self.tables.get(key) or _Table()
+        if found.link is None:
+            self.tables.pop(key, None)
+            self.tables[key] = found
+        found.link, found.default = (child, parent), default
 
     def sources_of(self, table: str) -> Optional[Tuple[str, ...]]:
         """The live tables whose rows a table has, as `filled` records them."""
-        key = table.lower()
-        if key in self.created:
+        found = self._table(table)
+        if found.created:
             return ()
-        if key in self.filled:
-            return self.filled[key]
+        if found.filled:
+            return found.sources
         return (self.original(table),)
 
     def drop(self, table: str) -> None:
@@ -535,16 +548,8 @@ class RunState:
 
     def forget(self, key: str) -> None:
         """Clears what the run knew of the table a lower case name named."""
-        self.born.discard(key)
-        self.created.discard(key)
-        self.filled.pop(key, None)
+        self.tables.pop(key, None)
         self.renamed.pop(key, None)
-        self.not_null_checks.pop(key, None)
-        self.schema_checks.pop(key, None)
-        self.schema_columns.pop(key, None)
-        self.links.pop(key, None)
-        self.defaults.discard(key)
-        self.partitioned.discard(key)
         self.gone.discard(key)
 
     def record_checks(self, table: str, action: Action) -> None:
@@ -552,8 +557,8 @@ class RunState:
         Takes in the `IS NOT NULL` checks, and the schema's checks and
         columns, that an ALTER TABLE action changes.
         """
-        key = table.lower()
-        checks = self.not_null_checks.setdefault(key, {})
+        found = self._entry(table)
+        checks = found.checks
         name = str(action.options.get("name") or "").lower()
         if action.kind == "add_constraint" and action.options.get("not_null"):
             column = str(action.options["not_null"]).lower()
@@ -562,27 +567,27 @@ class RunState:
             checks[name] = (checks[name][0], True)
         elif action.kind == "drop_constraint":
             if checks.pop(name, None) is None:
-                _move(self.schema_checks.setdefault(key, {}), name, None)
+                _move(found.schema_checks, name, None)
         elif action.kind == "rename_constraint":
             old = str(action.options.get("old") or "").lower()
             new = str(action.options.get("new") or "").lower()
             if old in checks:
                 checks[new] = checks.pop(old)
             else:
-                _move(self.schema_checks.setdefault(key, {}), old, new)
+                _move(found.schema_checks, old, new)
         elif action.kind == "drop_column" and action.column:
             dropped = action.column.lower()
             for check, (column, _) in list(checks.items()):
                 if column == dropped:
                     del checks[check]
-            _move(self.schema_columns.setdefault(key, {}), dropped, None)
+            _move(found.schema_columns, dropped, None)
         elif action.kind == "rename_column" and action.column:
             old = action.column.lower()
             new = str(action.options.get("new") or "").lower()
             for check, (column, valid) in list(checks.items()):
                 if column == old:
                     checks[check] = (new, valid)
-            _move(self.schema_columns.setdefault(key, {}), old, new)
+            _move(found.schema_columns, old, new)
 
     def rename(self, old: str, new: str) -> None:
         # A rename keeps the old schema when the new name has none.
@@ -590,41 +595,20 @@ class RunState:
             new = f"{old.rsplit('.', 1)[0]}.{new}"
         was, now = old.lower(), new.lower()
         live = self.original(old)
-        born, created = was in self.born, was in self.created
-        filled = was in self.filled
-        sources = self.filled.get(was)
-        checks = self.not_null_checks.get(was)
-        schema_checks = self.schema_checks.get(was)
-        columns = self.schema_columns.get(was)
-        link = self.links.get(was)
-        default, partitioned = was in self.defaults, was in self.partitioned
+        found = self.tables.get(was)
         indexes = [i for i, t in self.indexes.items() if t.lower() == was]
         self.forget(was)
         self.forget(now)
         self.gone.add(was)
-        if born:
-            self.born.add(now)
-        if created:
-            self.created.add(now)
-        if filled:
-            self.filled[now] = sources
-        if checks is not None:
-            self.not_null_checks[now] = checks
-        if schema_checks is not None:
-            self.schema_checks[now] = schema_checks
-        if columns is not None:
-            self.schema_columns[now] = columns
-        if link is not None:
-            self.links[now] = (new, link[1])
-        if default:
-            self.defaults.add(now)
-        if partitioned:
-            self.partitioned.add(now)
+        if found is not None:
+            if found.link is not None:
+                found.link = (new, found.link[1])
+            self.tables[now] = found
         for index in indexes:
             self.indexes[index] = new
-        for child, (name, parent) in list(self.links.items()):
+        for child, name, parent in self._links():
             if parent is not None and parent.lower() == was:
-                self.links[child] = (name, new)
+                self.tables[child].link = (name, new)
         self.renamed[now] = live
 
     def record_settings(self, parsed: ParsedStatement, transactional: bool) -> None:

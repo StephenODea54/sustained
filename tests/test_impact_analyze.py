@@ -507,7 +507,7 @@ class RollbackTestCase(unittest.TestCase):
         self.assertIsNone(state.index_table("ix"))
         self.assertFalse(state.proves_not_null("orders", "id"))
         self.assertEqual(state.schema_column("orders", "x"), "x")
-        self.assertEqual((state.filled, state.gone), ({}, set()))
+        self.assertEqual((state.tables, state.gone), ({}, set()))
 
 
 class PartitionStateTestCase(unittest.TestCase):
@@ -560,6 +560,21 @@ class PartitionStateTestCase(unittest.TestCase):
         self.assertEqual(found.partitions, ("pt1", "ptd", "pt2"))
         self.assertEqual(found.default, "pt2")
         self.assertEqual(state.relation("pt2").parent, "pt")
+
+    def test_partitions_read_in_the_order_the_run_linked_them(self):
+        state = self.state(
+            "CREATE TABLE n (id int) PARTITION BY LIST (id)",
+            "CREATE TABLE n1 (id int)",
+            "CREATE TABLE n2 (id int)",
+            "ALTER TABLE n1 ADD CONSTRAINT c CHECK (id IS NOT NULL)",
+            "ALTER TABLE n ATTACH PARTITION n2 FOR VALUES IN (2)",
+            "ALTER TABLE n ATTACH PARTITION n1 FOR VALUES IN (1)",
+            "ALTER TABLE n DETACH PARTITION n2",
+            "ALTER TABLE n ATTACH PARTITION n2 DEFAULT",
+        )
+        found = state.relation("n")
+        self.assertEqual((found.partitions, found.default), (("n2", "n1"), "n2"))
+        self.assertEqual(state.below("n"), ["n2", "n1"])
 
     def test_detach_unlinks_the_partition(self):
         state = self.state("ALTER TABLE pt DETACH PARTITION ptd CONCURRENTLY")
