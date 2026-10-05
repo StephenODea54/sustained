@@ -171,6 +171,11 @@ class SeverityTestCase(unittest.TestCase):
         self.assertEqual(statement.findings[0].severity, Severity.INFO)
         self.assertEqual(statement.findings[0].remedy, ("DROP INDEX CONCURRENTLY ix",))
 
+    def test_an_index_follows_its_table_through_a_rename(self):
+        statements = ["CREATE INDEX ix ON t (a)", "ALTER TABLE t RENAME TO u"]
+        report = analyze([*statements, "DROP INDEX ix"], PG)
+        self.assertEqual([t.table for t in report.statements[-1].tables], ["u"])
+
 
 class HoldTestCase(unittest.TestCase):
     def holds(self, statements):
@@ -277,7 +282,7 @@ class RunStateTestCase(unittest.TestCase):
             state.record(recognize(sql, dialect), True)
         self.assertTrue(state.is_new("B"))
         self.assertFalse(state.is_new("a"))
-        self.assertEqual(state.index_table("IX"), "a")
+        self.assertEqual(state.index_table("IX"), "b")
         self.assertIsNone(state.index_table("other"))
         self.assertEqual(state.original("y"), "x")
         self.assertEqual(state.original("b"), "a")

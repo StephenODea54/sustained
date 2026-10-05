@@ -674,6 +674,7 @@ class RunState:
         columns = self.schema_columns.get(was)
         link = self.links.get(was)
         default, partitioned = was in self.defaults, was in self.partitioned
+        indexes = [i for i, t in self.indexes.items() if t.lower() == was]
         self.forget(was)
         self.forget(now)
         self.gone.add(was)
@@ -695,6 +696,8 @@ class RunState:
             self.defaults.add(now)
         if partitioned:
             self.partitioned.add(now)
+        for index in indexes:
+            self.indexes[index] = new
         for child, (name, parent) in list(self.links.items()):
             if parent is not None and parent.lower() == was:
                 self.links[child] = (name, new)
