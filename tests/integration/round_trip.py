@@ -1,17 +1,18 @@
 """
-The schema read round trip. A test builds a table with indexes on a real
-server, reads it, drops it, builds it again from the read alone, and
-reads it again. The two reads must match.
+The schema read round trip. A test builds a table with indexes or
+constraints on a real server, reads it, drops it, builds it again from
+the read alone, and reads it again. The two reads must match.
 
 diff_snapshots() compares an element kind on a dialect only when this
 round trip gives zero difference on that dialect's server. A rehearsal
-restores an index from the catalog read in the same way, so a read that
+restores an index or a constraint from the catalog read in the same way, so a read that
 does not come back as it was would report a difference the down steps
 did not cause.
 """
 
 import unittest
 
+from sustained.autogenerate.statements import _introspected_fk_sql
 from sustained.dialects import Dialects
 from sustained.introspect import introspect_schema
 from sustained.introspect.compare import index_parts
@@ -20,6 +21,7 @@ from sustained.schema import catalog_index, create_index_sql
 from . import harness
 
 TABLE = "it_round_trip"
+PARENT = "it_rt_parent"
 
 # The table every server builds. Each dialect adds the indexes it can
 # declare.
@@ -83,11 +85,16 @@ class RoundTripCase(unittest.TestCase):
         if hasattr(self.connection, "commit"):
             self.connection.commit()
 
-    def drop(self):
-        self.execute(f"DROP TABLE IF EXISTS {self.compiler.quote_identifier(TABLE)}")
+    def drop(self, *tables):
+        for table in tables or (TABLE, PARENT):
+            quoted = self.compiler.quote_identifier(table)
+            self.execute(f"DROP TABLE IF EXISTS {quoted}")
 
     def read(self):
-        return introspect_schema(self.connection, self.DIALECT)[TABLE]
+        return self.snapshot()[TABLE]
+
+    def snapshot(self):
+        return introspect_schema(self.connection, self.DIALECT)
 
     def build(self):
         quote = self.compiler.quote_identifier
@@ -98,8 +105,50 @@ class RoundTripCase(unittest.TestCase):
             sql = f"CREATE {unique}INDEX {name} ON {quote(TABLE)} {parts}"
             self.execute(sql + (f" WHERE {where}" if where else ""))
 
-    def rebuild(self, table):
-        """Builds the table again from a read of it, columns then indexes."""
+    def build_constrained(self):
+        quote = self.compiler.quote_identifier
+        self.execute(
+            f"CREATE TABLE {quote(PARENT)} ({quote('id')} INTEGER NOT NULL PRIMARY KEY)"
+        )
+        body = [f"{quote(name)} {spec}" for name, spec in COLUMNS] + [
+            "CONSTRAINT ck_rt_a CHECK (a > 0 OR a IS NULL)",
+            "CONSTRAINT ck_rt_b CHECK (b <> 'x' AND c BETWEEN 1 AND 9)",
+            "CONSTRAINT uq_rt_bc UNIQUE (b, c)",
+            f"CONSTRAINT fk_rt_cascade FOREIGN KEY (c) REFERENCES {quote(PARENT)} (id) "
+            "ON DELETE CASCADE",
+            f"CONSTRAINT fk_rt_plain FOREIGN KEY (a) REFERENCES {quote(PARENT)} (id)",
+        ]
+        self.execute(f"CREATE TABLE {quote(TABLE)} ({', '.join(body)})")
+
+    def rebuild_constraints(self, snapshot):
+        """
+        Builds the table again from a read of it: its columns, then each
+        constraint through the statements a down step restores it with.
+        """
+        quote = self.compiler.quote_identifier
+        table = snapshot[TABLE]
+        self.create_columns(table)
+        for name, expression in table.checks.items():
+            spelled = table.check_names.get(name, name)
+            self.execute(
+                self.compiler.compile_add_check(quote(TABLE), spelled, expression)
+            )
+        for name, index in table.indexes.items():
+            if index.constraint:
+                spelled = [table.spelled_column(column) for column in index.columns]
+                self.execute(
+                    self.compiler.compile_add_unique(
+                        quote(TABLE), index.name or name, spelled
+                    )
+                )
+        for name, fk in table.foreign_keys.items():
+            self.execute(
+                _introspected_fk_sql(
+                    self.compiler, quote(TABLE), fk.name or name, fk, snapshot, TABLE
+                )
+            )
+
+    def create_columns(self, table):
         quote = self.compiler.quote_identifier
         columns = []
         for key, column in table.columns.items():
@@ -110,6 +159,11 @@ class RoundTripCase(unittest.TestCase):
                 text += " PRIMARY KEY"
             columns.append(text)
         self.execute(f"CREATE TABLE {quote(TABLE)} ({', '.join(columns)})")
+
+    def rebuild(self, table):
+        """Builds the table again from a read of it, columns then indexes."""
+        quote = self.compiler.quote_identifier
+        self.create_columns(table)
         for name, index in table.indexes.items():
             if index.constraint:
                 continue
@@ -138,8 +192,36 @@ class RoundTripCase(unittest.TestCase):
     def test_indexes_come_back_as_they_were_read(self):
         self.build()
         first = self.read()
-        self.drop()
+        self.drop(TABLE)
         self.rebuild(first)
         second = self.read()
         self.assertEqual(set(self.plain_indexes(first)), set(self.EXPECTED))
         self.assertEqual(self.plain_indexes(second), self.plain_indexes(first))
+
+    def test_constraints_come_back_as_they_were_read(self):
+        if not self.compiler.supports_add_constraint():
+            self.skipTest("the engine adds no constraint to a table")
+        self.build_constrained()
+        first = self.snapshot()
+        self.drop(TABLE)
+        self.rebuild_constraints(first)
+        second = self.snapshot()
+        self.assertEqual(
+            constraint_parts(second[TABLE]), constraint_parts(first[TABLE])
+        )
+
+
+def constraint_parts(table):
+    """
+    The constraints of a table the round trip compares: each check's
+    expression as the catalog spells it, the columns of each UNIQUE
+    constraint, and every field of each foreign key.
+    """
+    found = {f"check {name}": expression for name, expression in table.checks.items()}
+    found.update(
+        (f"unique {name}", index.columns)
+        for name, index in table.indexes.items()
+        if index.constraint
+    )
+    found.update((f"fk {name}", tuple(fk)) for name, fk in table.foreign_keys.items())
+    return found
