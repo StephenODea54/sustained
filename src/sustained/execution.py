@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib
 import threading
 import time
+import warnings
 from contextlib import contextmanager
 from typing import (
     TYPE_CHECKING,
@@ -386,6 +387,27 @@ def cursor_scope(connection: Connection) -> Iterator[Cursor]:
         yield cursor
     finally:
         cursor.close()
+
+
+def open_cursor(connection: Connection) -> Cursor:
+    """
+    Deprecated: use cursor_scope(), which also closes a cursor it opens.
+    This function will be removed in 3.0.
+
+    Returns the cursor cursor_scope() would yield: the transaction's own
+    cursor when a transaction() block is open on the connection, and a
+    new one when not. The caller closes a new cursor.
+    """
+    warnings.warn(
+        "sustained.execution.open_cursor() is deprecated and will be removed "
+        "in 3.0. Use sustained.execution.cursor_scope() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    entry = _own_transaction_entry(connection)
+    if entry is not None:
+        return entry[2]
+    return connection.cursor()
 
 
 @contextmanager

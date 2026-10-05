@@ -13,6 +13,7 @@ from sustained.execution import (
     cursor_scope,
     in_transaction,
     needs_explicit_begin,
+    open_cursor,
     pinned_transaction,
     set_statement_listener,
     transaction,
@@ -215,6 +216,18 @@ class TestCursorScope(unittest.TestCase):
         conn = RefusingConnection()
         with pinned_transaction(conn):
             self.assertEqual(conn.closed_cursors, 0)
+        self.assertEqual(conn.closed_cursors, 1)
+
+    def test_open_cursor_is_deprecated_and_still_works(self):
+        conn = RefusingConnection()
+        with self.assertWarnsRegex(DeprecationWarning, r"3\.0.*cursor_scope\(\)"):
+            outside = open_cursor(conn)
+        with transaction(conn, Dialects.DUCKDB):
+            with cursor_scope(conn) as pinned:
+                with self.assertWarns(DeprecationWarning):
+                    self.assertIs(open_cursor(conn), pinned)
+        self.assertIsNot(outside, pinned)
+        # The caller owns a cursor open_cursor() opened.
         self.assertEqual(conn.closed_cursors, 1)
 
 
