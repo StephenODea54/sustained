@@ -85,13 +85,6 @@ from sustained.impact.rules.postgres.statements import (
 from sustained.impact.tokens import tokenize
 
 
-def simple(rule: Rule, lock: str, work: Work) -> ActionHandler:
-    def handler(facts: Facts, action: Action) -> Outcome:
-        return Outcome.of(Effect(rule, common.table(facts), lock, work))
-
-    return handler
-
-
 def _add_column(facts: Facts, action: Action) -> Outcome:
     table = common.table(facts)
     options = action.options

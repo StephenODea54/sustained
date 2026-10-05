@@ -120,6 +120,15 @@ def dispatch(facts: Facts, handlers: Mapping[str, Handler]) -> Outcome:
     return handler(facts)
 
 
+def fixed_action(rule: Rule, lock: str, work: Work) -> ActionHandler:
+    """The handler of an ALTER TABLE action that always takes one lock and work."""
+
+    def handler(facts: Facts, action: Action) -> Outcome:
+        return Outcome.of(Effect(rule, table(facts), lock, work))
+
+    return handler
+
+
 def by_kind(handlers: Mapping[str, ActionHandler]) -> ActionReader:
     """Reads each ALTER TABLE action with the handler for its kind."""
 

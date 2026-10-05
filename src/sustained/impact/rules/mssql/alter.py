@@ -618,10 +618,6 @@ def _check_constraint(facts: Facts, action: Action) -> Outcome:
     return Outcome(tuple(effects))
 
 
-def _set_default(facts: Facts, action: Action) -> Outcome:
-    return Outcome.of(_effect(DEFAULT, common.table(facts), Work.CATALOG))
-
-
 def _rename(facts: Facts, action: Action) -> Outcome:
     table = common.table(facts)
     if action.kind == "rename_index":
@@ -662,10 +658,6 @@ def _switch(facts: Facts, action: Action) -> Outcome:
     return Outcome((effect, other))
 
 
-def _trigger_state(facts: Facts, action: Action) -> Outcome:
-    return Outcome.of(_effect(TRIGGER, common.table(facts), Work.CATALOG))
-
-
 ACTIONS: Dict[str, common.ActionHandler] = {
     "add_column": _add_column,
     "drop_column": _drop_column,
@@ -674,14 +666,14 @@ ACTIONS: Dict[str, common.ActionHandler] = {
     "drop_constraint": _drop_constraint,
     "enable_constraint": _check_constraint,
     "disable_constraint": _check_constraint,
-    "set_default": _set_default,
-    "drop_default": _set_default,
+    "set_default": common.fixed_action(DEFAULT, SCH_M, Work.CATALOG),
+    "drop_default": common.fixed_action(DEFAULT, SCH_M, Work.CATALOG),
     "rename_column": _rename,
     "rename_index": _rename,
     "rebuild": _rebuild,
     "switch": _switch,
-    "enable_trigger": _trigger_state,
-    "disable_trigger": _trigger_state,
+    "enable_trigger": common.fixed_action(TRIGGER, SCH_M, Work.CATALOG),
+    "disable_trigger": common.fixed_action(TRIGGER, SCH_M, Work.CATALOG),
 }
 
 

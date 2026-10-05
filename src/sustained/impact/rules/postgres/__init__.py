@@ -55,7 +55,6 @@ from sustained.impact.rules.postgres.alter import (
     _set_not_null,
     _set_parameters,
     _validate,
-    simple,
 )
 from sustained.impact.rules.postgres.catalog import (
     COLUMN_CATALOG,
@@ -119,11 +118,15 @@ _ACTIONS: Dict[str, ActionHandler] = {
     "drop_column": _drop_column,
     "alter_column_type": _alter_column_type,
     "set_not_null": _set_not_null,
-    "drop_not_null": simple(COLUMN_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
-    "set_default": simple(COLUMN_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
-    "drop_default": simple(COLUMN_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
-    "set_storage": simple(COLUMN_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
-    "set_statistics": simple(SET_STATISTICS, SHARE_UPDATE_EXCLUSIVE, Work.CATALOG),
+    "drop_not_null": common.fixed_action(
+        COLUMN_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG
+    ),
+    "set_default": common.fixed_action(COLUMN_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
+    "drop_default": common.fixed_action(COLUMN_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
+    "set_storage": common.fixed_action(COLUMN_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
+    "set_statistics": common.fixed_action(
+        SET_STATISTICS, SHARE_UPDATE_EXCLUSIVE, Work.CATALOG
+    ),
     "add_constraint": _add_constraint,
     "drop_constraint": _drop_constraint,
     "validate_constraint": _validate,
@@ -132,16 +135,24 @@ _ACTIONS: Dict[str, ActionHandler] = {
     "rename_constraint": _rename,
     "attach_partition": _attach_partition,
     "detach_partition": _detach_partition,
-    "set_tablespace": simple(TABLE_REWRITE, ACCESS_EXCLUSIVE, Work.REWRITE),
-    "set_logged": simple(TABLE_REWRITE, ACCESS_EXCLUSIVE, Work.REWRITE),
-    "set_unlogged": simple(TABLE_REWRITE, ACCESS_EXCLUSIVE, Work.REWRITE),
-    "set_schema": simple(TABLE_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
-    "owner_to": simple(TABLE_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
-    "replica_identity": simple(TABLE_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
-    "row_security": simple(TABLE_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
+    "set_tablespace": common.fixed_action(
+        TABLE_REWRITE, ACCESS_EXCLUSIVE, Work.REWRITE
+    ),
+    "set_logged": common.fixed_action(TABLE_REWRITE, ACCESS_EXCLUSIVE, Work.REWRITE),
+    "set_unlogged": common.fixed_action(TABLE_REWRITE, ACCESS_EXCLUSIVE, Work.REWRITE),
+    "set_schema": common.fixed_action(TABLE_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
+    "owner_to": common.fixed_action(TABLE_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
+    "replica_identity": common.fixed_action(
+        TABLE_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG
+    ),
+    "row_security": common.fixed_action(TABLE_CATALOG, ACCESS_EXCLUSIVE, Work.CATALOG),
     "set_parameters": _set_parameters,
-    "enable_trigger": simple(TRIGGER_STATE, SHARE_ROW_EXCLUSIVE, Work.CATALOG),
-    "disable_trigger": simple(TRIGGER_STATE, SHARE_ROW_EXCLUSIVE, Work.CATALOG),
+    "enable_trigger": common.fixed_action(
+        TRIGGER_STATE, SHARE_ROW_EXCLUSIVE, Work.CATALOG
+    ),
+    "disable_trigger": common.fixed_action(
+        TRIGGER_STATE, SHARE_ROW_EXCLUSIVE, Work.CATALOG
+    ),
 }
 
 
