@@ -8,7 +8,8 @@ a note.
 
 import unittest
 
-from sustained.autogenerate import _pair_constraints, autogenerate, diff_schema
+from sustained.autogenerate import autogenerate, diff_schema
+from sustained.autogenerate.constraints import _pair_constraints
 from sustained.dialects import Dialects
 from sustained.introspect import IntrospectedForeignKey, introspect_schema
 from sustained.schema import Check, ForeignKey, Integer

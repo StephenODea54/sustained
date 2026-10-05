@@ -16,6 +16,7 @@ from sustained.autogenerate import (
     introspect_schema,
     normalize_type,
 )
+from sustained.autogenerate import statements as statements_module
 from sustained.dialects import Dialects
 from sustained.migrations import Migration, Migrator
 from sustained.schema import Boolean, Integer, String, Text
@@ -1138,7 +1139,7 @@ class TestTableHasRows(unittest.TestCase):
             return self._cursor
 
     def has_rows(self, cursor, dialect=Dialects.DEFAULT):
-        return autogenerate_module._table_has_rows(
+        return statements_module._table_has_rows(
             self.Connection(cursor), Dialects.get_compiler(dialect), "t"
         )
 
@@ -1163,10 +1164,10 @@ class TestTableHasRows(unittest.TestCase):
         from sustained.migrations import SchemaRead
 
         connection = SchemaRead().connection()
-        self.assertFalse(autogenerate_module._can_probe_rows(connection))
-        self.assertTrue(autogenerate_module._can_probe_rows(self.Connection(None)))
+        self.assertFalse(statements_module._can_probe_rows(connection))
+        self.assertTrue(statements_module._can_probe_rows(self.Connection(None)))
         self.assertTrue(
-            autogenerate_module._table_has_rows(
+            statements_module._table_has_rows(
                 connection, Dialects.get_compiler(Dialects.DEFAULT), "t"
             )
         )

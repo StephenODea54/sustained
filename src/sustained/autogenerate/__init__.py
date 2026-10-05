@@ -58,70 +58,18 @@ from sustained.autogenerate.column_steps import (
     _new_column_steps,
     _restore_lifted_index_steps,
 )
-from sustained.autogenerate.constraints import (
-    _Actual,
-    _bare_reference,
-    _Declared,
-    _diff_constraints,
-    _diff_declared_constraints,
-    _diff_enum_checks,
-    _enum_check_values,
-    _fk_action,
-    _fk_matches,
-    _fk_target_matches,
-    _named,
-    _pair_constraints,
-    _PairTest,
-    _same_check,
-    _same_fk,
-    _same_fk_columns,
-)
+from sustained.autogenerate.constraints import _diff_constraints
 from sustained.autogenerate.diff import (
     SchemaDiff,
-    _actual_column_is_enum,
     _apply_renames,
-    _column_type_changed,
-    _comment_or_none,
-    _constraints_fixed_at_create,
     _declared_enum_types,
-    _declared_enum_values,
-    _dependency_order,
     _diff_columns,
     _diff_enum_types,
     _diff_indexes,
-    _enum_value_additions,
-    _foreign_key_targets,
     _ordered_missing_tables,
     _orphaned_enum_types,
-    _rename_in_expression,
 )
 from sustained.autogenerate.online import ONLINE_GROUPS, online_id
-from sustained.autogenerate.statements import (
-    _add_enum_check,
-    _add_foreign_key,
-    _can_probe_rows,
-    _create_table_steps,
-    _declared_fk_intent,
-    _declared_fk_sql,
-    _declared_table_sql,
-    _deferred_foreign_key_steps,
-    _extra_table_drops,
-    _foreign_keys_setting,
-    _intent_table,
-    _introspected_fk_sql,
-    _introspected_state,
-    _lift_statements,
-    _lifted_indexes,
-    _preserving_state,
-    _rebuild_needed,
-    _refuse_enum_value_removal,
-    _relaxed_copy,
-    _reported_intent_table,
-    _snapshot_table_sql,
-    _spelled_columns,
-    _table_has_rows,
-    _tagged,
-)
 from sustained.autogenerate.steps import (
     _column_rename_steps,
     _constraint_rebuild_scan,
@@ -157,7 +105,6 @@ from sustained.introspect import (
     type_params,
 )
 from sustained.migrations import Migration
-from sustained.migrations.replay import _ReplayConnection
 from sustained.rebuild import (
     add_column_needs_rebuild,
     create_indexes_sql,
@@ -183,10 +130,9 @@ from sustained.types import Connection
 if TYPE_CHECKING:
     from sustained.model import Model
 
-# Reading a schema moved to sustained.introspect, and the helpers of
-# this module to the modules of this package. Every name the module
-# defined or imported stays importable from here, where callers have
-# always found them.
+# The public names of sustained.introspect and of the modules of this
+# package stay importable from here. Private helpers are importable
+# only from the module that defines them.
 __all__ = [
     "IntrospectedColumn",
     "IntrospectedForeignKey",

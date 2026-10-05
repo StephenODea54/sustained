@@ -124,7 +124,7 @@ class TestRestoredKey(unittest.TestCase):
         )
 
     def test_a_target_the_snapshot_read_keeps_its_schema(self):
-        from sustained.autogenerate import _introspected_fk_sql
+        from sustained.autogenerate.statements import _introspected_fk_sql
 
         schema = snapshot(target_schema=None)
         schema["parents"] = IntrospectedTable(

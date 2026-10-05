@@ -231,7 +231,7 @@ class TestAthenaDiff(unittest.TestCase):
         # Athena reports every string column back as varchar, with or
         # without a length. Neither spelling is a change against a model's
         # String or Text column.
-        from sustained.autogenerate import SchemaDiff, _diff_columns
+        from sustained.autogenerate.diff import SchemaDiff, _diff_columns
         from sustained.introspect import (
             IntrospectedColumn,
             IntrospectedTable,

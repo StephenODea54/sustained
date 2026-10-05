@@ -347,7 +347,7 @@ class TestRenameRewritesChecks(SqliteConstraintTestCase):
         )
 
     def test_rewriting_skips_string_literals_and_handles_quotes(self):
-        from sustained.autogenerate import _rename_in_expression
+        from sustained.autogenerate.diff import _rename_in_expression
 
         self.assertEqual(
             _rename_in_expression("price > 0 AND note <> 'price'", "price", "cost"),
@@ -365,7 +365,7 @@ class TestRenameRewritesChecks(SqliteConstraintTestCase):
 
 class TestForeignKeyRestoreWithoutTargetColumns(unittest.TestCase):
     def test_an_implicit_primary_key_reference_renders_without_a_list(self):
-        from sustained.autogenerate import _introspected_fk_sql
+        from sustained.autogenerate.statements import _introspected_fk_sql
 
         compiler = Dialects.get_compiler(Dialects.DEFAULT)
         fk = IntrospectedForeignKey(
@@ -381,7 +381,7 @@ class TestForeignKeyRestoreWithoutTargetColumns(unittest.TestCase):
         )
 
     def test_an_unknown_target_table_stays_irreversible(self):
-        from sustained.autogenerate import _introspected_fk_sql
+        from sustained.autogenerate.statements import _introspected_fk_sql
 
         compiler = Dialects.get_compiler(Dialects.DEFAULT)
         fk = IntrospectedForeignKey(
@@ -694,14 +694,14 @@ class TestPostgresConstraintGeneration(unittest.TestCase):
 
 class TestUnknownTargetComparison(unittest.TestCase):
     def test_question_mark_target_skips_target_and_actions(self):
-        from sustained.autogenerate import _fk_matches
+        from sustained.autogenerate.constraints import _fk_matches
 
         declared = ForeignKey("fk_x", "owner_id", "owners.id", on_delete="CASCADE")
         actual = IntrospectedForeignKey(columns=("owner_id",), target_table="?")
         self.assertTrue(_fk_matches(declared, actual))
 
     def test_known_target_compares_actions(self):
-        from sustained.autogenerate import _fk_matches
+        from sustained.autogenerate.constraints import _fk_matches
 
         declared = ForeignKey("fk_x", "owner_id", "owners.id", on_delete="CASCADE")
         actual = IntrospectedForeignKey(

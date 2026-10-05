@@ -9,7 +9,7 @@ again.
 
 import unittest
 
-from sustained.autogenerate import SchemaDiff, _diff_indexes
+from sustained.autogenerate.diff import SchemaDiff, _diff_indexes
 from sustained.dialects import Dialects
 from sustained.introspect import (
     IntrospectedColumn,

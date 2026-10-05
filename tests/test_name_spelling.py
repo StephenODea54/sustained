@@ -111,7 +111,7 @@ class TestSpelledDrops(unittest.TestCase):
         )
 
     def test_a_restored_key_names_the_spelling(self):
-        from sustained.autogenerate import _introspected_fk_sql
+        from sustained.autogenerate.statements import _introspected_fk_sql
 
         compiler = Dialects.get_compiler(Dialects.POSTGRES)
         fk = snapshot()["items"].foreign_keys["fk_owner"]
