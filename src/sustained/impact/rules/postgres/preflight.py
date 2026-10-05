@@ -22,7 +22,6 @@ locks are not read.
 
 from __future__ import annotations
 
-import re
 from typing import Dict, FrozenSet, List, Mapping, Sequence, Set
 
 from sustained.impact.context import attempt
@@ -35,11 +34,9 @@ from sustained.impact.preflight import (
     Preflight,
     PreflightPlan,
     blockers,
-    number,
+    live_session,
     older,
     planned,
-    seconds,
-    text,
 )
 from sustained.impact.rules.postgres import locks
 from sustained.impact.rules.postgres.context import SYSTEM_SCHEMAS
@@ -149,10 +146,15 @@ def conflicts(plan: Planned, mode: str) -> bool:
     return mode in _CONFLICTS.get(lock or "", frozenset(locks.LOCKS))
 
 
-def _session(pid: object, gid: object) -> LiveSession:
+def _session(pid: object, gid: object, *columns: object) -> LiveSession:
+    """
+    A backend from its pid and the columns `live_session()` reads after
+    the id, or a prepared transaction, which has no pid, from its gid.
+    """
+    session = live_session("pid", pid, *columns)
     if pid is None:
-        return LiveSession(None, f"prepared transaction '{gid}'")
-    return LiveSession(number(pid), f"pid {pid}")
+        return session._replace(label=f"prepared transaction '{gid}'")
+    return session
 
 
 def preflight_plan(
@@ -182,13 +184,7 @@ def preflight_plan(
             age,
             query,
         ) in rows:
-            session = _session(pid, gid)._replace(
-                user=text(user),
-                application=text(app),
-                state=text(state),
-                transaction_seconds=seconds(age),
-                query=text(query),
-            )
+            session = _session(pid, gid, user, app, state, age, query)
             granted.append(
                 Granted(
                     str(schema),
@@ -206,24 +202,14 @@ def preflight_plan(
     open_rows = yield from attempt(_TRANSACTIONS_SQL)
     if open_rows is not None:
         for pid, user, app, state, age, query, snapshot in open_rows:
-            session = LiveSession(
-                number(pid),
-                f"pid {pid}",
-                text(user),
-                text(app),
-                text(state),
-                seconds(age),
-                text(query),
-            )
+            session = live_session("pid", pid, user, app, state, age, query)
             sessions.append(session)
             if snapshot:
                 snapshots[session.label] = session
         read.add("transactions")
         prepared = yield from attempt(_PREPARED_SQL)
         for gid, owner, age in prepared or ():
-            session = _session(None, gid)._replace(
-                user=text(owner), transaction_seconds=seconds(age)
-            )
+            session = _session(None, gid, owner, None, None, age, None)
             sessions.append(session)
             snapshots[session.label] = session
     found.extend(_snapshot_blockers(impacts, snapshots, found))

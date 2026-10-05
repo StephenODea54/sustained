@@ -283,6 +283,30 @@ def number(value: object) -> Optional[int]:
     return None if value is None else int(str(value))
 
 
+def live_session(
+    label: str,
+    identifier: object,
+    user: object,
+    application: object,
+    state: object,
+    age: object,
+    query: object,
+) -> LiveSession:
+    """
+    A session from the columns of one row, named as `label` and its id,
+    such as `pid 4121`.
+    """
+    return LiveSession(
+        number(identifier),
+        f"{label} {identifier}",
+        text(user),
+        text(application),
+        text(state),
+        seconds(age),
+        text(query),
+    )
+
+
 def checked_older_than(older_than: object) -> float:
     """
     `older_than` as seconds. Raises ValueError for a value that is not a

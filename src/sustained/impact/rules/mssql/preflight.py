@@ -30,11 +30,9 @@ from sustained.impact.preflight import (
     Preflight,
     PreflightPlan,
     blockers,
-    number,
+    live_session,
     older,
     planned,
-    seconds,
-    text,
 )
 from sustained.impact.rules.mssql import locks
 
@@ -103,25 +101,6 @@ def conflicts(plan: Planned, mode: str) -> bool:
     return mode not in _COMPATIBLE.get(plan.lock or "", frozenset({"Sch-S"}))
 
 
-def _session(
-    identifier: object,
-    user: object,
-    program: object,
-    status: object,
-    age: object,
-    query: object,
-) -> LiveSession:
-    return LiveSession(
-        number(identifier),
-        f"session {identifier}",
-        text(user),
-        text(program),
-        text(status),
-        seconds(age),
-        text(query),
-    )
-
-
 def preflight_plan(
     impacts: Sequence[StatementImpact], older_than: float
 ) -> PreflightPlan:
@@ -141,7 +120,7 @@ def preflight_plan(
                 bool(bare),
                 str(mode),
                 bool(ok),
-                _session(identifier, *rest),
+                live_session("session", identifier, *rest),
             )
             for identifier, schema, table, bare, mode, ok, *rest in rows
             if schema is not None and table is not None
@@ -151,7 +130,7 @@ def preflight_plan(
     sessions: List[LiveSession] = []
     open_rows = yield from attempt(_TRANSACTIONS_SQL)
     if open_rows is not None:
-        sessions = [_session(*row) for row in open_rows]
+        sessions = [live_session("session", *row) for row in open_rows]
         read.add("transactions")
     return Preflight(
         "mssql",
