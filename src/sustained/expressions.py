@@ -10,7 +10,7 @@ from .types import Expression, SqlValue
 
 if TYPE_CHECKING:
     from .rendering import RenderContext
-    from .types import AnyQuery, CaseResult
+    from .types import AnyQuery, CaseCondition, CaseResult
 
 
 def refuse_null_member(values: "Sequence[object]") -> None:
@@ -482,19 +482,24 @@ class CaseExpression:
         """
         self.alias = alias
         self.else_result = else_result
-        self._whens: List[Tuple[str, "CaseResult"]] = []
+        self._whens: List[Tuple["CaseCondition", "CaseResult"]] = []
 
     @property
-    def whens(self) -> List[Tuple[str, "CaseResult"]]:
+    def whens(self) -> List[Tuple["CaseCondition", "CaseResult"]]:
         """The accumulated (condition, result) pairs."""
         return list(self._whens)
 
-    def when(self, condition: str, result: "CaseResult") -> "CaseExpression":
+    def when(
+        self, condition: "CaseCondition", result: "CaseResult"
+    ) -> "CaseExpression":
         """
         Adds a WHEN/THEN clause to the CASE expression.
 
         Args:
-            condition: The SQL condition for the WHEN clause.
+            condition: The condition for the WHEN clause. A Predicate, such
+                as col("age") >= 18, quotes its columns and renders its
+                values as inline literals. A string is raw SQL and renders
+                as written.
             result: The result to return if the condition is met.
 
         Returns:

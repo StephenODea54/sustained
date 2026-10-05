@@ -44,6 +44,7 @@ from sustained.naming import resolve_public_name
 from sustained.rendering import RenderContext
 from sustained.types import (
     Binding,
+    CaseCondition,
     CaseResult,
     ColumnReference,
     Connection,
@@ -312,7 +313,7 @@ class QueryBuilder:
         self,
         alias: str,
         else_result: "CaseResult",
-        when_clauses: List[Tuple[str, "CaseResult"]],
+        when_clauses: List[Tuple["CaseCondition", "CaseResult"]],
     ) -> "QueryBuilder":
         """
         Adds a CASE expression to the select clause.
@@ -320,7 +321,8 @@ class QueryBuilder:
         Args:
             alias: The alias for the resulting column.
             else_result: The result for the ELSE clause.
-            when_clauses: A list of (condition, result) tuples for the WHEN clauses.
+            when_clauses: A list of (condition, result) tuples for the WHEN
+                clauses. A condition is a Predicate or a raw SQL string.
 
         Returns:
             The current QueryBuilder instance for chaining.

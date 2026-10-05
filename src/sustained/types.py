@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         ColumnExpr,
         Func,
         Literal,
+        Predicate,
         Subquery,
         WindowExpression,
     )
@@ -145,6 +146,11 @@ Selectable = Union[
 CaseResult = Union[
     DbReturnValue, "Column", "Expression", "ColumnExpr", "Literal", "Func"
 ]
+CaseCondition = Union[str, "Predicate"]
+"""
+A WHEN condition of a CASE expression: a Predicate built from col(), or a
+string, which is raw SQL and renders as written.
+"""
 ColumnReference = Union[str, "Expression", "Column", "ColumnExpr", "Literal", "Func"]
 """
 A column in a filter, a sort, or a grouping: a column string, which the

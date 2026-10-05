@@ -262,5 +262,37 @@ class TestRawAndColumn(unittest.TestCase):
                 )
 
 
+class TestCaseConditions(unittest.TestCase):
+    """A CASE condition takes a Predicate or a raw SQL string."""
+
+    def tearDown(self) -> None:
+        Thing.set_dialect(Dialects.DEFAULT)
+
+    def test_predicate_condition_quotes_per_dialect(self) -> None:
+        cases = (
+            (Dialects.POSTGRES, "CASE WHEN (\"age\" >= 18 AND \"name\" = 'O''Neil')"),
+            (Dialects.MYSQL, "CASE WHEN (`age` >= 18 AND `name` = 'O''Neil')"),
+        )
+        for dialect, expected in cases:
+            with self.subTest(dialect=dialect.name):
+                Thing.set_dialect(dialect)
+                case = CaseExpression("k", "minor").when(
+                    (col("age") >= 18) & (col("name") == "O'Neil"), "adult"
+                )
+                sql, params = Thing.query().select(case).to_sql()
+                self.assertIn(expected + " THEN 'adult' ELSE 'minor' END", sql)
+                self.assertEqual(params, ())
+
+    def test_select_case_takes_both_kinds(self) -> None:
+        sql = str(
+            Thing.query().select_case("k", 0, [(col("a").is_null(), 1), ("b > 2", 2)])
+        )
+        self.assertEqual(
+            sql,
+            "SELECT CASE WHEN a IS NULL THEN 1 WHEN b > 2 THEN 2 ELSE 0 END AS k "
+            "FROM things",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

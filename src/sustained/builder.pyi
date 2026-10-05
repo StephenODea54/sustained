@@ -38,6 +38,7 @@ from .rendering import RenderContext
 from .types import (
     AnyQuery,
     Binding,
+    CaseCondition,
     CaseResult,
     ColumnReference,
     DbReturnValue,
@@ -252,7 +253,7 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
         self,
         alias: str,
         else_result: CaseResult,
-        when_clauses: List[Tuple[str, CaseResult]],
+        when_clauses: List[Tuple[CaseCondition, CaseResult]],
     ) -> QueryBuilder[TModel]: ...
     def from_(
         self, table: Union[AnyQuery, str], alias: Optional[str] = None

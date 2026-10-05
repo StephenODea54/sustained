@@ -26,13 +26,18 @@ from sustained.expressions import (
     Subquery,
     WindowExpression,
 )
+from sustained.rendering import RenderContext
 from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
     from sustained.dialects import Dialects
-    from sustained.rendering import RenderContext
     from sustained.schema import ColumnDef, ColumnState, IndexColumn, TableOptions
-    from sustained.types import CaseResult, ColumnReference, Selectable
+    from sustained.types import (
+        CaseCondition,
+        CaseResult,
+        ColumnReference,
+        Selectable,
+    )
 
 
 # A plain identifier path such as "users", "users.id", or "db.dbo.users.id".
@@ -1689,10 +1694,21 @@ class Compiler:
         """
         sql = "CASE"
         for condition, result in case.whens:
-            sql += f" WHEN {condition} THEN {self._format_case_result(result)}"
+            condition_sql = self._format_case_condition(condition)
+            sql += f" WHEN {condition_sql} THEN {self._format_case_result(result)}"
         sql += f" ELSE {self._format_case_result(case.else_result)}"
         sql += " END"
         return sql
+
+    def _format_case_condition(self, condition: "CaseCondition") -> str:
+        """
+        Renders a WHEN condition. A string is raw SQL. A Predicate renders
+        with an inline render context, so its values become literals, as
+        CASE results do.
+        """
+        if isinstance(condition, str):
+            return condition
+        return condition.render(RenderContext(self))
 
     def _format_case_result(self, result: "CaseResult") -> str:
         nested = self._compile_nested(result, None)
