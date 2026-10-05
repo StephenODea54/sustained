@@ -129,6 +129,14 @@ class ServerCase(
         if hasattr(self.connection, "commit"):
             self.connection.commit()
 
+    def fetch(self, sql):
+        cursor = self.connection.cursor()
+        cursor.execute(sql)
+        rows = [tuple(row) for row in cursor.fetchall()]
+        if hasattr(self.connection, "commit"):
+            self.connection.commit()
+        return rows
+
     def tables(self, connection=None):
         return introspect_schema(connection or self.connection, self.DIALECT)
 
