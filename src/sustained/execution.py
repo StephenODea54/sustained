@@ -448,6 +448,31 @@ def driver_controls(connection: Connection) -> bool:
     return getattr(connection, "autocommit", False) is not True
 
 
+class TxnSql(NamedTuple):
+    """
+    The statements that open, commit, and roll back a block in SQL. A
+    None field means the dialect has no such statement.
+    """
+
+    begin: Optional[str]
+    commit: Optional[str]
+    rollback: Optional[str]
+
+
+def transaction_sql(compiler: "Compiler", driver_control: bool) -> Optional[TxnSql]:
+    """
+    The SQL that opens and ends a top-level block, or None when the
+    driver's commit() and rollback() end it.
+    """
+    if driver_control:
+        return None
+    return TxnSql(
+        compiler.begin_transaction_sql(),
+        compiler.commit_transaction_sql(),
+        compiler.rollback_transaction_sql(),
+    )
+
+
 def _undo_savepoint(cursor: Cursor, savepoint: Savepoint, error: BaseException) -> None:
     """
     Rolls a nested block back to its savepoint and drops the savepoint.
@@ -548,38 +573,34 @@ def transaction(
     compiler = Dialects.get_compiler(dialect)
     cursor = connection.cursor()
     # On a connection in autocommit, driver calls would roll nothing back.
-    driver_control = compiler.driver_transaction_control() and driver_controls(
-        connection
+    # When the driver runs autocommit, the transaction is opened, kept,
+    # and closed in SQL on this one cursor.
+    sql = transaction_sql(
+        compiler,
+        compiler.driver_transaction_control() and driver_controls(connection),
     )
-    if not driver_control:
-        # The driver runs autocommit, so the transaction is opened, kept,
-        # and closed in SQL on this one cursor.
-        begin_sql = compiler.begin_transaction_sql()
-        if begin_sql is not None:
-            _execute_or_close(cursor, begin_sql)
-    elif needs_explicit_begin(connection):
-        _execute_or_close(cursor, "BEGIN")
+    if sql is None:
+        if needs_explicit_begin(connection):
+            _execute_or_close(cursor, "BEGIN")
+    elif sql.begin is not None:
+        _execute_or_close(cursor, sql.begin)
     with _TRANSACTION_LOCK:
         _ACTIVE_TRANSACTIONS[key] = (connection, 0, cursor, threading.get_ident())
     try:
         yield connection
-        if driver_control:
+        if sql is None:
             connection.commit()
-        else:
-            commit_sql = compiler.commit_transaction_sql()
-            if commit_sql is not None:
-                cursor.execute(commit_sql)
+        elif sql.commit is not None:
+            cursor.execute(sql.commit)
     except BaseException as error:
         # A failed rollback, such as on a lost connection, does not replace
         # the block's error: it keeps propagating with the rollback failure
         # as its cause.
         try:
-            if driver_control:
+            if sql is None:
                 connection.rollback()
-            else:
-                rollback_sql = compiler.rollback_transaction_sql()
-                if rollback_sql is not None:
-                    cursor.execute(rollback_sql)
+            elif sql.rollback is not None:
+                cursor.execute(sql.rollback)
         except Exception as rollback_error:
             raise error from rollback_error
         raise

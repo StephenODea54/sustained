@@ -47,6 +47,7 @@ from sustained.execution import (
     enter_autocommit,
     notify_statement,
     total_row_count,
+    transaction_sql,
 )
 from sustained.types import (
     ColumnDescription,
@@ -701,40 +702,35 @@ async def _transaction_on(
         # commit() as a no-op, so those blocks run BEGIN, COMMIT and ROLLBACK
         # as statements. A DB-API driver opens its transaction itself, so a
         # BEGIN on top of it would report a transaction already in progress.
-        driver_control = (
+        sql = transaction_sql(
+            compiler,
             compiler.driver_transaction_control()
-            and adapter.driver_transaction_control()
+            and adapter.driver_transaction_control(),
         )
         try:
-            if driver_control:
+            if sql is None:
                 await adapter.begin_where_ddl_autocommits()
-            else:
-                begin_sql = compiler.begin_transaction_sql()
-                if begin_sql is not None:
-                    await adapter.execute(begin_sql, ())
+            elif sql.begin is not None:
+                await adapter.execute(sql.begin, ())
             try:
                 yield adapter
                 # The commit sits inside the try. A deferred constraint
                 # that fails at COMMIT leaves the driver's transaction
                 # open, and the next statement's commit would write the
                 # failed block's rows.
-                if driver_control:
+                if sql is None:
                     await adapter.commit()
-                else:
-                    commit_sql = compiler.commit_transaction_sql()
-                    if commit_sql is not None:
-                        await adapter.execute(commit_sql, ())
+                elif sql.commit is not None:
+                    await adapter.execute(sql.commit, ())
             except BaseException as error:
                 # A failed rollback, such as on a lost connection, does not
                 # replace the block's error: it keeps propagating with the
                 # rollback failure as its cause.
                 try:
-                    if driver_control:
+                    if sql is None:
                         await adapter.rollback()
-                    else:
-                        rollback_sql = compiler.rollback_transaction_sql()
-                        if rollback_sql is not None:
-                            await adapter.execute(rollback_sql, ())
+                    elif sql.rollback is not None:
+                        await adapter.execute(sql.rollback, ())
                 except Exception as rollback_error:
                     raise error from rollback_error
                 raise
