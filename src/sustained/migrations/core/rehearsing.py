@@ -395,7 +395,7 @@ def _rehearse_pinned(
 
             after = yield from snapshot(m)
             if after is not None:
-                reverted = diff_snapshots(before, after)
+                reverted = diff_snapshots(before, after, m._dialect)
         results = _rehearsal_results(
             ran, up_error, outcomes, landed, reverted
         ) + _skipped_results(skipped)

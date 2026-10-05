@@ -18,6 +18,7 @@ from sustained.autogenerate import (
 )
 from sustained.autogenerate import statements as statements_module
 from sustained.dialects import Dialects
+from sustained.introspect.model import IntrospectedIndex, with_details
 from sustained.migrations import Migration, Migrator
 from sustained.schema import Boolean, Integer, String, Text
 
@@ -830,6 +831,50 @@ class DiffSnapshotsTestCase(unittest.TestCase):
         self.conn.execute("DROP TABLE snap_flags")
         self.conn.execute("CREATE TABLE snap_flags (id INTEGER, on_ INTEGER DEFAULT 1)")
         self.assertEqual(diff_snapshots(before, self.snapshot()), [])
+
+    def test_indexes_compare_on_a_dialect_whose_round_trip_passes(self):
+        self.conn.execute("CREATE INDEX snap_old ON snap_users (email)")
+        self.conn.execute("CREATE INDEX snap_part ON snap_users (email)")
+        before = self.snapshot()
+        self.conn.execute("DROP INDEX snap_old")
+        self.conn.execute("DROP INDEX snap_part")
+        self.conn.execute("CREATE INDEX snap_new ON snap_users (id)")
+        self.conn.execute(
+            "CREATE UNIQUE INDEX snap_part ON snap_users (email DESC, id) "
+            "WHERE id > 0"
+        )
+        self.assertEqual(
+            diff_snapshots(before, self.snapshot(), Dialects.DEFAULT),
+            [
+                "index 'snap_users.snap_new' left behind",
+                "index 'snap_users.snap_old' missing",
+                "index 'snap_users.snap_part' changed: (email) became "
+                "UNIQUE (email DESC, id) WHERE id > 0",
+            ],
+        )
+
+    def test_indexes_do_not_compare_on_another_dialect(self):
+        before = self.snapshot()
+        self.conn.execute("CREATE INDEX snap_new ON snap_users (email)")
+        self.assertEqual(diff_snapshots(before, self.snapshot(), Dialects.DUCKDB), [])
+
+    def test_an_index_behind_a_constraint_is_not_compared(self):
+        self.conn.execute("CREATE TABLE snap_codes (code TEXT UNIQUE)")
+        before = self.snapshot()
+        self.conn.execute("DROP TABLE snap_codes")
+        self.conn.execute("CREATE TABLE snap_codes (code TEXT)")
+        self.assertEqual(diff_snapshots(before, self.snapshot(), Dialects.DEFAULT), [])
+
+    def test_a_changed_index_names_its_prefix_lengths(self):
+        table = self.snapshot()["snap_users"]
+        old = IntrospectedIndex(("email",), False, name="ix")
+        new = with_details(old, None, [False], [10])
+        before = {"snap_users": table._replace(indexes={"ix": old})}
+        after = {"snap_users": table._replace(indexes={"ix": new})}
+        self.assertEqual(
+            diff_snapshots(before, after, Dialects.MYSQL),
+            ["index 'snap_users.ix' changed: (email) became (email(10))"],
+        )
 
 
 class IntrospectionPlanTestCase(unittest.TestCase):

@@ -14,6 +14,7 @@ import unittest
 
 from sustained.dialects import Dialects
 from sustained.introspect import introspect_schema
+from sustained.introspect.compare import index_parts
 from sustained.schema import catalog_index, create_index_sql
 
 from . import harness
@@ -45,21 +46,6 @@ def _indexes(dialect):
     if dialect == Dialects.MYSQL:
         common.append(("ix_rt_prefix", "(b(10), a DESC)", None))
     return common
-
-
-def index_parts(index):
-    """
-    The parts of an index the round trip compares: the key columns,
-    uniqueness, the direction and prefix length of each key part, and
-    the predicate as the catalog spells it.
-    """
-    return (
-        index.columns,
-        index.unique,
-        index.descending,
-        index.prefix_lengths,
-        index.where,
-    )
 
 
 class RoundTripCase(unittest.TestCase):

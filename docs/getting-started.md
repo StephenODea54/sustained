@@ -288,7 +288,7 @@ rollback complete, database unchanged
 rehearsal row recorded
 ```
 
-`reversed` means the tables and columns after the down steps matched those before the run. The rehearsal row is the record that `migrate` checks before it applies a migration that removes data.
+`reversed` means the tables and columns after the down steps matched those before the run, and on PostgreSQL, MySQL, MariaDB, SQL Server, and SQLite the indexes too. The rehearsal row is the record that `migrate` checks before it applies a migration that removes data.
 
 Then apply it:
 

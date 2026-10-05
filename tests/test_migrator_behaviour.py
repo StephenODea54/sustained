@@ -1250,6 +1250,22 @@ class RehearsalProofsCases(BothMigrators):
         results = await migrator.rehearse()
         self.assertEqual(results[0].reversed, ["column 'rp_users.bio' left behind"])
 
+    async def test_an_index_left_behind_is_reported(self):
+        self.conn.execute("CREATE TABLE rp_users (id INTEGER)")
+        migrator = self.migrator(
+            [
+                Migration(
+                    "001_i",
+                    up="CREATE INDEX rp_users_id ON rp_users (id)",
+                    down="SELECT 1",
+                )
+            ],
+        )
+        results = await migrator.rehearse()
+        self.assertEqual(
+            results[0].reversed, ["index 'rp_users.rp_users_id' left behind"]
+        )
+
     async def test_no_down_step_leaves_the_comparison_unchecked(self):
         migrator = self.migrator(
             [Migration("001_t", up="CREATE TABLE rp_t (id INTEGER)")]

@@ -678,11 +678,11 @@ Reads the live schema. `await async_introspect_schema(adapter, dialect=Dialects.
 The Postgres read also sets `IntrospectedIndex.valid` to `False` for an index `pg_index` reports invalid, and `IntrospectedTable.not_valid` to the lowercased names of the foreign keys and checks `pg_constraint` reports not validated. A partitioned table has `partitioned=True` and lists its partitions in `partitions`, as `IntrospectedPartition(name, schema, partitioned, partitions)`, and a partition names its table in `partition_of`. Other reads leave the defaults: every index valid, no constraint not validated, and no partitions. See [Invalid indexes and constraints not validated](/schema#invalid-indexes-and-constraints-not-validated).
 
 ```python
-diff_snapshots(before, after) -> list[str]
+diff_snapshots(before, after, dialect=None) -> list[str]
 ```
 {: .sig #diff_snapshots}
 
-One line per difference between two introspected schemas. Tables and columns only.
+One line per difference between two introspected schemas. Tables and columns are compared. When `dialect` is `Dialects.POSTGRES`, `Dialects.MYSQL`, `Dialects.MSSQL`, or `Dialects.DEFAULT`, indexes are compared too: the key columns, uniqueness, DESC key parts, prefix lengths, and predicate of each index that no constraint owns. See [Rehearsing a migration](/schema#rehearsing-a-migration).
 
 ```python
 normalize_type(raw) -> str
