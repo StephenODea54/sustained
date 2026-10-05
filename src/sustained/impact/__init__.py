@@ -13,7 +13,12 @@ The pieces:
 - `sustained.impact.recognizer`: statement text to a `ParsedStatement`
 - `sustained.impact.model`: the report and its vocabulary
 - `sustained.impact.context`: the server facts the rules read
-- `sustained.impact.state`: what a run carries between statements
+- `sustained.impact.intent`: a generated statement's intent, checked
+  against its text and read when the text cannot be
+- `sustained.impact.state`: what the run did to its tables, which later
+  statements read
+- `sustained.impact.timeouts`: whether a lock timeout covers each
+  statement
 - `sustained.impact.rules`: the rule profiles, one package per engine,
   each with the catalog read and, on Postgres, the traced rehearsal's
   reads
