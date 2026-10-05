@@ -86,5 +86,32 @@ class TestIndexDetails(GeneratedCase):
         self.assertNotEqual(migration_checksum(plain), migration_checksum(desc))
 
 
+class TestAddedColumnComment(GeneratedCase):
+    def test_autogenerate_comments_a_new_column(self):
+        self.stub_snapshot({"id": Integer()})
+        model = make_model(
+            "CommentNew", {"id": Integer(), "note": String(20, comment="Hello")}
+        )
+        self.assertEqual(
+            self.generate(model).up,
+            [
+                'ALTER TABLE "t" ADD COLUMN "note" VARCHAR(20)',
+                'COMMENT ON COLUMN "t"."note" IS \'Hello\'',
+            ],
+        )
+
+    def test_autogenerate_comments_a_new_not_null_column(self):
+        self.stub_snapshot({"id": Integer()})
+        model = make_model(
+            "CommentNotNull",
+            {
+                "id": Integer(),
+                "note": String(20, nullable=False, default="x", comment="Hello"),
+            },
+        )
+        up = self.generate(model).up
+        self.assertIn('COMMENT ON COLUMN "t"."note" IS \'Hello\'', up)
+
+
 if __name__ == "__main__":
     unittest.main()

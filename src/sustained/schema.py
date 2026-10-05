@@ -719,6 +719,49 @@ def column_comment_statements(
     return statements
 
 
+def add_column_statements(
+    compiler: "Compiler",
+    table_sql: str,
+    intent_table: Optional[str],
+    name: str,
+    column_sql: str,
+    comment: Optional[str],
+    nullable: bool,
+    has_default: bool,
+) -> List["MigrationStatement"]:
+    """
+    ADD COLUMN for one rendered column definition, followed by the
+    COMMENT ON COLUMN statements of a dialect that stores comments as
+    separate statements. Each statement is tagged for the impact
+    analysis. `nullable` and `has_default` describe the column as the
+    ADD COLUMN creates it.
+    """
+    from sustained.analysis import with_intent
+
+    statements = [
+        with_intent(
+            compiler.compile_add_column(table_sql, column_sql),
+            "add_column",
+            intent_table,
+            name,
+            nullable=nullable,
+            has_default=has_default,
+        )
+    ]
+    if (
+        comment is not None
+        and compiler.stores_column_comments()
+        and not compiler.inline_column_comments()
+    ):
+        statements.extend(
+            with_intent(statement, "set_column_comment", intent_table, name)
+            for statement in compiler.compile_set_column_comment(
+                table_sql, name, comment
+            )
+        )
+    return statements
+
+
 def reference_target_sql(compiler: "Compiler", references: str) -> str:
     """Renders the table and column half of a REFERENCES clause."""
     ref_table, ref_column = references.rsplit(".", 1)

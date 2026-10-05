@@ -42,6 +42,7 @@ from sustained.schema import (
     Index,
     TableConstraint,
     TableOptions,
+    add_column_statements,
     bare_table_name,
     build_create_table_sql,
     collect_enum_types,
@@ -421,27 +422,19 @@ def _render_add_column(args: _Args, compiler: "Compiler") -> List[str]:
     table_sql = _table_sql(args, compiler)
     column_sql = render_column_sql(compiler, name, column, inline_pk=False)
     table = args["table"]
-    statements = [
-        _tag(
-            compiler.compile_add_column(table_sql, column_sql),
-            "add_column",
+    assert isinstance(table, str)
+    statements: List[str] = list(
+        add_column_statements(
+            compiler,
+            table_sql,
             table,
             name,
+            column_sql,
+            column.comment,
             nullable=column.nullable,
             has_default=column.default is not None,
         )
-    ]
-    if (
-        column.comment is not None
-        and compiler.stores_column_comments()
-        and not compiler.inline_column_comments()
-    ):
-        statements.extend(
-            _tag(statement, "set_column_comment", table, name)
-            for statement in compiler.compile_set_column_comment(
-                table_sql, name, column.comment
-            )
-        )
+    )
     if column.type_name == "ENUM" and compiler.enum_strategy() == "check":
         assert column.enum_values is not None
         constraint = _enum_check_name(table_sql, name)

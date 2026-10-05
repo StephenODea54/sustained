@@ -34,7 +34,12 @@ from sustained.autogenerate.statements import (
 from sustained.autogenerate.steps import _Generation, _LateForeignKey
 from sustained.exceptions import DialectError
 from sustained.rebuild import add_column_needs_rebuild
-from sustained.schema import ColumnState, bare_table_name, render_column_sql
+from sustained.schema import (
+    ColumnState,
+    add_column_statements,
+    bare_table_name,
+    render_column_sql,
+)
 from sustained.type_changes import type_change_loses_data
 from sustained.types import Expression
 
@@ -378,12 +383,14 @@ def _new_column_steps(state: _Generation) -> None:
                 inline_pk=False,
                 include_references=not state.online and not late,
             )
-            up_steps.append(
-                with_intent(
-                    compiler.compile_add_column(table_sql, relaxed),
-                    "add_column",
+            up_steps.extend(
+                add_column_statements(
+                    compiler,
+                    table_sql,
                     intent_table,
                     name,
+                    relaxed,
+                    coldef.comment,
                     nullable=True,
                     has_default=False,
                 )
@@ -429,12 +436,14 @@ def _new_column_steps(state: _Generation) -> None:
             inline_pk=False,
             include_references=not state.online and not late,
         )
-        up_steps.append(
-            with_intent(
-                compiler.compile_add_column(table_sql, column_sql),
-                "add_column",
+        up_steps.extend(
+            add_column_statements(
+                compiler,
+                table_sql,
                 intent_table,
                 name,
+                column_sql,
+                coldef.comment,
                 nullable=coldef.nullable,
                 has_default=coldef.default is not None,
             )
@@ -631,12 +640,14 @@ def _new_not_null_online(
         inline_pk=False,
         include_references=False,
     )
-    state.up_steps.append(
-        with_intent(
-            compiler.compile_add_column(table_sql, column_sql),
-            "add_column",
+    state.up_steps.extend(
+        add_column_statements(
+            compiler,
+            table_sql,
             intent_table,
             name,
+            column_sql,
+            coldef.comment,
             nullable=False,
             has_default=coldef.backfill is not None,
         )
