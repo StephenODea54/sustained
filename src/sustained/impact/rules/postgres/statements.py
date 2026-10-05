@@ -55,10 +55,7 @@ from sustained.impact.rules.postgres.partitions import (
     partitioned,
     unread,
 )
-from sustained.impact.rules.postgres.remedies import (
-    insert_after,
-    trimmed,
-)
+from sustained.impact.rules.postgres.remedies import concurrently_remedy
 
 
 def refused(rule: Rule, message: str) -> Finding:
@@ -152,8 +149,7 @@ def _create_index(facts: Facts) -> Outcome:
             ),
             *cascade(facts, CREATE_INDEX, table, SHARE, Work.INDEX_BUILD),
         )
-    concurrent = insert_after(facts.statement, "INDEX", "CONCURRENTLY")
-    remedy = (trimmed(concurrent),) if concurrent else ()
+    remedy = concurrently_remedy(facts.statement, "INDEX")
     only = bool(parsed.options.get("only"))
     return Outcome.of(
         Effect(
@@ -281,9 +277,7 @@ def _drop_index(facts: Facts) -> Outcome:
             )
         )
         concurrent = (
-            insert_after(facts.statement, "INDEX", "CONCURRENTLY")
-            if len(dropped) == 1
-            else None
+            concurrently_remedy(facts.statement, "INDEX") if len(dropped) == 1 else ()
         )
         effects.append(
             Effect(
@@ -293,7 +287,7 @@ def _drop_index(facts: Facts) -> Outcome:
                 Work.CATALOG,
                 message=f"reads and writes on {label} wait until the drop commits; "
                 f"drop it CONCURRENTLY {TRANSACTION_NOTE}",
-                remedy=(trimmed(concurrent),) if concurrent else (),
+                remedy=concurrent,
             )
         )
     return Outcome(tuple(effects), tuple(findings))
@@ -536,7 +530,7 @@ def _reindex(facts: Facts) -> Outcome:
                     facts, REINDEX, f"REINDEX of {label}, a partitioned table,"
                 )
             )
-        concurrent = insert_after(facts.statement, target.upper(), "CONCURRENTLY")
+        concurrent = concurrently_remedy(facts.statement, target.upper())
         rule, lock = REINDEX, SHARE
         effects = [
             Effect(
@@ -547,7 +541,7 @@ def _reindex(facts: Facts) -> Outcome:
                 message=f"writes to {label} wait for the rebuild, and so do reads "
                 "that would use an index being rebuilt, which is locked ACCESS "
                 f"EXCLUSIVE; rebuild it CONCURRENTLY {TRANSACTION_NOTE}",
-                remedy=(trimmed(concurrent),) if concurrent else (),
+                remedy=concurrent,
                 blocks=Blocks.READS_AND_WRITES,
             )
         ]
@@ -610,7 +604,7 @@ def _refresh(facts: Facts) -> Outcome:
         # The query runs in full, and only the rows that differ are
         # written into the view, whose file stays in place.
         return Outcome.of(Effect(REFRESH_CONCURRENTLY, view, EXCLUSIVE, Work.ROWS))
-    concurrent = insert_after(facts.statement, "VIEW", "CONCURRENTLY")
+    concurrent = concurrently_remedy(facts.statement, "VIEW")
     return Outcome.of(
         Effect(
             REFRESH,
@@ -619,7 +613,7 @@ def _refresh(facts: Facts) -> Outcome:
             work,
             message=f"reads of {view} wait for the whole refresh; refresh it "
             "CONCURRENTLY, which needs a unique index on the view",
-            remedy=(trimmed(concurrent),) if concurrent else (),
+            remedy=concurrent,
         )
     )
 

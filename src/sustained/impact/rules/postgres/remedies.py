@@ -5,7 +5,7 @@ The text rewrites the PostgreSQL remedies are built from.
 from __future__ import annotations
 
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from sustained.impact.tokens import PUNCT, Token, tokenize
 
@@ -101,6 +101,15 @@ def _tokens(statement: str) -> List[Token]:
     from sustained.dialects import Dialects
 
     return tokenize(statement, Dialects.POSTGRES)
+
+
+def concurrently_remedy(statement: str, word: str) -> Tuple[str, ...]:
+    """
+    The remedy that runs the statement with CONCURRENTLY after its first
+    bare `word`, or no remedy when the statement has no such word.
+    """
+    concurrent = insert_after(statement, word, "CONCURRENTLY")
+    return (trimmed(concurrent),) if concurrent else ()
 
 
 def trimmed(statement: str) -> str:
