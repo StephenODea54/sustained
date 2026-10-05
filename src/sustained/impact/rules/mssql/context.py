@@ -6,7 +6,6 @@ versions, and each table's rows, bytes, and clustered index.
 
 from __future__ import annotations
 
-import re
 from types import MappingProxyType
 from typing import Collection, Dict, Optional, Set, Tuple
 
@@ -66,10 +65,7 @@ def _sized(tables: Optional[Collection[str]]) -> str:
 
 def server_version(text: str) -> Tuple[int, ...]:
     """A `ProductVersion` value as a version, such as (16, 0, 4135, 4)."""
-    match = re.match(r"(\d+(?:\.\d+)*)", text.strip())
-    if match is None:
-        return FLOORS["mssql"]
-    return tuple(int(part) for part in match.group(1).split("."))
+    return common.dotted_version(text, FLOORS["mssql"])
 
 
 def context_plan(

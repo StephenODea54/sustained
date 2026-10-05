@@ -5,7 +5,6 @@ from `duckdb_tables()`.
 
 from __future__ import annotations
 
-import re
 from types import MappingProxyType
 from typing import Collection, Dict, Optional, Set, Tuple
 
@@ -40,10 +39,7 @@ def _sized(tables: Optional[Collection[str]]) -> str:
 
 def duckdb_version(text: str) -> Tuple[int, ...]:
     """A `version()` value as a version, such as (1, 5, 5) for `v1.5.5`."""
-    match = re.match(r"v?(\d+(?:\.\d+)*)", text.strip())
-    if match is None:
-        return FLOORS["duckdb"]
-    return tuple(int(part) for part in match.group(1).split("."))
+    return common.dotted_version(text, FLOORS["duckdb"], "v")
 
 
 def context_plan(

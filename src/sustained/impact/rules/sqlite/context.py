@@ -10,7 +10,6 @@ and its indexes.
 
 from __future__ import annotations
 
-import re
 from types import MappingProxyType
 from typing import Collection, Dict, Optional, Set, Tuple
 
@@ -21,6 +20,7 @@ from sustained.impact.context import (
     TableStats,
     attempt,
 )
+from sustained.impact.rules import common
 from sustained.impact.window import DATABASE
 
 # The row count leads each `stat` value of sqlite_stat1, such as
@@ -64,10 +64,7 @@ def _bytes_sql(tables: Optional[Collection[str]]) -> str:
 
 def sqlite_version(text: str) -> Tuple[int, ...]:
     """A `sqlite_version()` value as a version, such as (3, 45, 1)."""
-    match = re.match(r"(\d+(?:\.\d+)*)", text.strip())
-    if match is None:
-        return FLOORS["sqlite"]
-    return tuple(int(part) for part in match.group(1).split("."))
+    return common.dotted_version(text, FLOORS["sqlite"])
 
 
 def context_plan(

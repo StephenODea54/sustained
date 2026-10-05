@@ -9,6 +9,8 @@ The handler helpers every rule profile uses.
   its kind.
 - `row_write_message()` words the finding for an UPDATE or DELETE, and
   `rename_note()` the one for a rename.
+- `dotted_version()` reads the version number from a server's version
+  text.
 - `add_stats()` keys a table's stats by `schema.table`, and by the bare
   name when an unqualified name finds the table.
 - `with_observations()` puts a traced rehearsal's observations in place
@@ -20,6 +22,7 @@ The handler helpers every rule profile uses.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from sustained.impact.context import TableStats
@@ -164,6 +167,20 @@ def rename_text(what: str, name: object, when: str = "commits") -> str:
 def rename_note(rule: Rule, what: str, name: object) -> Finding:
     """The `info` finding of `rename_text()`, for a rename that commits."""
     return rule.finding(Severity.INFO, rename_text(what, name))
+
+
+def dotted_version(
+    text: str, floor: Tuple[int, ...], prefix: str = ""
+) -> Tuple[int, ...]:
+    """
+    The dotted number at the start of a server's version text, such as
+    (8, 0, 19) for `8.0.19-log`, after an optional `prefix` such as `v`.
+    Text that starts with no number gives `floor`.
+    """
+    match = re.match(rf"(?:{prefix})?(\d+(?:\.\d+)*)", text.strip())
+    if match is None:
+        return floor
+    return tuple(int(part) for part in match.group(1).split("."))
 
 
 def add_stats(

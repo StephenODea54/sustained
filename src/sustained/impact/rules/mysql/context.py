@@ -87,11 +87,7 @@ def server_version(text: str) -> Tuple[str, Tuple[int, ...]]:
     ('mariadb', (11, 4, 13)) for `11.4.13-MariaDB-ubu2404`.
     """
     profile = "mariadb" if "mariadb" in text.lower() else "mysql"
-    match = re.match(r"(\d+(?:\.\d+)*)", text.strip())
-    if match is None:
-        return profile, FLOORS[profile]
-    version = tuple(int(part) for part in match.group(1).split("."))
-    return profile, version
+    return profile, common.dotted_version(text, FLOORS[profile])
 
 
 def context_plan(
