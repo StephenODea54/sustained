@@ -5,7 +5,7 @@ steps put the schema back where it started.
 
 from __future__ import annotations
 
-from typing import Dict, FrozenSet, List, Mapping, Optional, Tuple
+from typing import Dict, FrozenSet, List, Mapping, NamedTuple, Optional, Tuple
 
 from sustained.dialects import Dialects
 from sustained.introspect.model import (
@@ -14,7 +14,12 @@ from sustained.introspect.model import (
     IntrospectedIndex,
     IntrospectedTable,
 )
-from sustained.introspect.normalize import normalize_type, type_params
+from sustained.introspect.normalize import (
+    normalize_check,
+    normalize_predicate,
+    normalize_type,
+    type_params,
+)
 
 
 def _column_parts(column: IntrospectedColumn) -> Tuple[str, Optional[str], bool, bool]:
@@ -70,8 +75,23 @@ def index_parts(index: IntrospectedIndex) -> IndexParts:
     )
 
 
-def _describe_index(index: IntrospectedIndex) -> str:
-    """An index definition in one readable phrase."""
+class _Described(NamedTuple):
+    """
+    One object of a snapshot: `key` is what two reads are compared on,
+    and `text` is the phrase a difference report shows.
+    """
+
+    key: str
+    text: str
+
+
+def _plain(text: str) -> _Described:
+    """An object compared on its description as it stands."""
+    return _Described(text, text)
+
+
+def _describe_index(index: IntrospectedIndex, where: Optional[str]) -> str:
+    """An index definition in one readable phrase, with `where` as its predicate."""
     # A read without details reports no directions or prefix lengths.
     count = len(index.columns)
     parts = [
@@ -83,7 +103,7 @@ def _describe_index(index: IntrospectedIndex) -> str:
         )
     ]
     text = ("UNIQUE " if index.unique else "") + f"({', '.join(parts)})"
-    return text + (f" WHERE {index.where}" if index.where else "")
+    return text + (f" WHERE {where}" if where else "")
 
 
 def _describe_foreign_key(fk: IntrospectedForeignKey) -> str:
@@ -100,27 +120,36 @@ def _describe_foreign_key(fk: IntrospectedForeignKey) -> str:
     )
 
 
-def _constraints(table: IntrospectedTable) -> Dict[str, Dict[str, str]]:
+def _constraints(table: IntrospectedTable) -> Dict[str, Dict[str, _Described]]:
     """
     The constraints of a table by kind, each described in one phrase:
     each check's expression as the catalog spells it, the columns of each
-    UNIQUE constraint, and each foreign key.
+    UNIQUE constraint, and each foreign key. A check compares on its
+    normalize_check() form, because an engine can store an expression in
+    a new spelling when a rename touches a column it names.
     """
     return {
-        "check": dict(table.checks),
+        "check": {
+            name: _Described(normalize_check(expression), expression)
+            for name, expression in table.checks.items()
+        },
         "unique constraint": {
-            name: f"UNIQUE ({', '.join(index.columns)})"
+            name: _plain(f"UNIQUE ({', '.join(index.columns)})")
             for name, index in table.indexes.items()
             if index.constraint
         },
         "foreign key": {
-            name: _describe_foreign_key(fk) for name, fk in table.foreign_keys.items()
+            name: _plain(_describe_foreign_key(fk))
+            for name, fk in table.foreign_keys.items()
         },
     }
 
 
 def _diff_named(
-    kind: str, table: str, old: Mapping[str, str], new: Mapping[str, str]
+    kind: str,
+    table: str,
+    old: Mapping[str, _Described],
+    new: Mapping[str, _Described],
 ) -> List[str]:
     """
     One line per object of one kind on `table` that differs between two
@@ -133,17 +162,28 @@ def _diff_named(
         f"{kind} '{table}.{name}' missing" for name in sorted(set(old) - set(new))
     ]
     lines += [
-        f"{kind} '{table}.{name}' changed: {old[name]} became {new[name]}"
+        f"{kind} '{table}.{name}' changed: {old[name].text} became {new[name].text}"
         for name in sorted(set(old) & set(new))
-        if old[name] != new[name]
+        if old[name].key != new[name].key
     ]
     return lines
 
 
-def _indexes(table: IntrospectedTable) -> Dict[str, str]:
-    """The indexes no constraint owns, each described in one phrase."""
+def _indexes(table: IntrospectedTable) -> Dict[str, _Described]:
+    """
+    The indexes no constraint owns, each described in one phrase. The
+    predicate compares on its normalize_predicate() form. SQLite rewrites
+    the identifiers in a stored CREATE INDEX on RENAME COLUMN, so a rename
+    and its inverse leave WHERE NAME IS NOT NULL spelled
+    WHERE "name" IS NOT NULL.
+    """
     return {
-        name: _describe_index(index)
+        name: _Described(
+            _describe_index(
+                index, normalize_predicate(index.where) if index.where else None
+            ),
+            _describe_index(index, index.where),
+        )
         for name, index in table.indexes.items()
         if not index.constraint
     }
@@ -172,9 +212,11 @@ def diff_snapshots(
 
     Tables and columns are compared. Indexes are compared when `dialect`
     is in INDEX_DIALECTS: the key columns, uniqueness, the direction and
-    prefix length of each key part, and the predicate. An index behind a
-    constraint is not compared as an index. Checks, UNIQUE constraints,
-    and foreign keys are compared when `dialect` is in
+    prefix length of each key part, and the predicate in its
+    normalize_predicate() form. An index behind a
+    constraint is not compared as an index. Checks, in their
+    normalize_check() form, UNIQUE constraints, and foreign keys are
+    compared when `dialect` is in
     CONSTRAINT_DIALECTS. Defaults and comments are not compared, because
     engines report them in spellings that differ between an original
     object and a rebuilt one.

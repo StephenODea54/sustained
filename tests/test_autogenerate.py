@@ -17,6 +17,7 @@ from sustained.autogenerate import (
     normalize_type,
 )
 from sustained.autogenerate import statements as statements_module
+from sustained.ddl import rename_column
 from sustained.dialects import Dialects
 from sustained.introspect.compare import _describe_foreign_key
 from sustained.introspect.model import (
@@ -25,6 +26,7 @@ from sustained.introspect.model import (
     with_details,
 )
 from sustained.migrations import Migration, Migrator
+from sustained.migrations.rehearsal import rehearsal_failed
 from sustained.schema import Boolean, Integer, String, Text
 
 
@@ -898,6 +900,46 @@ class DiffSnapshotsTestCase(unittest.TestCase):
             _describe_foreign_key(after["snap_users"].foreign_keys["fk_people"]),
             "(id) REFERENCES other.snap_people (id) ON DELETE CASCADE",
         )
+
+    def test_a_column_rename_and_its_inverse_leave_the_predicate_alone(self):
+        # SQLite rewrites the identifiers in a stored CREATE INDEX on
+        # RENAME COLUMN, so the predicate comes back spelled "name".
+        for index in (
+            "CREATE INDEX ix_p ON t (Name) WHERE NAME IS NOT NULL",
+            "CREATE INDEX ix_p ON t ([name] DESC) WHERE [name] IS NOT NULL",
+        ):
+            with self.subTest(index=index):
+                conn = sqlite3.connect(":memory:")
+                self.addCleanup(conn.close)
+                conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+                conn.execute(index)
+                conn.commit()
+                migrator = Migrator(
+                    conn, [Migration("001", [rename_column("t", "name", "nm")])]
+                )
+                [result] = migrator.rehearse()
+                self.assertEqual(result.reversed, [])
+                self.assertFalse(rehearsal_failed(result))
+
+    def test_a_changed_predicate_still_reports(self):
+        table = self.snapshot()["snap_users"]
+        old = IntrospectedIndex(("email",), False, name="ix", where="id > 0")
+        new = old._replace(where='"ID" > 1')
+        before = {"snap_users": table._replace(indexes={"ix": old})}
+        after = {"snap_users": table._replace(indexes={"ix": new})}
+        self.assertEqual(
+            diff_snapshots(before, after, Dialects.DEFAULT),
+            [
+                "index 'snap_users.ix' changed: (email) WHERE id > 0 became "
+                '(email) WHERE "ID" > 1'
+            ],
+        )
+
+    def test_checks_compare_in_their_normalized_spelling(self):
+        table = self.snapshot()["snap_users"]
+        before = {"snap_users": table._replace(checks={"ck": "price > 0"})}
+        after = {"snap_users": table._replace(checks={"ck": "([price]>(0))"})}
+        self.assertEqual(diff_snapshots(before, after, Dialects.MSSQL), [])
 
     def test_a_changed_index_names_its_prefix_lengths(self):
         table = self.snapshot()["snap_users"]
