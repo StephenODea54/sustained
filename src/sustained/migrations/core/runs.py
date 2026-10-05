@@ -68,7 +68,6 @@ from sustained.migrations.migration import (
 from sustained.migrations.planning import (
     asserted_migration,
     drift_lines,
-    plan_migration,
 )
 from sustained.migrations.rehearsal import (
     REHEARSAL_OVERRIDE,
@@ -683,41 +682,12 @@ def plan(
     the migration's statements take the ALGORITHM and LOCK clause the
     impact rules predict from them (asserted_migration()).
 
-    With online, the diff is plan_migrations()'s, and a split into two
+    The diff is plan_migrations()'s. With online, a split into two
     migrations raises ValueError, since plan() returns one migration.
     """
-    from sustained.autogenerate import declared_schemas
-
-    if online:
-        split = yield from plan_migrations(
-            m,
-            models,
-            allow_drops=allow_drops,
-            ignore_changed_columns=ignore_changed_columns,
-            migration_id=migration_id,
-            renames=renames,
-            table_renames=table_renames,
-            type_casts=type_casts,
-            ignore_undeclared=ignore_undeclared,
-            snapshot=snapshot,
-            assert_algorithm=assert_algorithm,
-            online=True,
-        )
-        if len(split) > 1:
-            raise ValueError(
-                f"plan(online=True) generated {len(split)} migrations, "
-                f"{', '.join(g.id for g in split)}. Call "
-                "plan_migrations(online=True) to get each of them."
-            )
-        return split[0] if split else None
-    source: Tuple[Connection, Optional["Snapshot"]] = yield DiffSource(
-        declared_schemas(models), read=snapshot is None
-    )
-    generated = plan_migration(
-        source[0],
+    split = yield from plan_migrations(
+        m,
         models,
-        m._dialect,
-        m._own_tables(),
         allow_drops=allow_drops,
         ignore_changed_columns=ignore_changed_columns,
         migration_id=migration_id,
@@ -726,11 +696,16 @@ def plan(
         type_casts=type_casts,
         ignore_undeclared=ignore_undeclared,
         snapshot=snapshot,
+        assert_algorithm=assert_algorithm,
+        online=online,
     )
-    if generated is None or not assert_algorithm or m._dialect is not Dialects.MYSQL:
-        return generated
-    context = yield ReadContext()
-    return asserted_migration(generated, m._dialect, m._compiler, context)
+    if len(split) > 1:
+        raise ValueError(
+            f"plan(online=True) generated {len(split)} migrations, "
+            f"{', '.join(g.id for g in split)}. Call "
+            "plan_migrations(online=True) to get each of them."
+        )
+    return split[0] if split else None
 
 
 def plan_migrations(
