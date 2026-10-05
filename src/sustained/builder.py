@@ -1378,9 +1378,9 @@ class QueryBuilder:
 
         from sustained.execution import (
             checked_columns,
+            commit_unless_in_transaction,
             eager_load_paths,
             fetch_models,
-            in_transaction,
             notify_statement,
             total_row_count,
         )
@@ -1441,10 +1441,7 @@ class QueryBuilder:
             result: WriteResult = [dict(zip(columns, row)) for row in cursor.fetchall()]
         else:
             result = cursor.rowcount if per_row_count is None else per_row_count
-        # Inside a transaction() context the context manager owns the
-        # commit; committing here would break atomicity.
-        if not in_transaction(conn) and hasattr(conn, "commit"):
-            conn.commit()
+        commit_unless_in_transaction(conn)
         return result
 
     async def arun(

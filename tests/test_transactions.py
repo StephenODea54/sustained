@@ -13,7 +13,6 @@ from sustained.execution import (
     cursor_scope,
     in_transaction,
     needs_explicit_begin,
-    open_cursor,
     pinned_transaction,
     set_statement_listener,
     transaction,
@@ -206,7 +205,8 @@ class TestCursorScope(unittest.TestCase):
         conn = RefusingConnection()
         with transaction(conn, Dialects.DUCKDB):
             with cursor_scope(conn) as cursor:
-                self.assertIs(cursor, open_cursor(conn))
+                with cursor_scope(conn) as inner:
+                    self.assertIs(cursor, inner)
             self.assertEqual(conn.closed_cursors, 0)
         # The block closes its own cursor when it ends.
         self.assertEqual(conn.closed_cursors, 1)
@@ -228,9 +228,11 @@ class TestPinnedTransaction(unittest.TestCase):
         conn = RefusingConnection()
         with pinned_transaction(conn, Dialects.DUCKDB) as cursor:
             self.assertTrue(in_transaction(conn))
-            self.assertIs(cursor, open_cursor(conn))
+            with cursor_scope(conn) as inner:
+                self.assertIs(cursor, inner)
         self.assertFalse(in_transaction(conn))
-        self.assertIsNot(cursor, open_cursor(conn))
+        with cursor_scope(conn) as outer:
+            self.assertIsNot(cursor, outer)
         self.assertEqual(conn.statements, ["BEGIN"])
 
     def test_the_block_ends_nothing_by_itself(self):

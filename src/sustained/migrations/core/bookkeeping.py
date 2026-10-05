@@ -331,10 +331,11 @@ def _repair_rows(m: MigratorBase) -> Core[List[str]]:
     return actions
 
 
-def baseline(m: MigratorBase, target: str) -> Core[List[str]]:
-    from sustained.exceptions import MigrationError
-
-    yield RefuseOpenTransaction("baseline")
+def versioned_through(m: MigratorBase, target: str) -> List[Migration]:
+    """
+    The versioned migrations up to and including `target`. Raises
+    ValueError when `target` names a repeatable migration or none.
+    """
     versioned = m._versioned()
     ids = [x.id for x in versioned]
     if target not in ids:
@@ -344,11 +345,19 @@ def baseline(m: MigratorBase, target: str) -> Core[List[str]]:
                 "must name a versioned migration."
             )
         raise ValueError(f"Unknown migration target: {target!r}.")
+    return versioned[: ids.index(target) + 1]
+
+
+def baseline(m: MigratorBase, target: str) -> Core[List[str]]:
+    from sustained.exceptions import MigrationError
+
+    yield RefuseOpenTransaction("baseline")
+    through = versioned_through(m, target)
 
     def locked() -> Core[List[str]]:
         records = yield from applied_records(m)
         already_applied = {r.id for r in records if r.success}
-        candidates = versioned[: ids.index(target) + 1] + m._repeatables()
+        candidates = through + m._repeatables()
         # A failed row keeps the id, so a second row for it breaks the
         # table's primary key part way through the run.
         failed_ids = {r.id for r in records if not r.success}

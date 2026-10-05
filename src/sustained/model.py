@@ -160,18 +160,6 @@ def _check_declared_columns(cls: Type["Model"], name: str) -> None:
         )
 
 
-def _commit_unless_in_transaction(conn: Connection) -> None:
-    """
-    Commits the DDL just executed on the connection. Inside a
-    transaction() context the context manager owns the commit, so
-    committing here would break atomicity and this does nothing.
-    """
-    from sustained.execution import in_transaction
-
-    if not in_transaction(conn) and hasattr(conn, "commit"):
-        conn.commit()
-
-
 class ColumnNamespace:
     """
     Provides typed column access on a model class: Model.c.age returns a
@@ -466,7 +454,11 @@ class Model(metaclass=ModelMeta):
         Executes CREATE TABLE for this model on the connection, followed by
         the model's CREATE INDEX statements.
         """
-        from sustained.execution import connection_scope, cursor_scope
+        from sustained.execution import (
+            commit_unless_in_transaction,
+            connection_scope,
+            cursor_scope,
+        )
 
         with (
             connection_scope(connection, cls._connection) as conn,
@@ -474,7 +466,7 @@ class Model(metaclass=ModelMeta):
         ):
             for statement in cls.create_table_statements(if_not_exists=if_not_exists):
                 cursor.execute(statement)
-            _commit_unless_in_transaction(conn)
+            commit_unless_in_transaction(conn)
 
     @classmethod
     def drop_table_sql(cls, if_exists: bool = True) -> str:
@@ -509,7 +501,11 @@ class Model(metaclass=ModelMeta):
         Executes DROP TABLE for this model on the connection, followed by
         DROP TYPE for its enum types on dialects that have them.
         """
-        from sustained.execution import connection_scope, cursor_scope
+        from sustained.execution import (
+            commit_unless_in_transaction,
+            connection_scope,
+            cursor_scope,
+        )
 
         with (
             connection_scope(connection, cls._connection) as conn,
@@ -517,7 +513,7 @@ class Model(metaclass=ModelMeta):
         ):
             for statement in cls.drop_table_statements(if_exists=if_exists):
                 cursor.execute(statement)
-            _commit_unless_in_transaction(conn)
+            commit_unless_in_transaction(conn)
 
     @classmethod
     def transaction(

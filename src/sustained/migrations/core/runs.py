@@ -217,17 +217,11 @@ def run_up(
         if models is not None:
             yield from bookkeeping.ensure_tracking_table(m)
 
-        migrations = m._versioned()
-        if target is not None:
-            ids = [x.id for x in migrations]
-            if target not in ids:
-                if any(x.id == target for x in m._repeatables()):
-                    raise ValueError(
-                        f"Migration target {target!r} is repeatable; a "
-                        "target must name a versioned migration."
-                    )
-                raise ValueError(f"Unknown migration target: {target!r}.")
-            migrations = migrations[: ids.index(target) + 1]
+        migrations = (
+            m._versioned()
+            if target is None
+            else bookkeeping.versioned_through(m, target)
+        )
 
         records = yield from bookkeeping.applied_records(m)
         if validate:

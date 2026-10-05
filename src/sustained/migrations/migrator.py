@@ -24,6 +24,7 @@ from typing import (
 
 from sustained.dialects import Dialects
 from sustained.execution import (
+    _commit_if_supported,
     cursor_scope,
     enter_autocommit,
     in_transaction,
@@ -189,8 +190,7 @@ class Migrator(MigratorBase):
             _run_step(connection, request.step, self._compiler)
             return None
         if isinstance(request, Commit):
-            if hasattr(connection, "commit"):
-                connection.commit()
+            _commit_if_supported(connection)
             return None
         if isinstance(request, Rollback):
             if hasattr(connection, "rollback"):
@@ -436,20 +436,6 @@ class Migrator(MigratorBase):
         current format, like any other row.
         """
         return self._drive(bookkeeping.repair(self))
-
-    def _record_failure(
-        self,
-        migration: Migration,
-        seq: int,
-        update: bool = False,
-        generated: bool = False,
-    ) -> None:
-        """Writes a failed-attempt row; see bookkeeping.record_failure()."""
-        self._drive(
-            bookkeeping.record_failure(
-                self, migration, seq, update=update, generated=generated
-            )
-        )
 
     def up(
         self,

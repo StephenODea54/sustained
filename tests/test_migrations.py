@@ -36,6 +36,7 @@ from sustained.migrations import (
     migration_checksum,
     rehearsal_key,
 )
+from sustained.migrations.core import bookkeeping
 from sustained.schema import Integer
 
 
@@ -145,7 +146,7 @@ class TestValidateAndRepair(MigrationTestCase):
         with mock.patch.object(
             migrator._compiler, "supports_transactions", return_value=False
         ):
-            migrator._record_failure(migration, 1)
+            migrator._drive(bookkeeping.record_failure(migrator, migration, 1))
         self.assertEqual(migrator.repair(), ["removed the failed attempt of 'r'"])
         self.assertEqual(migrator.validate(), [])
 
@@ -187,7 +188,9 @@ class TestFailureTracking(MigrationTestCase):
             [Migration("bad", up="CREATE TABLE ft (x INTEGER)")]
         )
         migrator.applied_records()
-        migrator._record_failure(migrator._migrations[0], 1)
+        migrator._drive(
+            bookkeeping.record_failure(migrator, migrator._migrations[0], 1)
+        )
         with self.assertRaises(MigrationError):
             migrator.up()
         actions = migrator.repair()
@@ -1021,7 +1024,7 @@ class TestFailedRowWithoutValidation(MigrationTestCase):
         with mock.patch.object(
             migrator._compiler, "supports_transactional_ddl", return_value=False
         ):
-            migrator._record_failure(migration, 1)
+            migrator._drive(bookkeeping.record_failure(migrator, migration, 1))
         with self.assertRaises(MigrationError) as caught:
             migrator.up(validate=False)
         self.assertIn("failed attempt on record", str(caught.exception))

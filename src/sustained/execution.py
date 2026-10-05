@@ -255,6 +255,16 @@ def _commit_if_supported(connection: Connection) -> None:
         connection.commit()
 
 
+def commit_unless_in_transaction(connection: Connection) -> None:
+    """
+    Commits the statements just run on the connection. Inside a
+    transaction() context the context manager owns the commit, so a
+    commit here would end that transaction early, and this does nothing.
+    """
+    if not in_transaction(connection):
+        _commit_if_supported(connection)
+
+
 def _set_quietly(connection: Connection, name: str, value: object) -> None:
     """Sets a driver switch, dropping a refusal (see enter_autocommit())."""
     try:
@@ -315,24 +325,14 @@ def in_transaction(connection: Connection) -> bool:
     return _transaction_entry(connection) is not None
 
 
-def open_cursor(connection: Connection) -> Cursor:
-    """
-    The cursor statements should run on: the transaction's own cursor when
-    a transaction() block is open on the connection, and a new one when
-    not. On DuckDB every cursor is its own session, so a statement on a
-    fresh cursor would run outside the open transaction.
-    """
-    entry = _own_transaction_entry(connection)
-    if entry is not None:
-        return entry[2]
-    return connection.cursor()
-
-
 @contextmanager
 def cursor_scope(connection: Connection) -> Iterator[Cursor]:
     """
-    open_cursor() for one piece of work, given back at the end of the
-    block.
+    The cursor statements should run on, for one piece of work, given
+    back at the end of the block. That is the transaction's own cursor
+    when a transaction() block is open on the connection, and a new one
+    when not. On DuckDB every cursor is its own session, so a statement
+    on a fresh cursor would run outside the open transaction.
 
     A cursor holds a result set until something reads or closes it. Pyodbc
     and the MySQL drivers report "commands out of sync" when a connection
@@ -362,7 +362,7 @@ def pinned_transaction(connection: Connection, dialect: "Dialects") -> Iterator[
     rollback when it raises. A rehearsal decides for itself, because it
     keeps reading the schema after its down sweep and rolls back only when
     every proof is collected. It gets the rest of the machinery: the block
-    is registered, so open_cursor() hands out this cursor to every
+    is registered, so cursor_scope() hands out this cursor to every
     statement inside it, and in_transaction() reports the connection busy.
     On DuckDB, where each cursor is its own session, that is what keeps the
     rehearsed statements in the transaction that rolls back.
