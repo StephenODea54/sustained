@@ -41,7 +41,7 @@ ADD_COLUMN_CHECKED = Rule(
     (
         "ALTER TABLE t ADD COLUMN d integer CHECK (d > 0)",
         "ALTER TABLE t ADD COLUMN d integer REFERENCES r (id)",
-        "ALTER TABLE t ADD COLUMN d integer NOT NULL",
+        "ALTER TABLE e ADD COLUMN d integer NOT NULL",
     ),
 )
 DROP_COLUMN = Rule("pg.drop_column", _ALTER_TABLE, ("ALTER TABLE t DROP COLUMN c",))
@@ -337,10 +337,12 @@ DROP_SCHEMA = Rule(
     "pg.drop_schema", DOCS + "sql-dropschema.html", ("DROP SCHEMA s CASCADE",)
 )
 
-# The objects the fixtures above name, with a few rows in each table.
+# The objects the fixtures above name, with a few rows in each table but `e`.
 # The ground-truth tests create them, then run each fixture alone inside
 # a transaction that is rolled back. The views read `w`, so a fixture
 # that drops `t` or changes a column of `r` does not fail on a view.
+# `e` has no rows, because the server refuses a NOT NULL column with no
+# DEFAULT on a table with rows.
 # `pt` has a DEFAULT partition, and `pi` a partitioned index. `pt` has
 # no index, so attaching `p` to it builds none.
 FIXTURE_SCHEMA = (
@@ -382,6 +384,7 @@ FIXTURE_SCHEMA = (
     "INSERT INTO p VALUES (2)",
     "CREATE UNLOGGED TABLE ul (id integer)",
     "INSERT INTO ul VALUES (1)",
+    "CREATE TABLE e (id integer)",
     "CREATE TABLE w (id integer)",
     "INSERT INTO w VALUES (1)",
     "CREATE MATERIALIZED VIEW mv AS SELECT id FROM w",
