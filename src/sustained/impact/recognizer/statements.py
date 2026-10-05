@@ -20,6 +20,7 @@ from sustained.impact.recognizer.cursor import (
     Unrecognized,
     depths,
     frozen,
+    read_name,
 )
 from sustained.impact.recognizer.sources import tables_read
 from sustained.impact.tokens import (
@@ -189,13 +190,7 @@ class Statements(Cursor):
                 if depth == 0:
                     break
             return None, index
-        parts: List[str] = []
-        while index < len(tokens) and tokens[index].name is not None:
-            parts.append(tokens[index].name or "")
-            index += 1
-            if not (index < len(tokens) and tokens[index].is_punct(".")):
-                break
-            index += 1
+        parts, index = read_name(tokens, index)
         return (".".join(parts) if parts else None), index
 
     @staticmethod

@@ -49,6 +49,22 @@ def depths(tokens: Sequence[Token], start: int = 0) -> Iterator[Tuple[int, Token
             depth += 1
 
 
+def read_name(tokens: Sequence[Token], index: int) -> Tuple[List[str], int]:
+    """
+    The parts of the dotted name that starts at `index`, and the index
+    after it. The parts are empty when no name starts there. A `.` with
+    no name after it is read, so the token before the index is that `.`.
+    """
+    parts: List[str] = []
+    while index < len(tokens) and (part := tokens[index].name) is not None:
+        parts.append(part)
+        index += 1
+        if not (index < len(tokens) and tokens[index].is_punct(".")):
+            break
+        index += 1
+    return parts, index
+
+
 class Unrecognized(Exception):
     """Raised inside the recognizer at the first thing it cannot read."""
 
@@ -279,15 +295,10 @@ class Cursor:
 
     def name_parts(self) -> List[str]:
         """A dotted name: one or more identifiers, bare or quoted."""
-        parts: List[str] = []
-        while True:
-            token = self.peek()
-            if token is None or token.name is None:
-                raise Unrecognized(f"expected a name {self.where()}")
-            parts.append(token.name)
-            self.pos += 1
-            if not self.accept_punct("."):
-                return parts
+        parts, self.pos = read_name(self.tokens, self.pos)
+        if not parts or self.tokens[self.pos - 1].is_punct("."):
+            raise Unrecognized(f"expected a name {self.where()}")
+        return parts
 
     def name(self) -> str:
         return ".".join(self.name_parts())

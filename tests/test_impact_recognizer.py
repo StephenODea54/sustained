@@ -10,7 +10,7 @@ from sustained.impact.recognizer import (
     classify_default,
     recognize,
 )
-from sustained.impact.recognizer.cursor import Cursor, depths
+from sustained.impact.recognizer.cursor import Cursor, depths, read_name
 from sustained.impact.recognizer.sources import tables_read
 from sustained.impact.tokens import tokenize
 
@@ -788,3 +788,20 @@ class DepthsTestCase(unittest.TestCase):
         self.assertEqual(parsed.options["rows"], 2)
         parsed = recognize("UPDATE t SET a = b[1] FROM u WHERE t.id = u.id")
         self.assertEqual(parsed.table, "t")
+
+
+class ReadNameTestCase(unittest.TestCase):
+    def test_a_dotted_name_and_the_index_after_it(self):
+        tokens = tokenize('a."B".c (x)', PG)
+        self.assertEqual(read_name(tokens, 0), (["a", "B", "c"], 5))
+
+    def test_no_name_reads_nothing(self):
+        self.assertEqual(read_name(tokenize("( a", PG), 0), ([], 0))
+
+    def test_a_trailing_dot_is_read(self):
+        self.assertEqual(read_name(tokenize("a.", PG), 0), (["a"], 2))
+
+    def test_the_cursor_rejects_a_trailing_dot(self):
+        self.assertEqual(
+            recognize("DROP TABLE a.").options["reason"][:15], "expected a name"
+        )

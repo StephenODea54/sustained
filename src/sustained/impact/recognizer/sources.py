@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
+from sustained.impact.recognizer.cursor import read_name
 from sustained.impact.tokens import Token
 
 # The words that may open a FROM item before its name.
@@ -76,14 +77,7 @@ def _item(tokens: Sequence[Token], at: int) -> Tuple[Optional[str], int, bool]:
         return None, at + 1, query
     if tokens[at].is_word("VALUES") or tokens[at].name is None:
         return None, at, False
-    parts: List[str] = []
-    while at < len(tokens) and tokens[at].name is not None:
-        parts.append(tokens[at].name or "")
-        at += 1
-        if at < len(tokens) and tokens[at].is_punct("."):
-            at += 1
-            continue
-        break
+    parts, at = read_name(tokens, at)
     if at < len(tokens) and tokens[at].is_punct("("):
         return None, at, False
     return ".".join(parts), at, True

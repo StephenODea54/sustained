@@ -18,6 +18,7 @@ from sustained.impact.recognizer.cursor import (
     Options,
     Unrecognized,
     frozen,
+    read_name,
 )
 from sustained.impact.recognizer.sources import tables_read
 from sustained.impact.tokens import (
@@ -171,14 +172,7 @@ class CreateDrop(Cursor):
         for index, token in enumerate(tokens):
             if not token.is_word("REFERENCES"):
                 continue
-            parts: List[str] = []
-            at = index + 1
-            while at < len(tokens) and tokens[at].name is not None:
-                parts.append(tokens[at].name or "")
-                at += 1
-                if not (at < len(tokens) and tokens[at].is_punct(".")):
-                    break
-                at += 1
+            parts, _ = read_name(tokens, index + 1)
             if parts:
                 found.append(".".join(parts))
         return tuple(found)
