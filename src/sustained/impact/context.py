@@ -280,16 +280,10 @@ def read_context(
     With `statements`, the sizes are read only for the tables
     `named_tables()` finds in them; without, for every table.
     """
-    from sustained.introspect.runner import introspect_schema, run_plan
+    from sustained.introspect.runner import run_plan
 
-    covering_profile(dialect)
-    try:
-        schema: Optional["Snapshot"] = introspect_schema(connection, dialect)
-    except Exception:
-        schema = None
-    tables = _named(statements, dialect, schema)
-    context = run_plan(connection, dialect, _plan(dialect, exact_counts, tables))
-    return context if schema is None else _with_schema(context, schema)
+    plan = read_context_plan(dialect, exact_counts, statements)
+    return run_plan(connection, dialect, plan)
 
 
 async def async_read_context(
@@ -299,17 +293,42 @@ async def async_read_context(
     statements: Optional[Sequence[str]] = None,
 ) -> EngineContext:
     """What read_context() reads, through an async adapter."""
-    from sustained.introspect.runner import async_introspect_schema, async_run_plan
+    from sustained.introspect.runner import async_run_plan
 
+    plan = read_context_plan(dialect, exact_counts, statements)
+    return await async_run_plan(adapter, dialect, plan)
+
+
+def read_context_plan(
+    dialect: "Dialects",
+    exact_counts: bool = False,
+    statements: Optional[Sequence[str]] = None,
+) -> ContextPlan:
+    """
+    The read plan of read_context() and async_read_context(). Raises
+    ValueError for a dialect that has no impact rules yet.
+    """
     covering_profile(dialect)
+    return _context_steps(dialect, exact_counts, statements)
+
+
+def _context_steps(
+    dialect: "Dialects", exact_counts: bool, statements: Optional[Sequence[str]]
+) -> ContextPlan:
+    """
+    Reads the schema, then the facts the rules read. A schema read that
+    fails leaves the context without a schema. The runner rolls back to
+    a savepoint around each statement where a failure stops the
+    transaction, so the reads after the failure still run.
+    """
+    from sustained.introspect.runner import _schema_plan
+
     try:
-        schema: Optional["Snapshot"] = await async_introspect_schema(adapter, dialect)
+        schema: Optional["Snapshot"] = yield from _schema_plan(dialect)
     except Exception:
         schema = None
     tables = _named(statements, dialect, schema)
-    context = await async_run_plan(
-        adapter, dialect, _plan(dialect, exact_counts, tables)
-    )
+    context = yield from _plan(dialect, exact_counts, tables)
     return context if schema is None else _with_schema(context, schema)
 
 

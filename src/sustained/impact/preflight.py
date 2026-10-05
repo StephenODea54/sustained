@@ -45,7 +45,7 @@ from typing import (
     Tuple,
 )
 
-from sustained.impact.context import EngineContext, Rows, read_context
+from sustained.impact.context import EngineContext, Rows, read_context_plan
 
 if TYPE_CHECKING:
     from sustained.aio import AsyncAdapter
@@ -399,13 +399,8 @@ def preflight(
     """
     from sustained.introspect.runner import run_plan
 
-    covered_or_raise(dialect)
-    checked_older_than(older_than)
-    impacts = _impacts(statements, dialect, context)
-    if impacts is None:
-        impacts = _impacts(statements, dialect, read_context(connection, dialect))
-    assert impacts is not None
-    return run_plan(connection, dialect, preflight_plan(dialect, impacts, older_than))
+    plan = _statements_plan(dialect, statements, older_than, context)
+    return run_plan(connection, dialect, plan)
 
 
 async def async_preflight(
@@ -416,19 +411,40 @@ async def async_preflight(
     context: Optional[EngineContext] = None,
 ) -> Preflight:
     """What preflight() reads, through an async adapter."""
-    from sustained.impact.context import async_read_context
     from sustained.introspect.runner import async_run_plan
 
+    plan = _statements_plan(dialect, statements, older_than, context)
+    return await async_run_plan(adapter, dialect, plan)
+
+
+def _statements_plan(
+    dialect: "Dialects",
+    statements: Sequence[str],
+    older_than: float,
+    context: Optional[EngineContext],
+) -> PreflightPlan:
+    """
+    The read plan of preflight() and async_preflight(). It raises
+    ValueError at once for a dialect that has no preflight and for a
+    bad `older_than`, and analyzes the statements before the first read
+    when `context` or the attached impacts are enough.
+    """
     covered_or_raise(dialect)
     checked_older_than(older_than)
     impacts = _impacts(statements, dialect, context)
-    if impacts is None:
-        read = await async_read_context(adapter, dialect)
-        impacts = _impacts(statements, dialect, read)
+    if impacts is not None:
+        return preflight_plan(dialect, impacts, older_than)
+    return _after_context(dialect, statements, older_than)
+
+
+def _after_context(
+    dialect: "Dialects", statements: Sequence[str], older_than: float
+) -> PreflightPlan:
+    """Reads the context, then the preflight of the statements analyzed with it."""
+    read = yield from read_context_plan(dialect)
+    impacts = _impacts(statements, dialect, read)
     assert impacts is not None
-    return await async_run_plan(
-        adapter, dialect, preflight_plan(dialect, impacts, older_than)
-    )
+    return (yield from preflight_plan(dialect, impacts, older_than))
 
 
 def covered_or_raise(dialect: "Dialects") -> None:

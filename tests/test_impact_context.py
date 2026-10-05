@@ -460,20 +460,23 @@ class NamedTablesTestCase(unittest.TestCase):
         )
 
     def test_a_failed_schema_read_still_reads_the_sizes(self):
-        connection = ScriptedConnection()
-        with mock.patch(
-            "sustained.introspect.runner.introspect_schema",
-            side_effect=RuntimeError("denied"),
-        ):
+        def refused(dialect, schemas=()):
+            yield "SELECT refused"
+
+        connection = ScriptedConnection(refuse="refused")
+        with mock.patch("sustained.introspect.runner._schema_plan", refused):
             context = read_context(connection, PG, statements=[INDEX])
         self.assertNotIn("schema", context.read)
         self.assertIn("sizes", context.read)
-        with mock.patch(
-            "sustained.introspect.runner.async_introspect_schema",
-            side_effect=RuntimeError("denied"),
-        ):
-            context = asyncio.run(async_read_context(ScriptedAdapter(), PG))
+        failed = connection.log.index("SELECT refused")
+        self.assertEqual(
+            connection.log[failed + 1], "ROLLBACK TO SAVEPOINT sustained_read"
+        )
+        adapter = ScriptedAdapter(refuse="refused")
+        with mock.patch("sustained.introspect.runner._schema_plan", refused):
+            context = asyncio.run(async_read_context(adapter, PG))
         self.assertNotIn("schema", context.read)
+        self.assertIn("sizes", context.read)
 
 
 if __name__ == "__main__":
