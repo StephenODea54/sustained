@@ -61,15 +61,36 @@ class TestIndexCompiler(unittest.TestCase):
 
     def test_mysql_refuses_partial(self):
         compiler = Dialects.get_compiler(Dialects.MYSQL)
-        with self.assertRaises(DialectError):
+        with self.assertRaises(DialectError) as caught:
             compiler.compile_create_index("ix_a", "`t`", ["a"], False, "a > 0")
+        self.assertEqual(
+            str(caught.exception),
+            "The MySQL dialect does not support partial indexes. "
+            "Index 'ix_a' declares a WHERE predicate.",
+        )
 
     def test_postgres_refuses_prefix(self):
         compiler = Dialects.get_compiler(Dialects.POSTGRES)
-        with self.assertRaises(DialectError):
+        with self.assertRaises(DialectError) as caught:
             compiler.compile_create_index(
                 "ix_a", '"t"', [IndexColumn("a", prefix_length=4)], False
             )
+        self.assertEqual(
+            str(caught.exception),
+            "The Postgres dialect does not support index prefix lengths. "
+            "Index column 'a' declares one.",
+        )
+
+    def test_refuses_desc_without_support(self):
+        compiler = Dialects.get_compiler(Dialects.POSTGRES)
+        compiler.supports_index_desc = False
+        with self.assertRaises(DialectError) as caught:
+            compiler.compile_index_column(IndexColumn("a", desc=True))
+        self.assertEqual(
+            str(caught.exception),
+            "The Postgres dialect does not support DESC index columns. "
+            "Index column 'a' declares one.",
+        )
 
 
 class TestIndexDetailsDiff(unittest.TestCase):

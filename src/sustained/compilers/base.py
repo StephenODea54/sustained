@@ -1092,16 +1092,15 @@ class Compiler:
         sql = self.quote_ddl_identifier(part.name)
         if part.prefix_length is not None:
             if not self.supports_index_prefix:
-                raise DialectError(
-                    f"The {self.dialect_name()} dialect has no index prefix "
-                    f"length; index column '{part.name}' declares one."
+                raise self._unsupported(
+                    "index prefix lengths",
+                    f"Index column '{part.name}' declares one.",
                 )
             sql = f"{sql}({part.prefix_length})"
         if part.desc:
             if not self.supports_index_desc:
-                raise DialectError(
-                    f"The {self.dialect_name()} dialect has no DESC index "
-                    f"column; index column '{part.name}' declares one."
+                raise self._unsupported(
+                    "DESC index columns", f"Index column '{part.name}' declares one."
                 )
             sql = f"{sql} DESC"
         return sql
@@ -1126,9 +1125,8 @@ class Compiler:
         if where is None:
             return sql
         if not self.supports_partial_index:
-            raise DialectError(
-                f"The {self.dialect_name()} dialect has no partial index; "
-                f"index '{index_name}' declares a WHERE predicate."
+            raise self._unsupported(
+                "partial indexes", f"Index '{index_name}' declares a WHERE predicate."
             )
         return f"{sql} WHERE {where}"
 
