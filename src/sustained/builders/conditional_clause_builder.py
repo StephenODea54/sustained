@@ -14,7 +14,13 @@ from typing import (
 
 from ..dialects import Dialects
 from ..expressions import refuse_null_member
-from ..rendering import Renderable, RenderContext, render_nested, render_part
+from ..rendering import (
+    Renderable,
+    RenderContext,
+    render_clause_list,
+    render_nested,
+    render_part,
+)
 from ..types import (
     ColumnReference,
     DbReturnValue,
@@ -396,13 +402,7 @@ class ConditionalClauseBuilder:
 
     def _build_clause_list_string(self, ctx: RenderContext) -> str:
         """Builds the complete clause string from all parts."""
-        if not self._clauses:
-            return ""
-
-        parts = [render_part(self._clauses[0][1], ctx)]
-        for conjunction, clause in self._clauses[1:]:
-            parts.append(f"{conjunction} {render_part(clause, ctx)}")
-        return " ".join(parts)
+        return render_clause_list(self._clauses, ctx)
 
     def render(self, ctx: RenderContext) -> str:
         """Builds the final clause string with the given context."""

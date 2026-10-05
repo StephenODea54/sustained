@@ -196,6 +196,21 @@ def render_nested(query: "QueryBuilder[Any]", ctx: RenderContext) -> str:
         ctx.nested = recorded
 
 
+def render_clause_list(
+    clauses: Sequence["tuple[str, Renderable]"], ctx: RenderContext
+) -> str:
+    """
+    Renders conditions joined by their conjunctions, such as AND and OR.
+    The first condition's conjunction is left out. An empty list renders
+    as an empty string.
+    """
+    if not clauses:
+        return ""
+    parts = [render_part(clauses[0][1], ctx)]
+    parts.extend(f"{conj} {render_part(clause, ctx)}" for conj, clause in clauses[1:])
+    return " ".join(parts)
+
+
 def render_part(part: Renderable, ctx: RenderContext) -> str:
     """Renders a Renderable with the given context."""
     if callable(part):
