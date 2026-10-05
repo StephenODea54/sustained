@@ -1,7 +1,7 @@
 import unittest
 from typing import Dict
 
-from sustained.model import Model, create_model
+from sustained.model import Model, create_model, qualified_table_name
 from sustained.types import RelationMapping, RelationType
 
 
@@ -54,6 +54,32 @@ class TestModel(unittest.TestCase):
             AttributeError, "'MyModel' object has no attribute 'id'"
         ):
             _ = model_instance.id
+
+    def test_schema_without_table_name_is_refused(self):
+        class Orphan(Model):
+            tableSchema = "sales"
+
+        # A SELECT without a table drops FROM rather than reading the
+        # schema name as the table.
+        self.assertEqual(str(Orphan.query()), "SELECT *")
+        for build in (
+            lambda: str(Orphan.query().where("id", "=", 1).delete()),
+            lambda: qualified_table_name(Orphan),
+            Orphan._qualified_table_sql,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "Model 'Orphan' must define a tableName."
+            ):
+                build()
+
+    def test_table_path_includes_database_and_schema(self):
+        class Full(Model):
+            database = "db"
+            tableSchema = "sales"
+            tableName = "orders"
+
+        self.assertEqual(Full._table_path(), ["db", "sales", "orders"])
+        self.assertEqual(str(Full.query()), "SELECT * FROM db.sales.orders")
 
     def test_getattr_dunder_method_raises_attribute_error(self):
         class MyModel(Model):

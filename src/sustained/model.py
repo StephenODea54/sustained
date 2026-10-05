@@ -143,14 +143,7 @@ def qualified_table_name(cls: Type["Model"]) -> str:
     The model's table name with its database and schema in front, such as
     "sales.orders", unquoted.
     """
-    parts = []
-    if cls.database:
-        parts.append(cls.database)
-    if cls.tableSchema:
-        parts.append(cls.tableSchema)
-    assert cls.tableName is not None, "Model used in a relation must have a tableName"
-    parts.append(cls.tableName)
-    return ".".join(parts)
+    return ".".join(cls._table_path())
 
 
 def _qualified_column(cls: Type["Model"], name: str) -> str:
@@ -365,6 +358,17 @@ class Model(metaclass=ModelMeta):
         return async_transaction(resolved, cls._dialect)
 
     @classmethod
+    def _table_path(cls) -> List[str]:
+        """
+        The unquoted parts of the table name: database, schema, and table.
+        Raises ValueError when the model has no tableName, so a schema is
+        never taken as the table.
+        """
+        if not cls.tableName:
+            raise ValueError(f"Model '{cls.__name__}' must define a tableName.")
+        return [p for p in (cls.database, cls.tableSchema) if p] + [cls.tableName]
+
+    @classmethod
     def _qualified_table_sql(cls, compiler: Optional["Compiler"] = None) -> str:
         # Only DDL statements use this name, so it quotes with the
         # dialect's DDL rule. Queries quote their own table references.
@@ -374,15 +378,7 @@ class Model(metaclass=ModelMeta):
 
         if compiler is None:
             compiler = Dialects.get_compiler(cls._dialect)
-        parts = []
-        if cls.database:
-            parts.append(compiler.quote_ddl_identifier(cls.database))
-        if cls.tableSchema:
-            parts.append(compiler.quote_ddl_identifier(cls.tableSchema))
-        if not cls.tableName:
-            raise ValueError(f"Model '{cls.__name__}' must define a tableName.")
-        parts.append(compiler.quote_ddl_identifier(cls.tableName))
-        return ".".join(parts)
+        return ".".join(compiler.quote_ddl_identifier(p) for p in cls._table_path())
 
     @classmethod
     def _table_columns(cls) -> "dict[str, ColumnDef]":

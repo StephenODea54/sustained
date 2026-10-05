@@ -298,9 +298,7 @@ class TestJoinBuilder(unittest.TestCase):
         }
         self.Car.relationMappings = temp_mappings
 
-        with self.assertRaisesRegex(
-            AssertionError, "Model used in a relation must have a tableName"
-        ):
+        with self.assertRaisesRegex(ValueError, "must define a tableName"):
             self.Car.query().joinRelated("engine")
 
         # Restore original mappings

@@ -884,19 +884,8 @@ class QueryBuilder:
 
     def _model_table_sql(self) -> str:
         """Renders the model's qualified, quoted table name."""
-        model_cls = self._model_class
-        parts = []
-        if model_cls.database:
-            parts.append(self._compiler.quote_identifier(model_cls.database))
-        if model_cls.tableSchema:
-            parts.append(self._compiler.quote_identifier(model_cls.tableSchema))
-        if model_cls.tableName:
-            parts.append(self._compiler.quote_identifier(model_cls.tableName))
-        if not parts:
-            raise ValueError(
-                f"Model '{model_cls.__name__}' must define a tableName to build this statement."
-            )
-        return ".".join(parts)
+        quote = self._compiler.quote_identifier
+        return ".".join(quote(part) for part in self._model_class._table_path())
 
     def insert(
         self, values: Union[Mapping[str, SqlValue], List[Mapping[str, SqlValue]]]
