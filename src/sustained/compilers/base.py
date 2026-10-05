@@ -26,7 +26,7 @@ from sustained.expressions import (
     Subquery,
     WindowExpression,
 )
-from sustained.rendering import Renderable, RenderContext
+from sustained.rendering import Renderable, RenderContext, render_nested
 from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
@@ -1813,6 +1813,14 @@ class Compiler:
             return self.quote_column_reference(value.name)
         if isinstance(value, Literal):
             return self.format_value(value.value)
+        from sustained.builder import QueryBuilder
+
+        if isinstance(value, QueryBuilder):
+            # A query in a value position is a subquery operand, as on the
+            # right side of a join. Bound, the driver would get the builder.
+            if ctx is None:
+                return f"({value})"
+            return f"({render_nested(value, ctx)})"
         return None
 
     def _format_arg(

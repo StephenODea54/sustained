@@ -86,6 +86,8 @@ Show.query().where(col('sold') > Func('COALESCE', Subquery(quota, 'q'), Literal(
 
 A `Subquery` keeps its alias in a select list and drops it here, because a comparison and a function argument take a bare SELECT.
 
+You can also pass the query itself as the value, without the `Subquery` wrapper. `where('id', '=', Ticket.query().max('id'))` renders `WHERE id = (SELECT MAX(id) FROM tickets)`, and so does the same query as a `having()` value or an `update()` value.
+
 ## Typed predicates
 
 `Model.c` gives every column a reference that builds a `Predicate` from a Python comparison. `col()` does the same for a dotted path when no model is in scope:

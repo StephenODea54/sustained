@@ -436,3 +436,44 @@ class TestSubqueryInColumnPositions(unittest.TestCase):
             f"AND {inner} LIKE %s AND {inner} IS TRUE",
         )
         self.assertEqual(params, ("v", 4, "v", 1, 2, "v", 3, "v", "p%", "v"))
+
+
+class TestQueryValueIsSubquery(unittest.TestCase):
+    """A QueryBuilder in a value position renders as a subquery operand."""
+
+    def setUp(self) -> None:
+        Thing.set_dialect(Dialects.POSTGRES)
+
+    def tearDown(self) -> None:
+        Thing.set_dialect(Dialects.DEFAULT)
+
+    def _latest(self) -> QueryBuilder[Thing]:
+        return Thing.query().max("id").where("k", "=", "v")
+
+    def test_where_and_having_values(self) -> None:
+        inner = '(SELECT MAX("id") FROM "things" WHERE "k" = %s)'
+        query = (
+            Thing.query()
+            .where("id", "=", self._latest())
+            .groupBy("g")
+            .having("n", ">", self._latest())
+        )
+        sql, params = query.to_sql()
+        self.assertEqual(
+            sql,
+            f'SELECT * FROM "things" WHERE "id" = {inner} '
+            f'GROUP BY "g" HAVING "n" > {inner}',
+        )
+        self.assertEqual(params, ("v", "v"))
+        self.assertIn("\"k\" = 'v'", str(query))
+
+    def test_update_value(self) -> None:
+        query = Thing.query().where("id", "=", 1).update({"a": self._latest()})
+        self.assertEqual(
+            query.to_sql(),
+            (
+                'UPDATE "things" SET "a" = '
+                '(SELECT MAX("id") FROM "things" WHERE "k" = %s) WHERE "id" = %s',
+                ("v", 1),
+            ),
+        )

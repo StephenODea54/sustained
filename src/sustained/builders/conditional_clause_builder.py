@@ -245,7 +245,7 @@ class ConditionalClauseBuilder:
             ColumnReference, Callable[["ConditionalClauseBuilder"], None], "Predicate"
         ],
         op: Optional[str] = None,
-        val: Optional[Union[Expression, DbReturnValue]] = None,
+        val: Optional[Union[Expression, DbReturnValue, AnyQuery]] = None,
     ) -> None:
         """Internal handler for adding clauses."""
         from ..expressions import Predicate

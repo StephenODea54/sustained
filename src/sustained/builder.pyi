@@ -84,7 +84,7 @@ class _Clauses(Generic[TQuery]):
         self,
         column_or_callable: ColumnReference,
         op: str,
-        val: Optional[Union[Expression, DbReturnValue]],
+        val: Optional[Union[Expression, DbReturnValue, AnyQuery]],
     ) -> TQuery: ...
     @overload
     def andWhere(
@@ -96,7 +96,7 @@ class _Clauses(Generic[TQuery]):
         self,
         column_or_callable: ColumnReference,
         op: str,
-        val: Optional[Union[Expression, DbReturnValue]],
+        val: Optional[Union[Expression, DbReturnValue, AnyQuery]],
     ) -> TQuery: ...
     @overload
     def orWhere(
@@ -108,7 +108,7 @@ class _Clauses(Generic[TQuery]):
         self,
         column_or_callable: ColumnReference,
         op: str,
-        val: Optional[Union[Expression, DbReturnValue]],
+        val: Optional[Union[Expression, DbReturnValue, AnyQuery]],
     ) -> TQuery: ...
     def whereIn(
         self, col: str, vals: Union[List[DbReturnValue], QueryResolvable]
@@ -499,7 +499,7 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
         self,
         column_or_callable: ColumnReference,
         op: str,
-        val: Optional[Union[Expression, DbReturnValue]],
+        val: Optional[Union[Expression, DbReturnValue, AnyQuery]],
     ) -> QueryBuilder[TModel]: ...
     @overload
     def andHaving(
@@ -511,7 +511,7 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
         self,
         column_or_callable: ColumnReference,
         op: str,
-        val: Optional[Union[Expression, DbReturnValue]],
+        val: Optional[Union[Expression, DbReturnValue, AnyQuery]],
     ) -> QueryBuilder[TModel]: ...
     @overload
     def orHaving(
@@ -523,7 +523,7 @@ class QueryBuilder(_Clauses["QueryBuilder[TModel]"], Generic[TModel]):
         self,
         column_or_callable: ColumnReference,
         op: str,
-        val: Optional[Union[Expression, DbReturnValue]],
+        val: Optional[Union[Expression, DbReturnValue, AnyQuery]],
     ) -> QueryBuilder[TModel]: ...
     def havingIn(
         self, col: str, vals: Union[List[DbReturnValue], QueryResolvable]
