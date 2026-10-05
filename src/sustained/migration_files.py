@@ -408,10 +408,9 @@ def load_migrations(
         `empty` after the message, when the file has no statements.
         """
         text = entry.read_text(encoding="utf-8")
-        # None means substitution is off, so files that happen to contain
-        # '${...}' keep loading as they did before placeholders existed.
-        if placeholders is not None:
-            text = substitute_placeholders(text, placeholders, entry.name)
+        # With placeholders None the text comes back untouched, so a file
+        # that contains '${...}' loads as written.
+        text = substitute_placeholders(text, placeholders, entry.name)
         split = split_sql_statements(text)
         if not split:
             raise ValueError(f"Migration file {entry.name!r} has no statements{empty}.")

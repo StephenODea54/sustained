@@ -355,14 +355,13 @@ def guard_run(
     from sustained.impact import attach_impact, supported
 
     statements = run_statements(run, m._compiler)
-    if statements and supported(m._dialect):
+    analyzed = bool(statements) and supported(m._dialect)
+    if analyzed:
         context = yield ReadContext(exact_counts, tuple(statements))
         statements = attach_impact(statements, m._dialect, context)
-        check_statements(m._guards, statements, m._dialect, warned)
-        if not any(reads_impact(guard) for guard in m._guards):
-            report_danger(statements, dangers)
-        return statements
     check_statements(m._guards, statements, m._dialect, warned)
+    if analyzed and not any(reads_impact(guard) for guard in m._guards):
+        report_danger(statements, dangers)
     return statements
 
 

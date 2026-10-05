@@ -357,6 +357,17 @@ def _script_lines(
     insert_columns = quoted_columns(
         compiler, "id", "seq", "checksum", "applied_at", "execution_ms", "success"
     )
+
+    def insert(migration: Migration, seq: int) -> str:
+        return (
+            f"INSERT INTO {table_sql} "
+            f"({insert_columns}) "
+            f"VALUES ({format_value(migration.id)}, {seq}, "
+            f"{format_value(migration_checksum(migration))}, "
+            f"{format_value(timestamp)}, NULL, "
+            f"{compiler.compile_boolean(True)});"
+        )
+
     versioned = [m for m in migrations if not m.repeatable]
     repeatables = [m for m in migrations if m.repeatable]
     lines: List[Union[str, _Steps]] = []
@@ -369,14 +380,7 @@ def _script_lines(
                 continue
             lines.append(f"-- up: {migration.id}")
             lines.append(_Steps(migration, migration_sql(migration, "up", compiler)))
-            lines.append(
-                f"INSERT INTO {table_sql} "
-                f"({insert_columns}) "
-                f"VALUES ({format_value(migration.id)}, {next_seq}, "
-                f"{format_value(migration_checksum(migration))}, "
-                f"{format_value(timestamp)}, NULL, "
-                f"{compiler.compile_boolean(True)});"
-            )
+            lines.append(insert(migration, next_seq))
             next_seq += 1
         for migration in repeatables:
             record = records_by_id.get(migration.id)
@@ -386,14 +390,7 @@ def _script_lines(
             lines.append(f"-- repeat: {migration.id}")
             lines.append(_Steps(migration, migration_sql(migration, "up", compiler)))
             if record is None:
-                lines.append(
-                    f"INSERT INTO {table_sql} "
-                    f"({insert_columns}) "
-                    f"VALUES ({format_value(migration.id)}, {next_seq}, "
-                    f"{format_value(checksum)}, "
-                    f"{format_value(timestamp)}, NULL, "
-                    f"{compiler.compile_boolean(True)});"
-                )
+                lines.append(insert(migration, next_seq))
                 next_seq += 1
             else:
                 lines.append(

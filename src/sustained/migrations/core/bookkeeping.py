@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Tuple
 
 from sustained.analysis import MigrationStatement
 from sustained.driver_errors import is_missing_table
@@ -399,6 +399,31 @@ def baseline(m: MigratorBase, target: str) -> Core[List[str]]:
     return (yield from lock_scope(m, locked()))
 
 
+def _write_failure_row(
+    m: MigratorBase, migration: Migration, row: Callable[[], Execute]
+) -> Core[None]:
+    """
+    Writes the tracking row `row` builds after a step of the migration
+    raised where nothing rolled the step back. A rehearsal writes
+    nothing, because its whole run rolls back, and neither does a
+    transactional migration on an engine whose schema changes roll back.
+    A failure to write the row never masks the original error.
+    """
+    if m._rehearsing or (
+        migration.transactional and m._compiler.supports_transactional_ddl()
+    ):
+        return
+    # The step ran bare, so the rows it changed before it failed are
+    # still uncommitted. The rollback takes them back before the Commit
+    # below writes the row. Schema changes have committed already.
+    yield from rollback_quietly()
+    try:
+        yield row()
+        yield Commit()
+    except Exception:
+        pass
+
+
 def record_failure(
     m: MigratorBase,
     migration: Migration,
@@ -410,64 +435,43 @@ def record_failure(
     Writes a failed-attempt row after a migration step raised on an
     engine whose schema changes do not roll back, where partial changes
     may remain. A repeatable that already has a row updates it in
-    place. A failure to write the row never masks the original error. A
-    rehearsal writes nothing: its whole run rolls back. A migration
-    that asked for no transaction leaves partial changes on every
-    engine, so it gets a row wherever it fails.
+    place. A migration that asked for no transaction leaves partial
+    changes on every engine, so it gets a row wherever it fails.
     """
-    if m._rehearsing or (
-        migration.transactional and m._compiler.supports_transactional_ddl()
-    ):
-        return
-    # The step ran bare, so the rows it changed before it failed are
-    # still uncommitted. The rollback takes them back before the Commit
-    # below writes the failure row. Schema changes have committed already.
-    yield from rollback_quietly()
-    try:
+
+    def row() -> Execute:
         timestamp = datetime.now(timezone.utc).isoformat()
         checksum = migration_checksum(migration)
         steps = _stored_steps(migration, generated, m._compiler)
         if update:
-            yield Execute(
+            return Execute(
                 m._update_sql(),
                 (checksum, timestamp, None, False, generated, steps, migration.id),
             )
-        else:
-            yield Execute(
-                m._insert_sql(),
-                (migration.id, seq, checksum, timestamp, None, False, generated, steps),
-            )
-        yield Commit()
-    except Exception:
-        pass
+        return Execute(
+            m._insert_sql(),
+            (migration.id, seq, checksum, timestamp, None, False, generated, steps),
+        )
+
+    yield from _write_failure_row(m, migration, row)
 
 
 def record_down_failure(m: MigratorBase, migration: Migration) -> Core[None]:
     """
     Marks a migration's row failed after its down step raised where
     nothing rolled the step back, so partial changes may remain. The
-    row keeps its checksum and stored steps. A failure to write the
-    mark never masks the original error, and a transaction that rolled
-    the step back leaves the row as it was.
+    row keeps its checksum and stored steps, and a transaction that
+    rolled the step back leaves the row as it was.
     """
-    if m._rehearsing or (
-        migration.transactional and m._compiler.supports_transactional_ddl()
-    ):
-        return
     column = m._compiler.quote_identifier
     placeholder = m._compiler.placeholder()
-    # As in record_failure(), the rows the down step changed before it
-    # failed roll back before the Commit below.
-    yield from rollback_quietly()
-    try:
-        yield Execute(
-            f"UPDATE {m._table_sql()} SET {column('success')} = "
-            f"{placeholder} WHERE {column('id')} = {placeholder}",
-            (False, migration.id),
-        )
-        yield Commit()
-    except Exception:
-        pass
+    sql = (
+        f"UPDATE {m._table_sql()} SET {column('success')} = "
+        f"{placeholder} WHERE {column('id')} = {placeholder}"
+    )
+    yield from _write_failure_row(
+        m, migration, lambda: Execute(sql, (False, migration.id))
+    )
 
 
 def generated_migration(
