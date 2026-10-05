@@ -43,9 +43,9 @@ class TestFunctionValidation(unittest.TestCase):
         class User(Model):
             tableName = "users"
 
-        from sustained.expressions import Column
+        from sustained.expressions import raw
 
-        query = User.query().select_func("my_awesome_func", Column("name"))
+        query = User.query().select_func("my_awesome_func", raw("name"))
 
         self.assertIn("MY_AWESOME_FUNC(name)", str(query))
 

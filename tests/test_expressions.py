@@ -9,12 +9,12 @@ from sustained.dialects import Dialects
 from sustained.expressions import (
     AggregateExpression,
     CaseExpression,
-    Column,
     Func,
     Literal,
     Subquery,
     WindowExpression,
     col,
+    raw,
 )
 from sustained.model import Model
 
@@ -246,8 +246,8 @@ class TestCaseExpression(unittest.TestCase):
         """
         Tests a CASE expression where the result is a column name.
         """
-        case = CaseExpression("final_price", Column("price")).when(
-            "promotion_active = TRUE", Column("discounted_price")
+        case = CaseExpression("final_price", raw("price")).when(
+            "promotion_active = TRUE", raw("discounted_price")
         )
         self.assertEqual(
             str(case),

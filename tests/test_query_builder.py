@@ -2,7 +2,7 @@ import unittest
 from typing import Dict
 
 from sustained import DialectError, Model, QueryBuilder, RelationType
-from sustained.expressions import Column, Literal
+from sustained.expressions import Literal, raw
 
 
 class TestQueryBuilder(unittest.TestCase):
@@ -462,8 +462,8 @@ class TestFluentSelects(unittest.TestCase):
     def test_select_case_with_column(self):
         query = self.User.query().select_case(
             "status",
-            Column("default_status"),
-            when_clauses=[("is_active = 1", Column("active_status"))],
+            raw("default_status"),
+            when_clauses=[("is_active = 1", raw("active_status"))],
         )
         self.assertEqual(
             str(query),
@@ -496,13 +496,13 @@ class TestFuncRendering(unittest.TestCase):
 
     def test_simple_func(self):
         query = self.User.query().select_func(
-            "COALESCE", Column("name"), Literal("Unknown")
+            "COALESCE", raw("name"), Literal("Unknown")
         )
         self.assertEqual(str(query), "SELECT COALESCE(name, 'Unknown') FROM users")
 
     def test_func_with_alias(self):
         query = self.User.query().select_func(
-            "LOWER", Column("username"), alias="lower_username"
+            "LOWER", raw("username"), alias="lower_username"
         )
         self.assertEqual(
             str(query), "SELECT LOWER(username) AS lower_username FROM users"
@@ -511,9 +511,7 @@ class TestFuncRendering(unittest.TestCase):
     def test_nested_func(self):
         from sustained.expressions import Func
 
-        inner_func = Func(
-            "CONCAT", Column("first_name"), Literal(" "), Column("last_name")
-        )
+        inner_func = Func("CONCAT", raw("first_name"), Literal(" "), raw("last_name"))
         query = self.User.query().select_func("UPPER", inner_func, alias="full_name")
         self.assertEqual(
             str(query),

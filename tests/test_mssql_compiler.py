@@ -152,11 +152,11 @@ class TestTopWithOffset(unittest.TestCase):
 
 class TestMssqlModulo(unittest.TestCase):
     def test_mod_renders_the_percent_operator(self):
-        from sustained.expressions import Column, Func
+        from sustained.expressions import Func, raw
 
         query = QueryBuilder(Person, dialect=Dialects.MSSQL).select(
             Func("MOD", "age", 2, alias="odd"),
-            Func("ABS", Func("mod", Column("[age] - 7"), 3)),
+            Func("ABS", Func("mod", raw("[age] - 7"), 3)),
         )
         self.assertEqual(
             str(query),

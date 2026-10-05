@@ -35,7 +35,7 @@ class TestDialectFunctions(unittest.TestCase):
         self.assertEqual(str(query), "SELECT GETDATE() AS [current_time] FROM [users]")
 
     def test_coalesce_succeeds_with_all_dialects(self):
-        from sustained.expressions import Column, Literal
+        from sustained.expressions import Literal, raw
 
         dialects = [
             Dialects.DEFAULT,
@@ -47,7 +47,7 @@ class TestDialectFunctions(unittest.TestCase):
             with self.subTest(dialect=dialect.name):
                 User.set_dialect(dialect)
                 query = User.query().coalesce(
-                    Column("nickname"), Literal("N/A"), alias="display_name"
+                    raw("nickname"), Literal("N/A"), alias="display_name"
                 )
                 # We don't check the full string due to quoting differences,
                 # just that the main parts are there.
@@ -57,7 +57,7 @@ class TestDialectFunctions(unittest.TestCase):
                 self.assertIn("display_name", str(query))
 
     def test_common_scalars_succeed_with_all_dialects(self):
-        from sustained.expressions import Column
+        from sustained.expressions import raw
 
         # Test that common functions pass validation for all dialects
         common_scalars = [
@@ -90,18 +90,18 @@ class TestDialectFunctions(unittest.TestCase):
                         query = getattr(User.query(), func_name.lower())("a", "b")
                     elif func_name == "SUBSTRING":
                         query = getattr(User.query(), func_name.lower())(
-                            Column("name"), 1, 2
+                            raw("name"), 1, 2
                         )
                     elif func_name == "ROUND":
                         query = getattr(User.query(), func_name.lower())(
-                            Column("value"), 2
+                            raw("value"), 2
                         )
                     elif func_name == "MOD":
                         query = getattr(User.query(), func_name.lower())(
-                            Column("value"), 2
+                            raw("value"), 2
                         )
                     else:
-                        query = getattr(User.query(), func_name.lower())(Column("name"))
+                        query = getattr(User.query(), func_name.lower())(raw("name"))
 
                     # We only need to check that this does not raise a
                     # DialectError. LENGTH renders as LEN on MSSQL.

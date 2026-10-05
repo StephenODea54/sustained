@@ -8,11 +8,11 @@ from sustained import DialectError, create_model
 from sustained.dialects import Dialects
 from sustained.expressions import (
     AggregateExpression,
-    Column,
     Func,
     Literal,
     Subquery,
     col,
+    raw,
 )
 
 User = create_model("ParamUser", "users")
@@ -271,7 +271,7 @@ class TestExpressionOperands(unittest.TestCase):
     """An expression on the value side of a comparison renders as SQL."""
 
     def test_column_operand_renders_as_sql(self):
-        query = User.query().where("show_id", "=", Column("shows.id"))
+        query = User.query().where("show_id", "=", raw("shows.id"))
         sql, params = query.to_sql()
         self.assertEqual(sql, "SELECT * FROM users WHERE show_id = shows.id")
         self.assertEqual(params, ())
@@ -286,31 +286,31 @@ class TestExpressionOperands(unittest.TestCase):
         self.assertEqual(str(query), "SELECT * FROM users WHERE n = COUNT(id)")
 
     def test_between_operands_render_as_sql(self):
-        query = User.query().whereBetween("n", Column("low"), 10)
+        query = User.query().whereBetween("n", raw("low"), 10)
         sql, params = query.to_sql()
         self.assertEqual(sql, "SELECT * FROM users WHERE n BETWEEN low AND ?")
         self.assertEqual(params, (10,))
 
     def test_in_list_operand_renders_as_sql(self):
-        query = User.query().whereIn("n", [Column("a"), 2])
+        query = User.query().whereIn("n", [raw("a"), 2])
         sql, params = query.to_sql()
         self.assertEqual(sql, "SELECT * FROM users WHERE n IN (a, ?)")
         self.assertEqual(params, (2,))
 
     def test_predicate_in_list_operand_renders_as_sql(self):
-        query = User.query().where(col("n").in_([Column("a"), 2]))
+        query = User.query().where(col("n").in_([raw("a"), 2]))
         sql, params = query.to_sql()
         self.assertEqual(sql, "SELECT * FROM users WHERE n IN (a, ?)")
         self.assertEqual(params, (2,))
 
     def test_predicate_between_operands_render_as_sql(self):
-        query = User.query().where(col("n").between(Column("low"), 10))
+        query = User.query().where(col("n").between(raw("low"), 10))
         sql, params = query.to_sql()
         self.assertEqual(sql, "SELECT * FROM users WHERE n BETWEEN low AND ?")
         self.assertEqual(params, (10,))
 
     def test_predicate_not_between_operands_render_as_sql(self):
-        query = User.query().where(col("n").not_between(1, Column("high")))
+        query = User.query().where(col("n").not_between(1, raw("high")))
         sql, params = query.to_sql()
         self.assertEqual(sql, "SELECT * FROM users WHERE n NOT BETWEEN ? AND high")
         self.assertEqual(params, (1,))
@@ -326,7 +326,7 @@ class TestExpressionOperands(unittest.TestCase):
         self.assertEqual(params, (4,))
 
     def test_like_operand_renders_as_sql(self):
-        query = User.query().where("name", "LIKE", Column("pattern"))
+        query = User.query().where("name", "LIKE", raw("pattern"))
         self.assertEqual(str(query), "SELECT * FROM users WHERE name LIKE pattern")
 
 
