@@ -80,3 +80,52 @@ class TestFunctionArgumentSemantics(unittest.TestCase):
     def test_numeric_args_render_as_literals(self):
         query = User.query().select_func("ROUND", "price", 2)
         self.assertEqual(str(query), "SELECT ROUND(price, 2) FROM users")
+
+
+class TestFunctionHelperArguments(unittest.TestCase):
+    """The function helpers take their arguments as builder.pyi declares."""
+
+    def _sql(self, method, *args, **kwargs):
+        query = create_model("FuncArgThing", "t").query()
+        return str(getattr(query, method)(*args, **kwargs))
+
+    def test_positional_alias_after_the_fixed_arguments(self):
+        cases = (
+            ("lower", ("name", "l"), "LOWER(name) AS l"),
+            ("UPPER", ("name", "u"), "UPPER(name) AS u"),
+            ("trim", ("name", "t"), "TRIM(name) AS t"),
+            ("length", ("name", "n"), "LENGTH(name) AS n"),
+            ("abs", ("x", "a"), "ABS(x) AS a"),
+            ("ceiling", ("x", "c"), "CEILING(x) AS c"),
+            ("floor", ("x", "f"), "FLOOR(x) AS f"),
+            ("round", ("x", 2, "r"), "ROUND(x, 2) AS r"),
+            ("mod", ("x", 3, "m"), "MOD(x, 3) AS m"),
+            ("substring", ("n", 1, 3, "s"), "SUBSTRING(n, 1, 3) AS s"),
+            ("substring", ("n", 1, None, "s"), "SUBSTRING(n, 1) AS s"),
+        )
+        for method, args, select in cases:
+            with self.subTest(method=method, args=args):
+                self.assertEqual(self._sql(method, *args), f"SELECT {select} FROM t")
+
+    def test_fixed_arguments_without_alias_keep_their_output(self):
+        self.assertEqual(self._sql("round", "x"), "SELECT ROUND(x) FROM t")
+        self.assertEqual(
+            self._sql("substring", "n", 1, 3), "SELECT SUBSTRING(n, 1, 3) FROM t"
+        )
+        self.assertEqual(
+            self._sql("lower", "name", alias="l"), "SELECT LOWER(name) AS l FROM t"
+        )
+
+    def test_too_many_arguments_raise(self):
+        with self.assertRaisesRegex(TypeError, "lower\\(\\) takes"):
+            self._sql("lower", "name", "l", "extra")
+
+    def test_alias_given_twice_raises(self):
+        with self.assertRaisesRegex(TypeError, "alias"):
+            self._sql("lower", "name", "l", alias="m")
+
+    def test_other_functions_take_every_positional_argument(self):
+        self.assertEqual(
+            self._sql("coalesce", "a", "b", alias="c"),
+            "SELECT COALESCE(a, b) AS c FROM t",
+        )

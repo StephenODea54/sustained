@@ -70,6 +70,51 @@ _TOP_WITH_OFFSET = (
 )
 
 
+# The function helpers that builder.pyi declares with a fixed number of
+# positional arguments before alias, as (all, required). One more
+# positional argument is the alias, so lower("name", "l") renders
+# LOWER(name) AS l.
+_FIXED_ARITY = {
+    "LOWER": (1, 1),
+    "UPPER": (1, 1),
+    "TRIM": (1, 1),
+    "LENGTH": (1, 1),
+    "ABS": (1, 1),
+    "CEILING": (1, 1),
+    "FLOOR": (1, 1),
+    "ROUND": (2, 1),
+    "MOD": (2, 2),
+    "SUBSTRING": (3, 2),
+}
+
+
+def _helper_arguments(
+    name: str, args: Tuple[SqlValue, ...], kwargs: Dict[str, SqlValue]
+) -> Tuple[Tuple[SqlValue, ...], Dict[str, SqlValue]]:
+    """
+    Splits a positional alias off the arguments of a fixed-arity function
+    helper, and drops a None given for an optional argument, such as the
+    length of substring(). Other functions keep every argument.
+    """
+    counts = _FIXED_ARITY.get(name.upper())
+    if counts is None:
+        return args, kwargs
+    arity, required = counts
+    if len(args) > arity + 1:
+        raise TypeError(
+            f"{name}() takes at most {arity + 1} positional arguments "
+            f"({len(args)} given)."
+        )
+    if len(args) == arity + 1:
+        if "alias" in kwargs:
+            raise TypeError(f"{name}() got the alias twice.")
+        kwargs = {**kwargs, "alias": args[arity]}
+        args = args[:arity]
+    while len(args) > required and args[-1] is None:
+        args = args[:-1]
+    return args, kwargs
+
+
 def _validate_row_count(value: int, keyword: str) -> None:
     """Rejects values that are not non-negative integers.
 
@@ -1480,6 +1525,7 @@ class QueryBuilder:
             ) from None
 
         def dynamic_func_caller(*args: Any, **kwargs: Any) -> "QueryBuilder":
+            args, kwargs = _helper_arguments(name, args, kwargs)
             self.select_func(name, *args, **kwargs)
             return self
 
