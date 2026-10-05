@@ -25,6 +25,7 @@ from typing import (
     Tuple,
 )
 
+from sustained.analysis import destructive_statements
 from sustained.dialects import Dialects
 from sustained.migrations.migration import (
     AppliedRecord,
@@ -234,8 +235,6 @@ def _destructive_in(
     plan command's labels carry. Ddl steps render for the given compiler's
     dialect, so the labels read the SQL the run would run.
     """
-    from sustained.analysis import destructive_statements
-
     found: List[Tuple[str, str]] = []
     for migration in run:
         if callable(migration.up):

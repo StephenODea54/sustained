@@ -210,6 +210,9 @@ def attach_impact(
     its migration, its transaction flag, its destructive mark, and its
     intent. Raises ValueError for a dialect that has no impact rules yet.
     """
+    # sustained.analysis imports sustained.impact.model, and loading the
+    # sustained.impact package imports this module. A top-level import
+    # fails when sustained.analysis is the first module imported.
     from sustained.analysis import MigrationStatement
 
     report = analyze(statements, dialect, context)

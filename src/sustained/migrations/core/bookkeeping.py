@@ -15,6 +15,7 @@ import sys
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
+from sustained.analysis import MigrationStatement
 from sustained.driver_errors import is_missing_table
 from sustained.migrations.checks import (
     _checksum_repair,
@@ -71,7 +72,6 @@ from sustained.migrations.tracking import (
 from sustained.types import RowValue
 
 if TYPE_CHECKING:
-    from sustained.analysis import MigrationStatement
     from sustained.impact import ImpactReport
 
 

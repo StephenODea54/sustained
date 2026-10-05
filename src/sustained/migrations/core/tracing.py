@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional, Sequence, Tuple
 
+from sustained.analysis import MigrationStatement, statement_scope
 from sustained.migrations.core.base import MigratorBase
 from sustained.migrations.core.requests import (
     Core,
@@ -37,7 +38,6 @@ from sustained.migrations.migration import (
 )
 
 if TYPE_CHECKING:
-    from sustained.analysis import MigrationStatement
     from sustained.impact import EngineContext, ImpactReport, StatementImpact
     from sustained.impact.analyzer import _Run
     from sustained.impact.rules import Profile, Trace
@@ -106,8 +106,6 @@ class Tracer:
         Runs the migration's up step. A callable step runs whole and is
         not observed, since its statements are not known.
         """
-        from sustained.analysis import MigrationStatement
-
         elements = _step_elements(migration.up)
         if elements is None:
             assert callable(migration.up)
@@ -182,8 +180,6 @@ class Tracer:
         locks held to commit when its migration's transaction spans DDL,
         as analyze() reads a migration.
         """
-        from sustained.analysis import statement_scope
-
         migration_id, transactional = statement_scope(statement)
         spans = transactional and self.profile.transactional_ddl
         assert self._analysis is not None

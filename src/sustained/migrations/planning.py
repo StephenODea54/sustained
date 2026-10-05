@@ -22,6 +22,7 @@ from typing import (
     Union,
 )
 
+from sustained.analysis import MigrationStatement
 from sustained.dialects import Dialects
 from sustained.migrations.checks import _is_current
 from sustained.migrations.migration import (
@@ -34,7 +35,6 @@ from sustained.migrations.tracking import _next_seq, quoted_columns
 from sustained.types import Connection
 
 if TYPE_CHECKING:
-    from sustained.analysis import MigrationStatement
     from sustained.compilers.base import Compiler
     from sustained.impact import EngineContext, ImpactReport
     from sustained.introspect import Snapshot
@@ -292,7 +292,6 @@ def _annotated(
     annotate: Callable[[Sequence["MigrationStatement"]], "ImpactReport"],
 ) -> str:
     """The script with each statement's impact above it as comments."""
-    from sustained.analysis import MigrationStatement
     from sustained.impact.report import (
         migration_annotation,
         statement_annotation,

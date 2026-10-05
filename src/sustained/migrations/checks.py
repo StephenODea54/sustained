@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 from typing import TYPE_CHECKING, List, Optional, Sequence, Set, Tuple
 
+from sustained.analysis import MigrationStatement, normalize_statement
 from sustained.dialects import Dialects
 from sustained.migrations.migration import (
     AppliedRecord,
@@ -21,7 +22,6 @@ from sustained.migrations.migration import (
 )
 
 if TYPE_CHECKING:
-    from sustained.analysis import MigrationStatement
     from sustained.compilers.base import Compiler
     from sustained.guards import Guard, Verdict
 
@@ -40,8 +40,6 @@ def run_statements(
     ends and the next begins. The values are strings, so a guard that
     reads them as such needs to know nothing about this.
     """
-    from sustained.analysis import MigrationStatement
-
     statements: List["MigrationStatement"] = []
     for migration in run:
         if callable(migration.up):
@@ -92,7 +90,6 @@ def report_danger(
     `reported` collects the (rule, statement) pairs already printed, as
     `check_guards()` collects warnings.
     """
-    from sustained.analysis import normalize_statement
     from sustained.impact import Severity
 
     for statement in statements:

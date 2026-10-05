@@ -35,6 +35,7 @@ from typing import (
     Union,
 )
 
+from sustained.analysis import with_intent
 from sustained.schema import (
     Check,
     ColumnDef,
@@ -230,10 +231,6 @@ def _tag(
     The statement tagged with what it is meant to do, for the impact
     analysis. `table` is the step's dotted table name, or None.
     """
-    # The analysis module imports the migrations module, which imports
-    # this one, so the import waits until a step renders.
-    from sustained.analysis import with_intent
-
     assert table is None or isinstance(table, str)
     return with_intent(statement, kind, table, column, **details)
 

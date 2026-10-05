@@ -24,10 +24,10 @@ from typing import (
     Union,
 )
 
+from sustained.analysis import MigrationStatement, with_intent
 from sustained.types import Expression, SqlValue
 
 if TYPE_CHECKING:
-    from sustained.analysis import MigrationStatement
     from sustained.compilers.base import Compiler
 
 
@@ -592,10 +592,6 @@ def create_index_statement(
     index it builds for the impact analysis. `intent_table` is the
     dotted, unquoted table name.
     """
-    # The analysis module imports the migrations module, which imports
-    # the ddl module, which imports this one.
-    from sustained.analysis import with_intent
-
     return with_intent(
         create_index_sql(compiler, table_sql, index),
         "create_index",
@@ -751,8 +747,6 @@ def add_column_statements(
     analysis. `nullable` and `has_default` describe the column as the
     ADD COLUMN creates it.
     """
-    from sustained.analysis import with_intent
-
     statements = [
         with_intent(
             compiler.compile_add_column(table_sql, column_sql),
@@ -796,8 +790,6 @@ def create_table_statements(
     that stores comments as separate statements, and CREATE INDEX for
     each index. `intent_table` is the dotted, unquoted table name.
     """
-    from sustained.analysis import with_intent
-
     statements: List["MigrationStatement"] = []
     if enum_types and compiler.enum_strategy() == "native":
         statements.extend(

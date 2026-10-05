@@ -15,6 +15,7 @@ from typing import (
     Tuple,
 )
 
+from sustained.analysis import MigrationStatement
 from sustained.impact.model import (
     Blocks,
     Confidence,
@@ -126,7 +127,6 @@ def asserted_statements(
     keeps its migration, its transaction flag, its destructive mark,
     and its intent.
     """
-    from sustained.analysis import MigrationStatement
     from sustained.dialects import Dialects
     from sustained.impact.analyzer import analyze
 

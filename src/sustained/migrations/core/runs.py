@@ -25,6 +25,7 @@ from typing import (
     Union,
 )
 
+from sustained.analysis import MigrationStatement
 from sustained.dialects import Dialects
 from sustained.impact.preflight import OLDER_THAN
 from sustained.migrations import planning
@@ -80,7 +81,6 @@ from sustained.migrations.tracking import _next_seq
 from sustained.types import Connection
 
 if TYPE_CHECKING:
-    from sustained.analysis import MigrationStatement
     from sustained.guards import Verdict
     from sustained.impact import ImpactReport
     from sustained.impact.preflight import Preflight
