@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import (
     TYPE_CHECKING,
+    Callable,
+    Dict,
     Generator,
     List,
     Optional,
@@ -29,7 +31,12 @@ from sustained.introspect.information_schema import (
     PRESTO_CATALOG,
     _information_schema_plan,
 )
-from sustained.introspect.model import SchemaPlan, SchemaRecorder, Snapshot
+from sustained.introspect.model import (
+    ReadPlan,
+    SchemaPlan,
+    SchemaRecorder,
+    Snapshot,
+)
 from sustained.introspect.mssql import _mssql_plan
 from sustained.introspect.mysql import _mysql_plan
 from sustained.introspect.postgres import _postgres_plan
@@ -40,20 +47,6 @@ if TYPE_CHECKING:
     from sustained.aio import AsyncAdapter
 
 T = TypeVar("T")
-
-ReadPlan = Generator[str, List[Sequence[RowValue]], T]
-"""
-A read as a sequence of queries: the plan yields one statement at a
-time and receives its rows back. A statement that fails is thrown back
-in, and the plan decides whether to degrade or give up. It returns what
-it read.
-"""
-
-
-def _finished(stop: StopIteration) -> Snapshot:
-    """The schema a finished plan carried on its StopIteration."""
-    return cast(Snapshot, stop.value)
-
 
 # The savepoint a guarded read takes before each statement. A read
 # releases it whether the statement worked or failed. ROLLBACK TO
@@ -86,8 +79,8 @@ def introspect_schema(
     defaults, indexes, check constraints, and column comments from the
     database. Comments come from pg_description on Postgres,
     information_schema.columns on MySQL, Presto, and Athena, and
-    duckdb_columns() on DuckDB; SQLite and MSSQL store none, so their
-    snapshots leave comments_read False. The
+    duckdb_columns() on DuckDB, and sys.extended_properties on MSSQL;
+    SQLite stores none, so its snapshots leave comments_read False. The
     default dialect reads SQLite's PRAGMA tables and the table SQL in
     sqlite_master. Postgres reads information_schema together with
     pg_index, pg_constraint, and pg_enum, so every index is visible,
@@ -254,17 +247,20 @@ async def async_run_plan(
             return cast(T, stop.value)
 
 
+# The plan each dialect reads its schema with. A dialect missing here
+# reads plain information_schema the way Presto does.
+_SCHEMA_PLANS: Dict[Dialects, Callable[[Tuple[str, ...]], SchemaPlan]] = {
+    Dialects.DEFAULT: lambda schemas: _sqlite_plan(),
+    Dialects.MYSQL: _mysql_plan,
+    Dialects.POSTGRES: _postgres_plan,
+    Dialects.MSSQL: _mssql_plan,
+    Dialects.DUCKDB: _duckdb_plan,
+    Dialects.ATHENA: lambda schemas: _information_schema_plan(ATHENA_CATALOG, schemas),
+}
+
+
 def _schema_plan(dialect: Dialects, schemas: Tuple[str, ...] = ()) -> SchemaPlan:
-    if dialect == Dialects.DEFAULT:
-        return _sqlite_plan()
-    if dialect == Dialects.MYSQL:
-        return _mysql_plan(schemas)
-    if dialect == Dialects.POSTGRES:
-        return _postgres_plan(schemas)
-    if dialect == Dialects.MSSQL:
-        return _mssql_plan(schemas)
-    if dialect == Dialects.DUCKDB:
-        return _duckdb_plan(schemas)
-    if dialect == Dialects.ATHENA:
-        return _information_schema_plan(ATHENA_CATALOG, schemas)
-    return _information_schema_plan(PRESTO_CATALOG, schemas)
+    plan = _SCHEMA_PLANS.get(dialect)
+    if plan is None:
+        return _information_schema_plan(PRESTO_CATALOG, schemas)
+    return plan(schemas)

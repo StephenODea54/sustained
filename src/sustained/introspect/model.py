@@ -17,6 +17,7 @@ from typing import (
     Protocol,
     Sequence,
     Tuple,
+    TypeVar,
 )
 
 from sustained.types import RowValue
@@ -342,9 +343,15 @@ class Snapshot(Dict[str, IntrospectedTable]):
         )
 
 
-# A schema read expressed as a sequence of queries. The plan yields one
-# statement at a time and receives its rows back, so the same reading
-# code serves a blocking connection and an async adapter. A statement
-# that fails is thrown back in, and the plan decides whether to degrade
-# or give up.
-SchemaPlan = Generator[str, List[Sequence[RowValue]], Snapshot]
+T = TypeVar("T")
+
+ReadPlan = Generator[str, List[Sequence[RowValue]], T]
+"""
+A read as a sequence of queries: the plan yields one statement at a
+time and receives its rows back, so the same reading code serves a
+blocking connection and an async adapter. A statement that fails is
+thrown back in, and the plan decides whether to degrade or give up. It
+returns what it read.
+"""
+
+SchemaPlan = ReadPlan[Snapshot]
