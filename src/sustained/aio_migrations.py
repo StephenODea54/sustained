@@ -314,15 +314,7 @@ class AsyncMigrator(MigratorBase):
     async def read_applied_records(self) -> List[AppliedRecord]:
         """
         Returns every tracking table row without writing anything.
-
-        An empty list means the run has no history to read: either the
-        tracking table does not exist yet, or it has only the columns an
-        earlier version wrote. Any other failed read, such as a closed
-        connection or a refused SELECT, raises the driver's error, so a
-        report never shows every migration pending on a database it could
-        not read. The paths that only report on a run, such as script()
-        and pending(), read the rows through this, since creating the
-        table would change a database they say they leave alone.
+        Mirrors Migrator.read_applied_records().
         """
         return await self._drive(bookkeeping.read_applied_records(self))
 
@@ -374,47 +366,23 @@ class AsyncMigrator(MigratorBase):
     async def validate(self, raise_on_problems: bool = True) -> List[str]:
         """
         Checks the tracking table against the registered migrations and
-        returns the problems found: failed attempts, applied migrations
-        this migrator does not know, checksum mismatches from edited
-        migrations, and out-of-order pending migrations. Raises
-        MigrationError when problems exist, unless raise_on_problems is
-        False.
+        returns the problems found. Mirrors Migrator.validate().
         """
         return await self._drive(bookkeeping.validate(self, raise_on_problems))
 
     async def repair(self) -> List[str]:
         """
         Brings the tracking table back in line with the registered
-        migrations: deletes rows left by failed attempts and rewrites
-        stored checksums that no longer match, including null checksums on
-        rows written before checksums existed. Returns a description of
-        every action taken. Schema changes a failed attempt left behind
-        are not touched; clean those up first.
-
-        A changed repeatable keeps its stored checksum. For it a changed
-        checksum schedules a re-run, and rewriting the row here would
-        cancel that run without the new contents ever reaching the
-        database. A repeatable row that stores the checksum format of a
-        release before 2.25.0 for unchanged statements is rewritten in the
-        current format, like any other row.
+        migrations and returns a description of every action taken.
+        Mirrors Migrator.repair().
         """
         return await self._drive(bookkeeping.repair(self))
 
     async def baseline(self, target: str) -> List[str]:
         """
         Marks registered migrations up to and including the target as
-        applied without running them, for adopting a database whose schema
-        already matches. Rows are written with real checksums and a null
-        execution time; already-applied migrations are skipped. Returns the
-        ids that were recorded.
-
-        The target must name a versioned migration. Every repeatable is
-        recorded at its current checksum, so the first migrate after
-        adoption does not re-run objects the schema already holds.
-
-        Raises MigrationError before it writes a row when a migration it
-        would record has a failed attempt on record; run repair() first.
-        A failure part way rolls back every row this call inserted.
+        applied without running them, and returns the ids recorded.
+        Mirrors Migrator.baseline().
         """
         return await self._drive(bookkeeping.baseline(self, target))
 
@@ -849,27 +817,8 @@ class AsyncMigrator(MigratorBase):
 
     async def down(self, steps: int = 1, allow_changed: bool = False) -> List[str]:
         """
-        Reverts the most recently applied migrations, newest first. Every
-        reverted migration must define a down step. Repeatables are never
-        reverted. Returns the ids that were reverted.
-
-        A migration generated from the models is reverted from its own
-        tracking row, which holds the statements it ran. Every other
-        migration must be registered with this migrator.
-
-        `steps` counts migrations and must be 0 or more. A count of 0
-        reverts nothing and returns an empty list.
-
-        A migration whose statements changed since it was applied raises
-        MigrationError, because its down step describes the new contents
-        and the database holds the old ones. Pass allow_changed=True to
-        revert it with the down step as it stands now.
-
-        Every migration in the window is read and checked first, so a
-        refusal reverts nothing. A failed attempt on record refuses the
-        run, and a down step that fails where nothing rolls it back marks
-        the migration's row failed, as Migrator.down() does. The
-        migrator's on_error callback fires for a failed run.
+        Reverts the most recently applied migrations, newest first, and
+        returns the ids that were reverted. Mirrors Migrator.down().
         """
         return await self._drive(runs.down(self, steps, allow_changed))
 
