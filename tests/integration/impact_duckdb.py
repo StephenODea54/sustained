@@ -56,12 +56,29 @@ class DuckdbImpactCase(unittest.TestCase):
 
     def database(self, name):
         """A database file holding the fixture schema, checkpointed."""
-        connection = self.duckdb.connect(os.path.join(self.dir, f"{name}.db"))
+        path = os.path.join(self.dir, f"{name}.db")
+        shutil.copyfile(self.template(), path)
+        connection = self.duckdb.connect(path)
         self.addCleanup(connection.close)
-        for sql in profile_for(self.DIALECT).fixture_schema:
-            connection.execute(sql)
-        connection.execute("FORCE CHECKPOINT")
         return connection
+
+    def template(self):
+        """
+        A closed database file holding the fixture schema, checkpointed,
+        which database() copies. The fixture test needs five fresh
+        databases for each fixture, and building the schema's 10,000 rows
+        costs more than copying the file, so each test builds it once.
+        """
+        path = os.path.join(self.dir, "template.db")
+        if not os.path.exists(path):
+            connection = self.duckdb.connect(path)
+            try:
+                for sql in profile_for(self.DIALECT).fixture_schema:
+                    connection.execute(sql)
+                connection.execute("FORCE CHECKPOINT")
+            finally:
+                connection.close()
+        return path
 
     def test_reads_the_version_and_row_counts(self):
         connection = self.database("context")
