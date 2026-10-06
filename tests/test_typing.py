@@ -4,7 +4,9 @@ them. These tests run mypy over a sample module and read what it inferred.
 They are skipped when mypy is not installed.
 """
 
+import functools
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,17 +32,35 @@ count: int = Show.query().run()
 """
 
 
-def run_mypy(source):
-    """Type checks one module against the installed stubs, notes first."""
+def run_mypy(name):
+    """What mypy printed for one of the SAMPLES modules, notes first."""
+    return mypy_output()[name]
+
+
+@functools.cache
+def mypy_output():
+    """
+    Type checks every module in SAMPLES against the installed stubs in one
+    mypy run, and splits the output by module. Each mypy run spends about
+    a second reading the standard library stubs, so one run for all the
+    modules costs that second once.
+    """
     from mypy import api
 
+    os.environ["MYPYPATH"] = SRC
     with tempfile.TemporaryDirectory() as tmp:
-        sample = Path(tmp) / "sample.py"
-        sample.write_text(source)
+        paths = {name: Path(tmp) / f"{name}.py" for name in SAMPLES}
+        for name, path in paths.items():
+            path.write_text(SAMPLES[name])
         stdout, _, _ = api.run(
-            ["--strict", "--no-incremental", "--no-error-summary", str(sample)]
+            ["--strict", "--no-incremental", "--no-error-summary"]
+            + [str(path) for path in paths.values()]
         )
-    return stdout
+    lines = stdout.splitlines()
+    return {
+        name: "\n".join(line for line in lines if line.startswith(f"{path}:"))
+        for name, path in paths.items()
+    }
 
 
 @unittest.skipUnless(
@@ -49,10 +69,7 @@ def run_mypy(source):
 class TestQueryTypes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        import os
-
-        os.environ["MYPYPATH"] = SRC
-        cls.output = run_mypy(SAMPLE)
+        cls.output = run_mypy("sample")
 
     def revealed(self, expected):
         """
@@ -128,10 +145,7 @@ class TestDriverTypes(unittest.TestCase):
     """
 
     def test_a_sqlite3_connection_is_a_connection(self):
-        import os
-
-        os.environ["MYPYPATH"] = SRC
-        self.assertNotIn("error:", run_mypy(DRIVERS))
+        self.assertNotIn("error:", run_mypy("drivers"))
 
 
 VALUES = """
@@ -163,10 +177,7 @@ class TestFilterValueTypes(unittest.TestCase):
     """
 
     def test_temporal_and_binary_values_are_accepted(self):
-        import os
-
-        os.environ["MYPYPATH"] = SRC
-        self.assertNotIn("error:", run_mypy(VALUES))
+        self.assertNotIn("error:", run_mypy("values"))
 
 
 RAW_AND_NESTED = """
@@ -202,10 +213,7 @@ class TestRawAndNestedTypes(unittest.TestCase):
     """
 
     def test_documented_calls_type_check(self):
-        import os
-
-        os.environ["MYPYPATH"] = SRC
-        self.assertNotIn("error:", run_mypy(RAW_AND_NESTED))
+        self.assertNotIn("error:", run_mypy("raw_and_nested"))
 
 
 GUARDS = """
@@ -238,10 +246,16 @@ class TestGuardTypes(unittest.TestCase):
     """
 
     def test_a_string_guard_is_a_guard(self):
-        import os
+        self.assertNotIn("error:", run_mypy("guards"))
 
-        os.environ["MYPYPATH"] = SRC
-        self.assertNotIn("error:", run_mypy(GUARDS))
+
+SAMPLES = {
+    "sample": SAMPLE,
+    "drivers": DRIVERS,
+    "values": VALUES,
+    "raw_and_nested": RAW_AND_NESTED,
+    "guards": GUARDS,
+}
 
 
 if __name__ == "__main__":
